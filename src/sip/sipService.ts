@@ -14,25 +14,14 @@
  * We reassign these at import time. Media capture stays native via
  * react-native-webrtc's MediaStream so call audio is bridged natively.
  */
-import {
-  RTCPeerConnection,
-  RTCSessionDescription,
-  RTCIceCandidate,
-  mediaDevices,
-} from 'react-native-webrtc';
+import { registerGlobals, mediaDevices } from 'react-native-webrtc';
 import { UserAgent, Registerer, Invitation, Session } from 'sip.js';
 import { CONFIG } from '../config';
 
-// --- DOM shims required by sip.js (use globalThis instead of global) ---
-const g = globalThis as any;
-g.RTCPeerConnection = RTCPeerConnection;
-g.RTCSessionDescription = RTCSessionDescription;
-g.RTCIceCandidate = RTCIceCandidate;
-g.MediaStream = (require('react-native-webrtc') as any).MediaStream;
-g.navigator = g.navigator || {};
-g.navigator.mediaDevices = mediaDevices;
+// Register WebRTC DOM globals required by sip.js
+registerGlobals();
+const g = globalThis as Record<string, unknown>;
 g.window = g.window || g;
-
 export type SipState =
   | 'disconnected'
   | 'connecting'

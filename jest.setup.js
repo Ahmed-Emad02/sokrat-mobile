@@ -10,6 +10,7 @@ jest.mock('react-native-webrtc', () => {
     RTCIceCandidate: function RTCIceCandidate() {},
     MediaStream: function MediaStream() {},
     mediaDevices: { getUserMedia: jest.fn(() => Promise.resolve({})) },
+    registerGlobals: noop,
   };
 });
 

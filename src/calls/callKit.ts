@@ -43,17 +43,22 @@ export function setupCallKeep(h: CallKeepHandlers) {
       },
     },
   };
+  try {
+    RNCallKeep.setup(options).then(() => {
+      try {
+        RNCallKeep.setAvailable(true);
+      } catch {}
+    }).catch((err) => {
+      console.warn('[callkeep] setup failed:', err);
+    });
 
-  RNCallKeep.setup(options).then(() => {
-    RNCallKeep.setAvailable(true);
-  });
-
-  RNCallKeep.addEventListener('answerCall', ({ callUUID }) => handlers?.onAnswerCall(callUUID));
-  RNCallKeep.addEventListener('endCall', ({ callUUID }) => handlers?.onEndCall(callUUID));
-  // Android dispatches this when the ConnectionService shows the incoming UI
-  RNCallKeep.addEventListener('didDisplayIncomingCall', () => {});
+    RNCallKeep.addEventListener('answerCall', ({ callUUID }) => handlers?.onAnswerCall(callUUID));
+    RNCallKeep.addEventListener('endCall', ({ callUUID }) => handlers?.onEndCall(callUUID));
+    RNCallKeep.addEventListener('didDisplayIncomingCall', () => {});
+  } catch (err) {
+    console.warn('[callkeep] init exception:', err);
+  }
 }
-
 /** Report a new incoming call to CallKit/Telecom. */
 export function reportIncomingCall(callUUID: string, callerId: string, callerName: string) {
   RNCallKeep.displayIncomingCall(callUUID, callerId, callerName || 'Incoming Call', 'number', false);
