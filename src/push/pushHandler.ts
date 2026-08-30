@@ -7,8 +7,6 @@
  * the push gateway on login / token refresh.
  */
 import { Platform } from 'react-native';
-import PushNotificationIOS from '@react-native-community/push-notification-ios';
-import VoipPushNotification from 'react-native-voip-push-notification';
 import { CONFIG } from '../config';
 
 export type PushPayload = {
@@ -37,7 +35,7 @@ let pendingAndroidPayload: PushPayload | null = null;
 if (Platform.OS === 'android') {
   const FCM = require('@react-native-firebase/messaging').default;
   const messaging = FCM();
-  messaging.setBackgroundMessageHandler(async (remoteMessage: any) => {
+  messaging.setBackgroundMessageHandler(async (remoteMessage: { data?: Record<string, string> }) => {
     const data = (remoteMessage?.data || {}) as PushPayload;
     if (data.msg !== 'incoming-call') return;
     if (onIncoming) {
@@ -57,30 +55,34 @@ export function initPush(onIncomingCall: PushHandler) {
   onIncoming = onIncomingCall;
 
   // ---------- iOS: PushKit (VoIP) ----------
-  VoipPushNotification.registerVoipToken();
+  if (Platform.OS === 'ios') {
+    const VoipPushNotification = require('react-native-voip-push-notification').default || require('react-native-voip-push-notification');
+    const PushNotificationIOS = require('@react-native-community/push-notification-ios').default || require('@react-native-community/push-notification-ios');
 
-  VoipPushNotification.addEventListener('register', (token: string) => {
-    voipTokenCache = token;
-    console.log('[push] iOS VoIP token:', token);
-    setTimeout(() => sendTokenToGateway('ios', token, token, currentExtension));
-  });
+    VoipPushNotification.registerVoipToken();
 
-  VoipPushNotification.addEventListener('notification', (payload: any) => {
-    console.log('[push] voip notification', JSON.stringify(payload));
-    const data: PushPayload = payload?.data || payload || {};
-    if (onIncoming) {
-      onIncoming({
-        ...data,
-        type: data.msg || 'incoming-call',
-      });
-    }
-  });
+    VoipPushNotification.addEventListener('register', (token: string) => {
+      voipTokenCache = token;
+      console.log('[push] iOS VoIP token:', token);
+      setTimeout(() => sendTokenToGateway('ios', token, token, currentExtension));
+    });
 
-  // iOS non-VoIP APNs fallback token
-  PushNotificationIOS.addEventListener('register', (token: string) => {
-    setTimeout(() => sendTokenToGateway('ios', token, null, currentExtension));
-  });
+    VoipPushNotification.addEventListener('notification', (payload: { data?: PushPayload }) => {
+      console.log('[push] voip notification', JSON.stringify(payload));
+      const data: PushPayload = payload?.data || (payload as unknown as PushPayload) || {};
+      if (onIncoming) {
+        onIncoming({
+          ...data,
+          type: data.msg || 'incoming-call',
+        });
+      }
+    });
 
+    // iOS non-VoIP APNs fallback token
+    PushNotificationIOS.addEventListener('register', (token: string) => {
+      setTimeout(() => sendTokenToGateway('ios', token, null, currentExtension));
+    });
+  }
   // ---------- Android: FCM high-priority data message ----------
   if (Platform.OS === 'android') {
     const FCM = require('@react-native-firebase/messaging').default;
@@ -143,6 +145,7 @@ export async function sendTokenToGateway(
 /** iOS: request notification permission (UnifiedPush / badge only). */
 export function askNotificationPermission() {
   if (Platform.OS === 'ios') {
+    const PushNotificationIOS = require('@react-native-community/push-notification-ios').default || require('@react-native-community/push-notification-ios');
     PushNotificationIOS.requestPermissions();
   } else if (Platform.OS === 'android') {
     const FCM = require('@react-native-firebase/messaging').default;
