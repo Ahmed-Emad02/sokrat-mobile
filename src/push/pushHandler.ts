@@ -27,6 +27,27 @@ let onIncoming: PushHandler | null = null;
 let currentExtension = '';
 let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
+let pendingAndroidPayload: PushPayload | null = null;
+
+// ---------- Android: FCM headless/background handler ----------
+// Registered at MODULE scope (not inside App/useEffect) because when the app
+// is in the background or killed, Android runs this in a headless JS instance
+// with NO UI mounted. If we only registered inside initPush() (which runs from
+// App's useEffect), a background data message would never be handled.
+if (Platform.OS === 'android') {
+  const FCM = require('@react-native-firebase/messaging').default;
+  const messaging = FCM();
+  messaging.setBackgroundMessageHandler(async (remoteMessage: any) => {
+    const data = (remoteMessage?.data || {}) as PushPayload;
+    if (data.msg !== 'incoming-call') return;
+    if (onIncoming) {
+      onIncoming({ ...data, type: 'incoming-call' });
+    } else {
+      // App not yet booted (cold start). Queue it; initPush() flushes it.
+      pendingAndroidPayload = { ...data, type: 'incoming-call' };
+    }
+  });
+}
 
 /**
  * init() registers the native push listeners. Must be called once at app
@@ -65,19 +86,19 @@ export function initPush(onIncomingCall: PushHandler) {
     const FCM = require('@react-native-firebase/messaging').default;
     const messaging = FCM();
 
-    messaging.setBackgroundMessageHandler(async (remoteMessage: any) => {
-      const data = (remoteMessage?.data || {}) as PushPayload;
-      if (data.msg === 'incoming-call' && onIncoming) {
-        onIncoming({ ...data, type: 'incoming-call' });
-      }
-    });
-
     const handleToken = (token: string) => {
       fcmTokenCache = token;
       setTimeout(() => sendTokenToGateway('android', token, null, currentExtension));
     };
     messaging.getToken().then(handleToken).catch(() => {});
     messaging.onTokenRefresh(handleToken);
+
+    // Flush a background/cold-start payload that arrived before UI booted.
+    if (pendingAndroidPayload) {
+      const p = pendingAndroidPayload;
+      pendingAndroidPayload = null;
+      onIncoming && onIncoming(p);
+    }
   }
 }
 
@@ -123,5 +144,10 @@ export async function sendTokenToGateway(
 export function askNotificationPermission() {
   if (Platform.OS === 'ios') {
     PushNotificationIOS.requestPermissions();
+  } else if (Platform.OS === 'android') {
+    const FCM = require('@react-native-firebase/messaging').default;
+    const messaging = FCM();
+    // Android 13+ requires POST_NOTIFICATIONS at runtime.
+    messaging.requestPermission().catch(() => {});
   }
 }

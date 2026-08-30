@@ -117,3 +117,6 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Firebase (RNFirebase): must be applied AFTER the Android plugin.
+apply plugin: "com.google.gms.google-services"
