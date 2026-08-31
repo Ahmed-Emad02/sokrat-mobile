@@ -3,8 +3,9 @@
  * Mirrors the native CallKit screen so the app's in-app view stays in sync.
  */
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
 import { COLORS } from '../theme';
+import { PhoneAnswerIcon, PhoneDeclineIcon } from './Icons';
 
 type Props = {
   callerId: string;
@@ -26,16 +27,16 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
       <View style={styles.actions}>
         <View style={styles.actionWrap}>
           <Text style={styles.actionLabel}>DECLINE</Text>
-          <View style={[styles.round, styles.decline]} onTouchEnd={onDecline}>
-            <Text style={styles.roundIcon}>✕</Text>
-          </View>
+          <TouchableOpacity style={[styles.round, styles.decline]} onPress={onDecline} activeOpacity={0.8}>
+            <PhoneDeclineIcon size={28} color="#ffffff" />
+          </TouchableOpacity>
         </View>
         <Text style={styles.pulse}>●</Text>
         <View style={styles.actionWrap}>
           <Text style={styles.actionLabel}>ANSWER</Text>
-          <View style={[styles.round, styles.answer]} onTouchEnd={onAnswer}>
-            <Text style={styles.roundIcon}>◄</Text>
-          </View>
+          <TouchableOpacity style={[styles.round, styles.answer]} onPress={onAnswer} activeOpacity={0.8}>
+            <PhoneAnswerIcon size={28} color="#ffffff" />
+          </TouchableOpacity>
         </View>
       </View>
     </View>
