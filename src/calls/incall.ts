@@ -18,6 +18,14 @@ export function stopCallManagers() {
   InCallManager.stop();
 }
 
+export function setMicrophoneMute(muted: boolean) {
+  try {
+    InCallManager.setMicrophoneMute(muted);
+  } catch (err) {
+    console.warn('[incall] setMicrophoneMute error:', err);
+  }
+}
+
 /** Route to the quiet speaker / switch to loudspeaker. */
 export function setSpeakerphone(on: boolean) {
   InCallManager.setForceSpeakerphoneOn(on);

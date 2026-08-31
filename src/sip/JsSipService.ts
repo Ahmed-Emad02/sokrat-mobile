@@ -48,6 +48,7 @@ export interface SipEvents {
   onCallEstablished: (call: ActiveCall) => void;
   onCallEnded: (callId: string, cause?: string) => void;
   onCallHoldChange?: (isHeld: boolean) => void;
+  onCallMuteChange?: (isMuted: boolean) => void;
 }
 
 export class JsSipService {
@@ -453,38 +454,51 @@ export class JsSipService {
     await this.hangup();
   }
 
-  /**
-   * Toggle Mute / Unmute.
-   */
   toggleMute(): boolean {
     const session = this.currentSession as { mute?: (opt: unknown) => void; unmute?: (opt: unknown) => void } | null;
-    if (!session || !this.activeCall) return false;
+    if (!this.activeCall) return false;
 
-    if (this.activeCall.isMuted) {
-      session.unmute?.({ audio: true });
-      this.activeCall.isMuted = false;
-    } else {
-      session.mute?.({ audio: true });
-      this.activeCall.isMuted = true;
+    const nextMuted = !this.activeCall.isMuted;
+    this.activeCall.isMuted = nextMuted;
+
+    if (session) {
+      if (nextMuted) {
+        session.mute?.({ audio: true });
+      } else {
+        session.unmute?.({ audio: true });
+      }
     }
-    return this.activeCall.isMuted;
+
+    if (this.localStream) {
+      try {
+        const tracks = this.localStream.getAudioTracks ? this.localStream.getAudioTracks() : [];
+        tracks.forEach((t) => {
+          t.enabled = !nextMuted;
+        });
+      } catch {}
+    }
+
+    this.events.onCallMuteChange?.(nextMuted);
+    return nextMuted;
   }
 
-  /**
-   * Toggle Hold / Unhold.
-   */
   toggleHold(): boolean {
     const session = this.currentSession as { hold?: () => void; unhold?: () => void } | null;
-    if (!session || !this.activeCall) return false;
+    if (!this.activeCall) return false;
 
-    if (this.activeCall.isHeld) {
-      session.unhold?.();
-      this.activeCall.isHeld = false;
-    } else {
-      session.hold?.();
-      this.activeCall.isHeld = true;
+    const nextHeld = !this.activeCall.isHeld;
+    this.activeCall.isHeld = nextHeld;
+
+    if (session) {
+      if (nextHeld) {
+        session.hold?.();
+      } else {
+        session.unhold?.();
+      }
     }
-    return this.activeCall.isHeld;
+
+    this.events.onCallHoldChange?.(nextHeld);
+    return nextHeld;
   }
 
   /**

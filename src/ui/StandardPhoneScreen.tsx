@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+  Alert,
   FlatList,
   Modal,
   ScrollView,
@@ -36,6 +37,8 @@ import {
   VoicemailIcon,
   UserIcon,
 } from './Icons';
+import { fetchDeviceContacts } from '../calls/nativeCallNotification';
+
 
 type Props = {
   account: SavedAccount | null;
@@ -43,6 +46,7 @@ type Props = {
   callsHistory: CallRecord[];
   contacts: Contact[];
   activeCall: ActiveCall | null;
+  isSpeakerOn?: boolean;
   onCall: (number: string) => void;
   onHangup: () => void;
   onToggleMute: () => void;
@@ -54,6 +58,7 @@ type Props = {
   onLogout: () => void;
   onClearHistory: () => void;
   onSaveContact: (contact: Contact) => void;
+  onSaveContactsBatch?: (contacts: Contact[]) => void;
   onDeleteContact: (id: string) => void;
   onToggleFavorite: (id: string) => void;
 };
@@ -81,6 +86,7 @@ export function StandardPhoneScreen({
   callsHistory,
   contacts,
   activeCall,
+  isSpeakerOn = false,
   onCall,
   onHangup,
   onToggleMute,
@@ -89,6 +95,7 @@ export function StandardPhoneScreen({
   onSendDtmf,
   onTransfer,
   onSaveAccount,
+  onSaveContactsBatch,
   onLogout,
   onClearHistory,
   onSaveContact,
@@ -145,6 +152,44 @@ export function StandardPhoneScreen({
     if (elapsed < 3600) return `${Math.floor(elapsed / 60)} min ago`;
     if (elapsed < 86400) return `${Math.floor(elapsed / 3600)} hr ago`;
     return 'Yesterday';
+  };
+  const [isSyncingContacts, setIsSyncingContacts] = useState(false);
+
+  const handleSyncContacts = async () => {
+    if (isSyncingContacts) return;
+    setIsSyncingContacts(true);
+    try {
+      const deviceContacts = await fetchDeviceContacts();
+      if (!deviceContacts || deviceContacts.length === 0) {
+        Alert.alert(
+          'No Contacts Found',
+          'No contacts were found or permission was denied. Please ensure Contacts permission is enabled in device settings.',
+        );
+        return;
+      }
+
+      const newToSave = deviceContacts.filter(
+        (dev) => !contacts.some((c) => c.extension === dev.extension)
+      );
+
+      if (onSaveContactsBatch) {
+        onSaveContactsBatch(deviceContacts);
+      } else {
+        newToSave.forEach((c) => onSaveContact(c));
+      }
+
+      Alert.alert(
+        'Contacts Synced',
+        newToSave.length > 0
+          ? `Successfully imported ${newToSave.length} new contact${newToSave.length > 1 ? 's' : ''} from your phone.`
+          : `All ${deviceContacts.length} contacts are already synchronized in your dialer.`,
+      );
+    } catch (err) {
+      console.warn('[contacts] sync error:', err);
+      Alert.alert('Sync Error', 'Failed to import contacts from phone.');
+    } finally {
+      setIsSyncingContacts(false);
+    }
   };
 
   const handleDigitPress = (d: string) => {
@@ -232,7 +277,9 @@ export function StandardPhoneScreen({
                 onPress={onToggleMute}
               >
                 {activeCall.isMuted ? <MicOffIcon size={26} color="#38bdf8" /> : <MicIcon size={26} color="#ffffff" />}
-                <Text style={styles.inCallBtnLabel}>{activeCall.isMuted ? 'Unmute' : 'Mute'}</Text>
+                <Text style={[styles.inCallBtnLabel, activeCall.isMuted && styles.inCallBtnLabelActive]}>
+                  {activeCall.isMuted ? 'Unmute' : 'Mute'}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowInCallDtmf(true)}>
@@ -240,9 +287,14 @@ export function StandardPhoneScreen({
                 <Text style={styles.inCallBtnLabel}>Keypad</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.inCallBtn} onPress={onToggleSpeaker}>
-                <SpeakerIcon size={26} color="#ffffff" />
-                <Text style={styles.inCallBtnLabel}>Speaker</Text>
+              <TouchableOpacity
+                style={[styles.inCallBtn, isSpeakerOn && styles.inCallBtnActive]}
+                onPress={onToggleSpeaker}
+              >
+                <SpeakerIcon size={26} color={isSpeakerOn ? '#38bdf8' : '#ffffff'} />
+                <Text style={[styles.inCallBtnLabel, isSpeakerOn && styles.inCallBtnLabelActive]}>
+                  {isSpeakerOn ? 'Speaker On' : 'Speaker'}
+                </Text>
               </TouchableOpacity>
             </View>
 
@@ -252,7 +304,9 @@ export function StandardPhoneScreen({
                 onPress={onToggleHold}
               >
                 {activeCall.isHeld ? <PlayIcon size={26} color="#38bdf8" /> : <PauseIcon size={26} color="#ffffff" />}
-                <Text style={styles.inCallBtnLabel}>{activeCall.isHeld ? 'Resume' : 'Hold'}</Text>
+                <Text style={[styles.inCallBtnLabel, activeCall.isHeld && styles.inCallBtnLabelActive]}>
+                  {activeCall.isHeld ? 'Resume' : 'Hold'}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowTransferModal(true)}>
@@ -383,18 +437,32 @@ export function StandardPhoneScreen({
               </TouchableOpacity>
             )}
             {activeTab === 'contacts' && (
-              <TouchableOpacity
-                style={styles.dropdownItem}
-                onPress={() => {
-                  setShowMenu(false);
-                  setShowAddContactModal(true);
-                }}
-              >
-                <View style={styles.menuItemRow}>
-                  <PlusIcon size={18} color="#10b981" />
-                  <Text style={styles.dropdownText}>Add Contact</Text>
-                </View>
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity
+                  style={styles.dropdownItem}
+                  onPress={() => {
+                    setShowMenu(false);
+                    setShowAddContactModal(true);
+                  }}
+                >
+                  <View style={styles.menuItemRow}>
+                    <PlusIcon size={18} color="#10b981" />
+                    <Text style={styles.dropdownText}>Add Contact</Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.dropdownItem}
+                  onPress={() => {
+                    setShowMenu(false);
+                    handleSyncContacts();
+                  }}
+                >
+                  <View style={styles.menuItemRow}>
+                    <ContactsIcon size={18} color="#38bdf8" />
+                    <Text style={styles.dropdownText}>Sync Phone Contacts</Text>
+                  </View>
+                </TouchableOpacity>
+              </>
             )}
             <TouchableOpacity
               style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: '#27272a' }]}
@@ -510,13 +578,25 @@ export function StandardPhoneScreen({
 
       {activeTab === 'contacts' && (
         <View style={styles.contactsContent}>
-          <TextInput
-            style={styles.contactSearchInput}
-            value={contactSearch}
-            onChangeText={setContactSearch}
-            placeholder="Search contacts…"
-            placeholderTextColor="#666"
-          />
+          <View style={styles.contactsHeaderRow}>
+            <TextInput
+              style={styles.contactSearchInputFlex}
+              value={contactSearch}
+              onChangeText={setContactSearch}
+              placeholder="Search contacts…"
+              placeholderTextColor="#666"
+            />
+            <TouchableOpacity
+              style={styles.syncContactsHeaderBtn}
+              onPress={handleSyncContacts}
+              disabled={isSyncingContacts}
+            >
+              <ContactsIcon size={18} color="#38bdf8" />
+              <Text style={styles.syncContactsHeaderBtnText}>
+                {isSyncingContacts ? 'Syncing…' : 'Import'}
+              </Text>
+            </TouchableOpacity>
+          </View>
           <FlatList
             data={contacts.filter((c) =>
               c.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
@@ -1221,6 +1301,43 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
     fontWeight: '600',
+  },
+  inCallBtnLabelActive: {
+    color: '#38bdf8',
+    fontWeight: '700',
+  },
+  contactsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  contactSearchInputFlex: {
+    flex: 1,
+    backgroundColor: '#18181b',
+    color: '#ffffff',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    fontSize: 14,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  syncContactsHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#082f49',
+    borderColor: '#0284c7',
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  syncContactsHeaderBtnText: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '700',
   },
   hangupRow: {
     alignItems: 'center',

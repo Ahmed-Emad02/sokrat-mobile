@@ -35,6 +35,7 @@ import {
   startCallManagers,
   stopCallManagers,
   setSpeakerphone,
+  setMicrophoneMute,
 } from './src/calls/incall';
 import {
   StorageService,
@@ -176,8 +177,10 @@ export default function App() {
         pendingEndUUIDRef.current = null;
         updateCallUUID(null);
         updateIncoming(null);
+        setIsSpeakerOn(false);
         dismissNativeCallNotification();
         stopCallManagers();
+
         if (currentCall) {
           const duration = currentCall.startTime
             ? Math.floor((Date.now() - currentCall.startTime) / 1000)
@@ -199,8 +202,16 @@ export default function App() {
         }
         updateActiveCall(null);
       },
-      onCallHoldChange: () => {
-        // Handled via activeCall reference
+      onCallHoldChange: (isHeld) => {
+        if (activeCallRef.current) {
+          updateActiveCall({ ...activeCallRef.current, isHeld });
+        }
+      },
+      onCallMuteChange: (isMuted) => {
+        if (activeCallRef.current) {
+          updateActiveCall({ ...activeCallRef.current, isMuted });
+        }
+        setMicrophoneMute(isMuted);
       },
     });
 
@@ -390,6 +401,18 @@ export default function App() {
     setContacts(updated);
     await StorageService.saveContacts(updated);
   };
+  const handleSaveContactsBatch = async (newContacts: Contact[]) => {
+    const existingMap = new Map(contacts.map((c) => [c.extension, c]));
+    newContacts.forEach((c) => {
+      if (!existingMap.has(c.extension)) {
+        existingMap.set(c.extension, c);
+      }
+    });
+    const updated = Array.from(existingMap.values());
+    setContacts(updated);
+    await StorageService.saveContacts(updated);
+  };
+
 
   const handleDeleteContact = async (id: string) => {
     const updated = contacts.filter((c) => c.id !== id);
@@ -454,10 +477,22 @@ export default function App() {
         callsHistory={callsHistory}
         contacts={contacts}
         activeCall={activeCall}
+        isSpeakerOn={isSpeakerOn}
         onCall={handleOutboundCall}
         onHangup={handleHangup}
-        onToggleMute={() => sipRef.current?.toggleMute()}
-        onToggleHold={() => sipRef.current?.toggleHold()}
+        onToggleMute={() => {
+          const nextMuted = sipRef.current?.toggleMute() ?? false;
+          if (activeCallRef.current) {
+            updateActiveCall({ ...activeCallRef.current, isMuted: nextMuted });
+          }
+          setMicrophoneMute(nextMuted);
+        }}
+        onToggleHold={() => {
+          const nextHeld = sipRef.current?.toggleHold() ?? false;
+          if (activeCallRef.current) {
+            updateActiveCall({ ...activeCallRef.current, isHeld: nextHeld });
+          }
+        }}
         onToggleSpeaker={() => {
           const next = !isSpeakerOn;
           setIsSpeakerOn(next);
@@ -470,6 +505,7 @@ export default function App() {
         onClearHistory={handleClearHistory}
         onSaveContact={handleSaveContact}
         onDeleteContact={handleDeleteContact}
+        onSaveContactsBatch={handleSaveContactsBatch}
         onToggleFavorite={handleToggleFavorite}
       />
     </SafeAreaProvider>
