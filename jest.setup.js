@@ -83,6 +83,30 @@ jest.mock('@react-native-firebase/messaging', () => {
   };
 });
 
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(() => Promise.resolve(null)),
+  setItem: jest.fn(() => Promise.resolve()),
+  removeItem: jest.fn(() => Promise.resolve()),
+  clear: jest.fn(() => Promise.resolve()),
+}));
+
+jest.mock('jssip', () => {
+  class WebSocketInterface {
+    constructor() {}
+  }
+  class UA {
+    constructor() {}
+    on() {}
+    start() {}
+    stop() {}
+    call() {}
+    isRegistered() { return true; }
+  }
+  return {
+    WebSocketInterface,
+    UA,
+  };
+});
 // sip.js imports browser-only APIs (WebSocketTransport reads `window.location`)
 // that don't exist in Node/Jest. Mock the few symbols we consume.
 jest.mock('sip.js', () => {

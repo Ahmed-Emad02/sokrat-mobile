@@ -1,0 +1,117 @@
+/**
+ * Sokrat Mobile Local Storage Service
+ * Persists user account, server configuration, call history, and contacts.
+ */
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+export interface SavedAccount {
+  extension: string;
+  password: string;
+  serverHost: string;
+  useTls: boolean;
+  dnd: boolean;
+  autoAnswer: boolean;
+}
+
+export interface CallRecord {
+  id: string;
+  number: string;
+  name: string;
+  direction: 'inbound' | 'outbound' | 'missed';
+  timestamp: number;
+  duration?: number;
+}
+
+export interface Contact {
+  id: string;
+  name: string;
+  extension: string;
+  favorite?: boolean;
+}
+
+const KEYS = {
+  ACCOUNT: '@sokrat_account',
+  CALLS: '@sokrat_calls_history',
+  CONTACTS: '@sokrat_contacts',
+};
+
+export const StorageService = {
+  async getAccount(): Promise<SavedAccount | null> {
+    try {
+      const data = await AsyncStorage.getItem(KEYS.ACCOUNT);
+      return data ? JSON.parse(data) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async saveAccount(account: SavedAccount): Promise<void> {
+    try {
+      await AsyncStorage.setItem(KEYS.ACCOUNT, JSON.stringify(account));
+    } catch (err) {
+      console.warn('[storage] saveAccount failed:', err);
+    }
+  },
+
+  async clearAccount(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(KEYS.ACCOUNT);
+    } catch {}
+  },
+
+  async getCallHistory(): Promise<CallRecord[]> {
+    try {
+      const data = await AsyncStorage.getItem(KEYS.CALLS);
+      return data ? JSON.parse(data) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  async addCallRecord(record: Omit<CallRecord, 'id'>): Promise<CallRecord[]> {
+    try {
+      const current = await this.getCallHistory();
+      const newRecord: CallRecord = {
+        ...record,
+        id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
+      };
+      const updated = [newRecord, ...current].slice(0, 100);
+      await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(updated));
+      return updated;
+    } catch (err) {
+      console.warn('[storage] addCallRecord failed:', err);
+      return [];
+    }
+  },
+
+  async clearCallHistory(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(KEYS.CALLS);
+    } catch {}
+  },
+
+  async getContacts(): Promise<Contact[]> {
+    try {
+      const data = await AsyncStorage.getItem(KEYS.CONTACTS);
+      if (data) return JSON.parse(data);
+      // Default sample contacts on fresh install
+      const initial: Contact[] = [
+        { id: 'c1', name: 'Support / Helpdesk', extension: '101', favorite: true },
+        { id: 'c2', name: 'Sales Line', extension: '102', favorite: true },
+        { id: 'c3', name: 'Echo Audio Test', extension: '*88', favorite: false },
+      ];
+      await AsyncStorage.setItem(KEYS.CONTACTS, JSON.stringify(initial));
+      return initial;
+    } catch {
+      return [];
+    }
+  },
+
+  async saveContacts(contacts: Contact[]): Promise<void> {
+    try {
+      await AsyncStorage.setItem(KEYS.CONTACTS, JSON.stringify(contacts));
+    } catch (err) {
+      console.warn('[storage] saveContacts failed:', err);
+    }
+  },
+};
