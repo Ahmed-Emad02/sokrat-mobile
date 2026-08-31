@@ -5,7 +5,7 @@
 import '../shims';
 import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
-import { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
+import { mediaDevices, MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import { CONFIG } from '../config';
 
 try {
@@ -203,8 +203,8 @@ export class JsSipService {
     this.activeCall = call;
 
     // Attach peerconnection remote audio track listeners
-    session.on('peerconnection', (data: { peerconnection?: unknown }) => {
-      const pc = data?.peerconnection as {
+    session.on('peerconnection', (data: unknown) => {
+      const pc = (data as { peerconnection?: unknown })?.peerconnection as {
         addEventListener?: (event: string, fn: (evt: unknown) => void) => void;
       } | undefined;
       if (pc && typeof pc.addEventListener === 'function') {
@@ -318,6 +318,36 @@ export class JsSipService {
   }
 
   /**
+   * Acquire local microphone audio stream with echo cancellation and auto gain control.
+   */
+  private async getLocalAudioStream(): Promise<MediaStream | null> {
+    try {
+      if (Platform.OS === 'android') {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          console.warn('[sip] RECORD_AUDIO permission denied');
+          return null;
+        }
+      }
+      const stream = (await mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      })) as unknown as MediaStream;
+      const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+      for (const t of tracks) {
+        t.enabled = true;
+      }
+      console.log('[sip] acquired local microphone audio stream, tracks:', tracks.length);
+      return stream;
+    } catch (err) {
+      console.warn('[sip] failed to acquire local audio stream:', err);
+      return null;
+    }
+  }
+
+  /**
    * Place an outbound call to a SIP extension or PSTN number.
    */
   async call(target: string): Promise<void> {
@@ -325,16 +355,21 @@ export class JsSipService {
       throw new Error('Softphone is not registered');
     }
 
+    const localStream = await this.getLocalAudioStream();
     const domain = this.serverHost || CONFIG.sipDomain;
     const targetUri = `sip:${target}@${domain}`;
 
-    const options = {
+    const options: Record<string, unknown> = {
       mediaConstraints: { audio: true, video: false },
       pcConfig: {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       },
       sessionTimersExpires: 120,
     };
+
+    if (localStream) {
+      options.mediaStream = localStream;
+    }
 
     try {
       this.ua.call(targetUri, options);
@@ -351,13 +386,20 @@ export class JsSipService {
     const session = this.currentSession as { answer?: (opt?: unknown) => void } | null;
     if (!session || typeof session.answer !== 'function') return false;
 
+    const localStream = await this.getLocalAudioStream();
+    const options: Record<string, unknown> = {
+      mediaConstraints: { audio: true, video: false },
+      pcConfig: {
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      },
+    };
+
+    if (localStream) {
+      options.mediaStream = localStream;
+    }
+
     try {
-      session.answer({
-        mediaConstraints: { audio: true, video: false },
-        pcConfig: {
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-        },
-      });
+      session.answer(options);
       return true;
     } catch (err) {
       console.error('[sip] answer call failed:', err);

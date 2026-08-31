@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
-import { StatusBar, StyleSheet, Platform, PermissionsAndroid } from 'react-native';
+import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert } from 'react-native';
 import { COLORS } from './src/theme';
 import {
   JsSipService,
@@ -177,6 +177,15 @@ export default function App() {
 
   // --- Actions ---
   const handleOutboundCall = async (target: string) => {
+    if (uiState !== 'registered' || !sipRef.current?.isRegistered()) {
+      Alert.alert(
+        'Not Connected',
+        'Extension is currently connecting. Please ensure TLS / WSS Protocol is OFF on local LAN and status shows Connected.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     try {
       startCallManagers();
       await sipRef.current?.call(target);
