@@ -6,6 +6,7 @@
  * It must report an incoming call here within the OS cold-start budget
  * (iOS ~5s) or iOS terminates the process.
  */
+import { Platform } from 'react-native';
 import RNCallKeep, { CONSTANTS, InitialEvents } from 'react-native-callkeep';
 
 export type CallKeepHandlers = {
@@ -39,7 +40,7 @@ const options = {
     cancelButton: 'Decline',
     okButton: 'Answer',
     additionalPermissions: [],
-    selfManaged: false,
+    selfManaged: true,
     foregroundService: {
       channelId: 'com.sokrat.voice.voip.calls',
       channelName: 'Sokrat VOICE calls',
@@ -130,6 +131,11 @@ export async function reportIncomingCall(
       'number',
       false,
     );
+    if (Platform.OS === 'android') {
+      try {
+        RNCallKeep.backToForeground();
+      } catch {}
+    }
     return true;
   } catch (err) {
     console.warn('[callkeep] display incoming call failed:', err);

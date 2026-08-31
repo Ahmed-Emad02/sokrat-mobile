@@ -258,7 +258,7 @@ export default function App() {
         const pw = acc?.password || 'sss333';
         const host = acc?.serverHost || '192.168.100.128';
         const tls = acc?.useTls || false;
-        if (!sip.isRegistered()) {
+        if (!sip.isConnectedOrConnecting()) {
           sip.connect(ext, pw, host, tls);
         }
       });

@@ -80,10 +80,20 @@ export class JsSipService {
    * Defaults to ws://<host>:8088/ws on LAN for reliable handshake without SSL cert warnings.
    */
   async connect(extension: string, password: string, host?: string, useTls = false): Promise<void> {
+    const targetHost = host || CONFIG.sipDomain;
+    if (
+      this.isConnectedOrConnecting() &&
+      this.extension === extension &&
+      this.password === password &&
+      this.serverHost === targetHost &&
+      this.useTls === useTls
+    ) {
+      return;
+    }
     this.disconnect();
     this.extension = extension;
     this.password = password;
-    this.serverHost = host || CONFIG.sipDomain;
+    this.serverHost = targetHost;
     this.useTls = useTls;
     this.setState('connecting');
     this.reconnectAttempt = 0;
@@ -550,7 +560,11 @@ export class JsSipService {
     this.setState('disconnected');
   }
 
-  isRegistered() {
+  isRegistered(): boolean {
     return this.state === 'registered';
+  }
+
+  isConnectedOrConnecting(): boolean {
+    return this.state === 'registered' || this.state === 'connecting';
   }
 }
