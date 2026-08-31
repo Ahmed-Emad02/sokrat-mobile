@@ -9,62 +9,81 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
+import { CONFIG } from '../config';
 
 type Props = {
-  onLogin: (ext: string, password: string) => void;
-  state: string; // 'connecting' | 'registered' | 'failed' | ...
-  registeredAs?: string;
+  onLogin: (ext: string, password: string, serverHost: string) => void;
+  state: string;
 };
 
-export function LoginScreen({ onLogin, state, registeredAs }: Props) {
+export function LoginScreen({ onLogin, state }: Props) {
   const [extension, setExtension] = useState('');
   const [password, setPassword] = useState('');
+  const [serverHost, setServerHost] = useState(CONFIG.sipDomain);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const submit = () => {
     if (!extension || !password) return;
-    onLogin(extension.trim(), password);
+    onLogin(extension.trim(), password, (serverHost || CONFIG.sipDomain).trim());
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.logo}>SOKRAT</Text>
       <Text style={styles.subtitle}>VOICE · Mobile</Text>
-      {registeredAs ? (
-        <>
-          <Text style={styles.registeredLine}>Signed in as ext {registeredAs}</Text>
-          <Text style={[styles.ok, { marginTop: 8 }]}>
-            {state === 'registered' ? 'Registered ✓' : 'Registered ✓'}
+
+      <View style={styles.card}>
+        <Text style={styles.label}>EXTENSION</Text>
+        <TextInput
+          style={styles.input}
+          value={extension}
+          onChangeText={setExtension}
+          placeholder="e.g. 150"
+          placeholderTextColor={COLORS.textMuted}
+          keyboardType="number-pad"
+        />
+        <Text style={styles.label}>PASSWORD</Text>
+        <TextInput
+          style={styles.input}
+          value={password}
+          onChangeText={setPassword}
+          placeholder="SIP password"
+          placeholderTextColor={COLORS.textMuted}
+          secureTextEntry
+        />
+
+        {/* Expandable PBX Server Host Config */}
+        <TouchableOpacity
+          style={styles.advancedToggle}
+          onPress={() => setShowAdvanced(!showAdvanced)}
+        >
+          <Text style={styles.advancedToggleText}>
+            {showAdvanced ? '▼ PBX Server Settings' : `▶ Server: ${serverHost || '192.168.100.128'}`}
           </Text>
-        </>
-      ) : (
-        <View style={styles.card}>
-          <Text style={styles.label}>EXTENSION</Text>
-          <TextInput
-            style={styles.input}
-            value={extension}
-            onChangeText={setExtension}
-            placeholder="e.g. 150"
-            placeholderTextColor={COLORS.textMuted}
-            keyboardType="number-pad"
-          />
-          <Text style={styles.label}>PASSWORD</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            placeholder="SIP password"
-            placeholderTextColor={COLORS.textMuted}
-            secureTextEntry
-          />
-          <TouchableOpacity style={styles.button} onPress={submit}>
-            <Text style={styles.buttonText}>
-              {state === 'connecting' ? 'REGISTERING…' : 'SIGN IN'}
-            </Text>
-          </TouchableOpacity>
-          {state === 'failed' && <Text style={styles.error}>Registration failed</Text>}
-          {state === 'registered' && <Text style={styles.ok}>Registered ✓</Text>}
-        </View>
-      )}
+        </TouchableOpacity>
+
+        {showAdvanced && (
+          <View style={styles.advancedBox}>
+            <Text style={styles.label}>PBX HOST / DOMAIN</Text>
+            <TextInput
+              style={styles.input}
+              value={serverHost}
+              onChangeText={setServerHost}
+              placeholder="192.168.100.128 or pbx.domain.com"
+              placeholderTextColor={COLORS.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </View>
+        )}
+
+        <TouchableOpacity style={styles.button} onPress={submit}>
+          <Text style={styles.buttonText}>
+            {state === 'connecting' ? 'REGISTERING…' : 'SIGN IN'}
+          </Text>
+        </TouchableOpacity>
+        {state === 'failed' && <Text style={styles.error}>Registration failed (check host & credentials)</Text>}
+      </View>
     </SafeAreaView>
   );
 }
@@ -75,16 +94,33 @@ const styles = StyleSheet.create({
   subtitle: { color: COLORS.accent, fontSize: 14, letterSpacing: 6, marginBottom: 40 },
   registeredLine: { color: COLORS.textDim, fontSize: 18, textAlign: 'center', marginBottom: 12 },
   card: { gap: 8 },
-  label: { color: COLORS.textMuted, fontSize: 11, letterSpacing: 2, marginTop: 12 },
+  label: { color: COLORS.textMuted, fontSize: 11, letterSpacing: 2, marginTop: 8 },
   input: {
     backgroundColor: COLORS.bgElevated, color: COLORS.text, borderRadius: 8,
     padding: 14, fontSize: 16, borderColor: COLORS.border, borderWidth: 1,
   },
+  advancedToggle: {
+    marginTop: 12,
+    paddingVertical: 6,
+  },
+  advancedToggleText: {
+    color: COLORS.accent,
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  advancedBox: {
+    backgroundColor: COLORS.bgElevated,
+    padding: 12,
+    borderRadius: 8,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    marginTop: 6,
+  },
   button: {
     backgroundColor: COLORS.accent, borderRadius: 8, padding: 16,
-    marginTop: 24, alignItems: 'center',
+    marginTop: 20, alignItems: 'center',
   },
   buttonText: { color: '#0f172a', fontWeight: '700', letterSpacing: 1 },
   error: { color: COLORS.danger, marginTop: 12, textAlign: 'center' },
-  ok: { color: COLORS.accent, marginTop: 12, textAlign: 'center' },
 });

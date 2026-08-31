@@ -15,9 +15,11 @@ import { initPush, bindExtension, askNotificationPermission } from './src/push/p
 import {
   setupCallKeep, reportIncomingCall, generateUUID, reportEnded, answerIncoming,
 } from './src/calls/callKit';
-import { startCallManagers, stopCallManagers } from './src/calls/incall';
+import { startCallManagers, stopCallManagers, setSpeakerphone } from './src/calls/incall';
 import { LoginScreen } from './src/ui/LoginScreen';
 import { RingingScreen } from './src/ui/RingingScreen';
+import { DialerScreen } from './src/ui/DialerScreen';
+import { CONFIG } from './src/config';
 
 export default function App() {
   console.log('[App] rendering App component');
@@ -26,6 +28,10 @@ export default function App() {
   const [account, setAccount] = useState<{ extension: string } | null>(null);
   const [incoming, setIncoming] = useState<IncomingCallInfo | null>(null);
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
+  const [activeCall, setActiveCall] = useState<{ target: string; status: 'calling' | 'active' } | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isSpeaker, setIsSpeaker] = useState(false);
+
   useEffect(() => {
     const sip = new SipService({
       onStateChange: (s) => setUiState(s),
@@ -43,10 +49,11 @@ export default function App() {
         setIncoming(null);
         stopCallManagers();
       },
-      onCallEstablished: () => {},
+      onCallEstablished: () => {
+        setActiveCall((prev) => (prev ? { ...prev, status: 'active' } : null));
+      },
     });
     sipRef.current = sip;
-
     // 1. Push listeners (PushKit/FCM) — must be first.
     initPush((payload) => {
       const info: IncomingCallInfo = {
@@ -89,12 +96,47 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleLogin = async (ext: string, password: string) => {
+  const handleLogin = async (ext: string, password: string, serverHost?: string) => {
+    if (serverHost) {
+      CONFIG.sipDomain = serverHost;
+      CONFIG.sipWss = `wss://${serverHost}:8089/ws`;
+      CONFIG.pushGateway = `http://${serverHost}:8095`;
+    }
     setAccount({ extension: ext });
     bindExtension(ext);
     await sipRef.current?.connect(ext, password);
   };
 
+  const handleLogout = () => {
+    sipRef.current?.disconnect();
+    setAccount(null);
+    setActiveCall(null);
+    setIncoming(null);
+  };
+
+  const handleOutboundCall = async (target: string) => {
+    try {
+      setActiveCall({ target, status: 'calling' });
+      startCallManagers();
+      await sipRef.current?.call(target);
+    } catch (err) {
+      console.error('[app] outbound call failed:', err);
+      setActiveCall(null);
+      stopCallManagers();
+    }
+  };
+
+  const handleHangup = async () => {
+    await sipRef.current?.hangup();
+    setActiveCall(null);
+    stopCallManagers();
+  };
+
+  const handleToggleSpeaker = () => {
+    const next = !isSpeaker;
+    setIsSpeaker(next);
+    setSpeakerphone(next);
+  };
   if (!account) {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -103,6 +145,7 @@ export default function App() {
       </SafeAreaProvider>
     );
   }
+
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <StatusBar barStyle="light-content" />
@@ -114,6 +157,7 @@ export default function App() {
             const uuid = activeCallUUID || generateUUID();
             answerIncoming(uuid);
             setIncoming(null);
+            setActiveCall({ target: incoming.callerId || incoming.callerName, status: 'active' });
             sipRef.current?.answer();
           }}
           onDecline={() => {
@@ -124,10 +168,17 @@ export default function App() {
           }}
         />
       ) : (
-        <LoginScreen
-          onLogin={handleLogin}
+        <DialerScreen
+          extension={account.extension}
           state={uiState}
-          registeredAs={account.extension}
+          onCall={handleOutboundCall}
+          onHangup={handleHangup}
+          onLogout={handleLogout}
+          activeCall={activeCall}
+          isMuted={isMuted}
+          isSpeaker={isSpeaker}
+          onToggleMute={() => setIsMuted(!isMuted)}
+          onToggleSpeaker={handleToggleSpeaker}
         />
       )}
     </SafeAreaProvider>
