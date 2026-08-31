@@ -5,11 +5,11 @@
 import React, { useEffect, useRef } from 'react';
 import {
   StyleSheet,
-  View,
   StatusBar,
   Platform,
   PermissionsAndroid,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { initPush, bindExtension, askNotificationPermission } from './src/push/pushHandler';
 import {
@@ -81,8 +81,8 @@ export default function App() {
   };
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#050507" />
       <WebView
         ref={webViewRef}
         source={{ uri: 'file:///android_asset/sokrat-voice/index.html' }}
@@ -98,7 +98,7 @@ export default function App() {
         androidLayerType="hardware"
         onMessage={handleMessage}
       />
-    </View>
+    </SafeAreaView>
   );
 }
 
