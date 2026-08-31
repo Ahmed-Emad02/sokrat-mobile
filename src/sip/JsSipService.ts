@@ -51,6 +51,7 @@ export interface SipEvents {
 export class JsSipService {
   private ua: JsSIP.UA | null = null;
   private currentSession: unknown = null;
+  private localStream: MediaStream | null = null;
   private events: SipEvents;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -207,6 +208,7 @@ export class JsSipService {
       const pc = (data as { peerconnection?: unknown })?.peerconnection as {
         addEventListener?: (event: string, fn: (evt: unknown) => void) => void;
       } | undefined;
+
       if (pc && typeof pc.addEventListener === 'function') {
         pc.addEventListener('track', (eventObj: unknown) => {
           const event = eventObj as { track?: MediaStreamTrack; streams?: MediaStream[] };
@@ -356,6 +358,7 @@ export class JsSipService {
     }
 
     const localStream = await this.getLocalAudioStream();
+    this.localStream = localStream;
     const domain = this.serverHost || CONFIG.sipDomain;
     const targetUri = `sip:${target}@${domain}`;
 
@@ -387,6 +390,7 @@ export class JsSipService {
     if (!session || typeof session.answer !== 'function') return false;
 
     const localStream = await this.getLocalAudioStream();
+    this.localStream = localStream;
     const options: Record<string, unknown> = {
       mediaConstraints: { audio: true, video: false },
       pcConfig: {
@@ -411,6 +415,15 @@ export class JsSipService {
    * Terminate/hangup active call.
    */
   async hangup(): Promise<void> {
+    if (this.localStream) {
+      try {
+        const tracks = this.localStream.getTracks ? this.localStream.getTracks() : [];
+        for (const t of tracks) {
+          t.stop();
+        }
+      } catch {}
+      this.localStream = null;
+    }
     const session = this.currentSession as { terminate?: () => void } | null;
     if (session && typeof session.terminate === 'function') {
       try {

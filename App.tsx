@@ -50,7 +50,7 @@ export default function App() {
   const [incoming, setIncoming] = useState<IncomingCallInfo | null>(null);
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
-
+  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   useEffect(() => {
     // Request Android audio/microphone and notification permissions on startup
     if (Platform.OS === 'android') {
@@ -302,8 +302,11 @@ export default function App() {
         onHangup={handleHangup}
         onToggleMute={() => sipRef.current?.toggleMute()}
         onToggleHold={() => sipRef.current?.toggleHold()}
-        onToggleSpeaker={() => setSpeakerphone(true)}
-        onSendDtmf={(d) => sipRef.current?.sendDTMF(d)}
+        onToggleSpeaker={() => {
+          const next = !isSpeakerOn;
+          setIsSpeakerOn(next);
+          setSpeakerphone(next);
+        }}
         onTransfer={(t) => sipRef.current?.blindTransfer(t)}
         onSaveAccount={handleSaveAccount}
         onLogout={handleLogout}
