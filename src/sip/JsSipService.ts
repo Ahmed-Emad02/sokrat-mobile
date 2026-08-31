@@ -100,9 +100,12 @@ export class JsSipService {
         sockets: [socket],
         uri: `sip:${extension}@${domain}`,
         password,
+        authorization_user: extension,
         register: true,
         register_expires: 120,
         session_timers: false,
+        connection_recovery_min_interval: 2,
+        connection_recovery_max_interval: 15,
       };
 
       const ua = new JsSIP.UA(configuration);
@@ -118,41 +121,52 @@ export class JsSipService {
   }
 
   private attachUaListeners(ua: JsSIP.UA) {
-    ua.on('connecting', () => this.setState('connecting'));
+    ua.on('connecting', () => {
+      console.log('[sip] connecting WebSocket...');
+      if (this.state !== 'registered') {
+        this.setState('connecting');
+      }
+    });
 
     ua.on('connected', () => {
-      console.log('[sip] WebSocket connected');
+      console.log('[sip] WebSocket connected, waiting for SIP registration...');
       this.reconnectAttempt = 0;
+      if (this.state !== 'registered') {
+        this.setState('connecting');
+      }
     });
 
     ua.on('registered', () => {
-      console.log('[sip] UA registered successfully');
+      console.log('[sip] UA registered successfully with Asterisk');
+      this.reconnectAttempt = 0;
       this.setState('registered');
     });
 
     ua.on('unregistered', () => {
       console.log('[sip] UA unregistered');
-      if (this.state !== 'disconnected') this.setState('disconnected');
+      if (this.state === 'registered') {
+        this.setState('disconnected');
+      }
     });
 
     ua.on('registrationFailed', (data: { response?: { status_code?: number }; cause?: string }) => {
       const code = data?.response?.status_code || 0;
       console.warn(`[sip] registration failed (code: ${code}, cause: ${data?.cause})`);
-      if (code === 401 || code === 403) {
+      if (code === 403) {
         this.setState('failed');
       } else {
-        this.setState('retry');
-        this.scheduleReconnect();
+        if (this.state !== 'registered') {
+          this.setState('disconnected');
+        }
       }
     });
 
     ua.on('disconnected', () => {
-      if (this.state !== 'failed' && this.state !== 'disconnected') {
-        this.setState('retry');
-        this.scheduleReconnect();
+      console.log('[sip] WebSocket disconnected');
+      if (this.state === 'registered') {
+        this.setState('disconnected');
       }
     });
-
     ua.on('newRTCSession', (data: { session: unknown; originator: string }) => {
       this.handleNewRTCSession(data.session);
     });
@@ -411,9 +425,11 @@ export class JsSipService {
     if (this.state === 'failed' || !this.extension || !this.password) return;
 
     this.reconnectAttempt++;
-    const backoff = Math.min(30, Math.pow(2, Math.min(5, this.reconnectAttempt)));
+    const backoff = Math.min(30, Math.pow(2, Math.min(4, this.reconnectAttempt)));
     this.reconnectTimer = setTimeout(() => {
-      this.connect(this.extension, this.password, this.serverHost, this.useTls).catch(() => {});
+      if (!this.ua || !this.ua.isRegistered()) {
+        this.connect(this.extension, this.password, this.serverHost, this.useTls).catch(() => {});
+      }
     }, backoff * 1000);
   }
 
