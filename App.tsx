@@ -12,7 +12,13 @@ import {
   ActiveCall,
   IncomingCallInfo,
 } from './src/sip/JsSipService';
-import { initPush, bindExtension, askNotificationPermission } from './src/push/pushHandler';
+import {
+  initPush,
+  bindExtension,
+  askNotificationPermission,
+  markIncomingCallPresented,
+  clearPendingIncomingCall,
+} from './src/push/pushHandler';
 import {
   setupCallKeep,
   reportIncomingCall,
@@ -39,6 +45,11 @@ import { RingingScreen } from './src/ui/RingingScreen';
 import { LoginScreen } from './src/ui/LoginScreen';
 export default function App() {
   const sipRef = useRef<JsSipService | null>(null);
+  const incomingRef = useRef<IncomingCallInfo | null>(null);
+  const activeCallUUIDRef = useRef<string | null>(null);
+  const activeCallRef = useRef<ActiveCall | null>(null);
+  const pendingAnswerUUIDRef = useRef<string | null>(null);
+  const pendingEndUUIDRef = useRef<string | null>(null);
 
   // App State
   const [account, setAccount] = useState<SavedAccount | null>(null);
@@ -51,6 +62,46 @@ export default function App() {
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
+
+  const updateIncoming = (value: IncomingCallInfo | null) => {
+    incomingRef.current = value;
+    setIncoming(value);
+  };
+
+  const updateCallUUID = (value: string | null) => {
+    activeCallUUIDRef.current = value;
+    setActiveCallUUID(value);
+  };
+
+  const updateActiveCall = (value: ActiveCall | null) => {
+    activeCallRef.current = value;
+    setActiveCall(value);
+  };
+
+  const answerSipCall = async (uuid: string): Promise<boolean> => {
+    const answered = await sipRef.current?.answer();
+    if (!answered) {
+      pendingAnswerUUIDRef.current = uuid;
+      return false;
+    }
+    pendingAnswerUUIDRef.current = null;
+    updateIncoming(null);
+    await clearPendingIncomingCall(uuid);
+    return true;
+  };
+
+  const endSipCall = async (uuid: string) => {
+    updateCallUUID(uuid);
+    pendingAnswerUUIDRef.current = null;
+    pendingEndUUIDRef.current = uuid;
+    updateIncoming(null);
+    await clearPendingIncomingCall(uuid);
+    if (sipRef.current?.activeCall) {
+      await sipRef.current.hangup();
+      pendingEndUUIDRef.current = null;
+    }
+    stopCallManagers();
+  };
   useEffect(() => {
     // Request Android audio/microphone and notification permissions on startup
     if (Platform.OS === 'android') {
@@ -64,42 +115,80 @@ export default function App() {
     const sip = new JsSipService({
       onStateChange: (s) => setUiState(s),
       onIncomingCall: (info) => {
-        setIncoming(info);
-        const uuid = generateUUID();
-        setActiveCallUUID(uuid);
-        reportIncomingCall(uuid, info.callerId, info.callerName || 'Incoming Call');
-        startCallManagers();
-      },
-      onCallEstablished: (call) => {
-        setActiveCall(call);
-      },
-      onCallEnded: (_id) => {
-        if (activeCallUUID) reportEnded(activeCallUUID);
-        setActiveCallUUID(null);
-        setIncoming(null);
-        stopCallManagers();
-
-        if (activeCall) {
-          const duration = activeCall.startTime
-            ? Math.floor((Date.now() - activeCall.startTime) / 1000)
-            : 0;
-          StorageService.addCallRecord({
-            number: activeCall.target,
-            name: activeCall.targetName,
-            direction: activeCall.direction,
-            timestamp: activeCall.startTime || Date.now(),
-            duration,
-          }).then(setCallsHistory);
-        } else if (incoming) {
-          StorageService.addCallRecord({
-            number: incoming.callerId,
-            name: incoming.callerName,
-            direction: 'missed',
-            timestamp: incoming.timestamp,
-          }).then(setCallsHistory);
+        const uuid = activeCallUUIDRef.current || generateUUID();
+        if (pendingEndUUIDRef.current === uuid) {
+          void sip.hangup().finally(() => {
+            pendingEndUUIDRef.current = null;
+            void clearPendingIncomingCall(uuid);
+          });
+          return;
         }
 
-        setActiveCall(null);
+        const correlatedInfo: IncomingCallInfo = {
+          ...info,
+          callId: uuid,
+          nativePresented: incomingRef.current?.nativePresented || false,
+        };
+        updateCallUUID(uuid);
+        updateIncoming(correlatedInfo);
+
+        if (!correlatedInfo.nativePresented) {
+          void reportIncomingCall(
+            uuid,
+            info.callerId,
+            info.callerName || 'Incoming Call',
+          ).then((displayed) => {
+            if (displayed) {
+              const current = incomingRef.current;
+              if (current?.callId === uuid) {
+                updateIncoming({ ...current, nativePresented: true });
+              }
+              void markIncomingCallPresented(uuid);
+            }
+          });
+        }
+
+        if (pendingAnswerUUIDRef.current === uuid) {
+          void answerSipCall(uuid);
+        }
+      },
+      onCallEstablished: (call) => {
+        updateActiveCall(call);
+        startCallManagers();
+      },
+      onCallEnded: (_id) => {
+        const uuid = activeCallUUIDRef.current;
+        const currentCall = activeCallRef.current;
+        const currentIncoming = incomingRef.current;
+        if (uuid) {
+          reportEnded(uuid);
+          void clearPendingIncomingCall(uuid);
+        }
+        pendingAnswerUUIDRef.current = null;
+        pendingEndUUIDRef.current = null;
+        updateCallUUID(null);
+        updateIncoming(null);
+        stopCallManagers();
+        if (currentCall) {
+          const duration = currentCall.startTime
+            ? Math.floor((Date.now() - currentCall.startTime) / 1000)
+            : 0;
+          StorageService.addCallRecord({
+            number: currentCall.target,
+            name: currentCall.targetName,
+            direction: currentCall.direction,
+            timestamp: currentCall.startTime || Date.now(),
+            duration,
+          }).then(setCallsHistory);
+        } else if (currentIncoming) {
+          StorageService.addCallRecord({
+            number: currentIncoming.callerId,
+            name: currentIncoming.callerName,
+            direction: 'missed',
+            timestamp: currentIncoming.timestamp,
+          }).then(setCallsHistory);
+        }
+        updateActiveCall(null);
       },
       onCallHoldChange: () => {
         // Handled via activeCall reference
@@ -133,7 +222,8 @@ export default function App() {
 
     // 3. Register Push-to-Wake Listeners (FCM)
     initPush((payload) => {
-      console.log('[push] FCM wake notification received:', payload);
+      console.log('[push] incoming call wake notification received:', payload);
+      const uuid = payload.callId || generateUUID();
       const info: IncomingCallInfo = {
         type: 'incoming-call',
         callerId: payload.callerId || '',
@@ -141,7 +231,27 @@ export default function App() {
         extension: payload.extension || '150',
         timestamp: payload.timestamp ? Number(payload.timestamp) : Date.now(),
         sipWss: payload.sipWss,
+        callId: uuid,
+        nativePresented: payload.nativePresented === '1',
       };
+
+      updateCallUUID(uuid);
+      updateIncoming(info);
+      if (!info.nativePresented) {
+        void reportIncomingCall(
+          uuid,
+          info.callerId,
+          info.callerName,
+        ).then((displayed) => {
+          if (displayed) {
+            const current = incomingRef.current;
+            if (current?.callId === uuid) {
+              updateIncoming({ ...current, nativePresented: true });
+            }
+            void markIncomingCallPresented(uuid);
+          }
+        });
+      }
 
       StorageService.getAccount().then((acc) => {
         const ext = acc?.extension || '150';
@@ -152,18 +262,15 @@ export default function App() {
           sip.connect(ext, pw, host, tls);
         }
       });
-      setIncoming(info);
     });
 
     // 4. Native CallKit / Telecom ConnectionService Handlers
     setupCallKeep({
       onAnswerCall: (uuid) => {
-        answerIncoming(uuid);
-        handleAnswer();
+        void answerSipCall(uuid);
       },
       onEndCall: (uuid) => {
-        reportEnded(uuid);
-        handleHangup();
+        void endSipCall(uuid);
       },
     });
 
@@ -190,7 +297,7 @@ export default function App() {
       startCallManagers();
       await sipRef.current?.call(target);
       if (sipRef.current?.activeCall) {
-        setActiveCall({ ...sipRef.current.activeCall });
+        updateActiveCall({ ...sipRef.current.activeCall });
       }
     } catch (err) {
       console.error('[app] outbound call failed:', err);
@@ -199,15 +306,22 @@ export default function App() {
   };
 
   const handleAnswer = async () => {
-    setIncoming(null);
-    startCallManagers();
-    await sipRef.current?.answer();
+    const uuid = activeCallUUIDRef.current;
+    if (!uuid) return;
+    answerIncoming(uuid);
+    await answerSipCall(uuid);
   };
 
   const handleHangup = async () => {
-    setIncoming(null);
-    await sipRef.current?.hangup();
-    stopCallManagers();
+    const uuid = activeCallUUIDRef.current;
+    if (uuid) {
+      await endSipCall(uuid);
+      reportEnded(uuid);
+    } else {
+      await sipRef.current?.hangup();
+      stopCallManagers();
+      updateIncoming(null);
+    }
   };
 
   const handleSaveAccount = async (newAcc: SavedAccount) => {
@@ -223,8 +337,10 @@ export default function App() {
   const handleLogout = async () => {
     sipRef.current?.disconnect();
     setAccount(null);
-    setActiveCall(null);
-    setIncoming(null);
+    updateActiveCall(null);
+    updateIncoming(null);
+    updateCallUUID(null);
+    await clearPendingIncomingCall();
     await StorageService.clearAccount();
   };
 
@@ -307,6 +423,7 @@ export default function App() {
           setIsSpeakerOn(next);
           setSpeakerphone(next);
         }}
+        onSendDtmf={(d) => sipRef.current?.sendDTMF(d)}
         onTransfer={(t) => sipRef.current?.blindTransfer(t)}
         onSaveAccount={handleSaveAccount}
         onLogout={handleLogout}

@@ -7,6 +7,7 @@
  * the push gateway on login / token refresh.
  */
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getMessaging,
   setBackgroundMessageHandler,
@@ -15,6 +16,7 @@ import {
   onTokenRefresh,
   requestPermission,
 } from '@react-native-firebase/messaging';
+import { generateUUID, reportIncomingCall } from '../calls/callKit';
 import { CONFIG } from '../config';
 export type PushPayload = {
   type?: string;
@@ -24,33 +26,116 @@ export type PushPayload = {
   extension?: string;
   timestamp?: string;
   sipWss?: string;
+  callId?: string;
+  nativePresented?: '1';
 };
 
 type PushHandler = (payload: PushPayload) => void;
+
+const PENDING_CALL_KEY = '@sokrat/pending-incoming-call';
+const MAX_PENDING_AGE_MS = 60_000;
 
 let onIncoming: PushHandler | null = null;
 let currentExtension = '';
 let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
 let pendingAndroidPayload: PushPayload | null = null;
+let lastDeliveredCallId = '';
 
-// ---------- Android: FCM headless/background handler ----------
-// Registered at MODULE scope (not inside App/useEffect) because when the app
-// is in the background or killed, Android runs this in a headless JS instance
-// with NO UI mounted. If we only registered inside initPush() (which runs from
-// App's useEffect), a background data message would never be handled.
+function normalizeIncomingPayload(data: PushPayload): PushPayload {
+  return {
+    ...data,
+    type: 'incoming-call',
+    msg: 'incoming-call',
+    callId: data.callId || generateUUID(),
+    timestamp: data.timestamp || String(Date.now()),
+  };
+}
+
+function isFresh(payload: PushPayload): boolean {
+  const timestamp = Number(payload.timestamp || 0);
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= MAX_PENDING_AGE_MS;
+}
+
+async function persistPendingCall(payload: PushPayload): Promise<void> {
+  await AsyncStorage.setItem(PENDING_CALL_KEY, JSON.stringify(payload));
+}
+
+async function loadPendingCall(): Promise<PushPayload | null> {
+  try {
+    const encoded = await AsyncStorage.getItem(PENDING_CALL_KEY);
+    if (!encoded) return null;
+    const payload = JSON.parse(encoded) as PushPayload;
+    if (!payload.callId || !isFresh(payload)) {
+      await AsyncStorage.removeItem(PENDING_CALL_KEY);
+      return null;
+    }
+    return payload;
+  } catch (err) {
+    console.warn('[push] failed to load pending call:', err);
+    return null;
+  }
+}
+
+function deliverIncomingCall(payload: PushPayload) {
+  if (payload.callId && payload.callId === lastDeliveredCallId) return;
+  lastDeliveredCallId = payload.callId || '';
+  if (onIncoming) {
+    onIncoming(payload);
+  } else {
+    pendingAndroidPayload = payload;
+  }
+}
+
+async function presentNativeIncomingCall(payload: PushPayload): Promise<PushPayload> {
+  if (payload.nativePresented === '1') return payload;
+  const displayed = await reportIncomingCall(
+    payload.callId || generateUUID(),
+    payload.callerId || 'Unknown',
+    payload.callerName || payload.callerId || 'Incoming Call',
+  );
+  if (!displayed) return payload;
+  const presented: PushPayload = { ...payload, nativePresented: '1' };
+  await persistPendingCall(presented);
+  return presented;
+}
+
+export async function markIncomingCallPresented(callId: string): Promise<void> {
+  const pending = await loadPendingCall();
+  if (!pending || pending.callId !== callId || pending.nativePresented === '1') return;
+  await persistPendingCall({ ...pending, nativePresented: '1' });
+}
+
+export async function clearPendingIncomingCall(callId?: string): Promise<void> {
+  if (callId) {
+    const pending = await loadPendingCall();
+    if (pending && pending.callId !== callId) return;
+  }
+  await AsyncStorage.removeItem(PENDING_CALL_KEY);
+  if (!callId || pendingAndroidPayload?.callId === callId) {
+    pendingAndroidPayload = null;
+  }
+}
+
+// Android invokes this module-scope handler in a headless JS runtime when the
+// app is backgrounded or killed. It owns native call presentation but never
+// creates a second SIP user agent or opens audio.
 if (Platform.OS === 'android') {
   try {
     const messaging = getMessaging();
     setBackgroundMessageHandler(messaging, async (remoteMessage) => {
       const data = (remoteMessage?.data || {}) as PushPayload;
       if (data.msg !== 'incoming-call') return;
-      if (onIncoming) {
-        onIncoming({ ...data, type: 'incoming-call' });
+
+      let payload = normalizeIncomingPayload(data);
+      const persisted = await loadPendingCall();
+      if (persisted && persisted.callId === payload.callId) {
+        payload = persisted;
       } else {
-        // App not yet booted (cold start). Queue it; initPush() flushes it.
-        pendingAndroidPayload = { ...data, type: 'incoming-call' };
+        await persistPendingCall(payload);
       }
+      payload = await presentNativeIncomingCall(payload);
+      deliverIncomingCall(payload);
     });
   } catch (err) {
     console.warn('[push] FCM background handler init failed:', err);
@@ -80,12 +165,7 @@ export function initPush(onIncomingCall: PushHandler) {
     VoipPushNotification.addEventListener('notification', (payload: { data?: PushPayload }) => {
       console.log('[push] voip notification', JSON.stringify(payload));
       const data: PushPayload = payload?.data || (payload as unknown as PushPayload) || {};
-      if (onIncoming) {
-        onIncoming({
-          ...data,
-          type: data.msg || 'incoming-call',
-        });
-      }
+      deliverIncomingCall(normalizeIncomingPayload(data));
     });
 
     // iOS non-VoIP APNs fallback token
@@ -107,21 +187,22 @@ export function initPush(onIncomingCall: PushHandler) {
       });
       onTokenRefresh(messaging, handleToken);
 
-      // Listen for foreground FCM high-priority call messages
+      // Listen for foreground FCM high-priority call messages.
       onMessage(messaging, async (remoteMessage) => {
         console.log('[push] FCM foreground message received:', remoteMessage);
         const data = (remoteMessage?.data || {}) as PushPayload;
-        if (data.msg === 'incoming-call' && onIncoming) {
-          onIncoming({ ...data, type: 'incoming-call' });
-        }
+        if (data.msg !== 'incoming-call') return;
+        const payload = normalizeIncomingPayload(data);
+        await persistPendingCall(payload);
+        deliverIncomingCall(payload);
       });
 
-      // Flush a background/cold-start payload that arrived before UI booted.
-      if (pendingAndroidPayload) {
-        const p = pendingAndroidPayload;
+      // Flush a cold-start payload from either this runtime or AsyncStorage.
+      void (async () => {
+        const payload = pendingAndroidPayload || await loadPendingCall();
         pendingAndroidPayload = null;
-        onIncoming && onIncoming(p);
-      }
+        if (payload) deliverIncomingCall(payload);
+      })();
     } catch (err) {
       console.warn('[push] FCM init error:', err);
     }

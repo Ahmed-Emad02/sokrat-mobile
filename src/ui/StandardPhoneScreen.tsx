@@ -8,6 +8,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -269,35 +270,39 @@ export function StandardPhoneScreen({
         </View>
 
         {/* Transfer Dialog */}
-        <Modal visible={showTransferModal} transparent animationType="fade">
-          <View style={styles.modalBackdrop}>
-            <View style={styles.dialogCard}>
-              <Text style={styles.dialogTitle}>Transfer Call</Text>
-              <TextInput
-                style={styles.dialogInput}
-                value={transferTarget}
-                onChangeText={setTransferTarget}
-                placeholder="Extension (e.g. 102)"
-                placeholderTextColor="#666"
-                keyboardType="phone-pad"
-                autoFocus
-              />
-              <View style={styles.dialogActions}>
-                <TouchableOpacity onPress={() => setShowTransferModal(false)} style={styles.dialogCancelBtn}>
-                  <Text style={styles.dialogCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => {
-                    if (transferTarget.trim()) onTransfer(transferTarget.trim());
-                    setShowTransferModal(false);
-                  }}
-                  style={styles.dialogSubmitBtn}
-                >
-                  <Text style={styles.dialogSubmitText}>Transfer</Text>
-                </TouchableOpacity>
-              </View>
+        <Modal visible={showTransferModal} transparent animationType="fade" onRequestClose={() => setShowTransferModal(false)}>
+          <TouchableWithoutFeedback onPress={() => setShowTransferModal(false)}>
+            <View style={styles.modalBackdrop}>
+              <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+                <View style={styles.dialogCard}>
+                  <Text style={styles.dialogTitle}>Transfer Call</Text>
+                  <TextInput
+                    style={styles.dialogInput}
+                    value={transferTarget}
+                    onChangeText={setTransferTarget}
+                    placeholder="Extension (e.g. 102)"
+                    placeholderTextColor="#666"
+                    keyboardType="phone-pad"
+                    autoFocus
+                  />
+                  <View style={styles.dialogActions}>
+                    <TouchableOpacity onPress={() => setShowTransferModal(false)} style={styles.dialogCancelBtn}>
+                      <Text style={styles.dialogCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (transferTarget.trim()) onTransfer(transferTarget.trim());
+                        setShowTransferModal(false);
+                      }}
+                      style={styles.dialogSubmitBtn}
+                    >
+                      <Text style={styles.dialogSubmitText}>Transfer</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </TouchableWithoutFeedback>
             </View>
-          </View>
+          </TouchableWithoutFeedback>
         </Modal>
       </SafeAreaView>
     );
@@ -344,59 +349,64 @@ export function StandardPhoneScreen({
         </TouchableOpacity>
       </View>
 
-      {/* 3-Dots Dropdown Menu */}
+      {/* 3-Dots Dropdown Menu & Click-Outside Dismiss Backdrop */}
       {showMenu && (
-        <View style={styles.dropdownMenu}>
-          <TouchableOpacity
-            style={styles.dropdownItem}
-            onPress={() => {
-              setShowMenu(false);
-              setShowSettingsModal(true);
-            }}
-          >
-            <View style={styles.menuItemRow}>
-              <SettingsIcon size={18} color="#38bdf8" />
-              <Text style={styles.dropdownText}>Settings & PBX Host</Text>
-            </View>
-          </TouchableOpacity>
-          {activeTab === 'phone' && (
+        <>
+          <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
+            <View style={styles.menuBackdrop} />
+          </TouchableWithoutFeedback>
+          <View style={styles.dropdownMenu}>
             <TouchableOpacity
               style={styles.dropdownItem}
               onPress={() => {
                 setShowMenu(false);
-                onClearHistory();
+                setShowSettingsModal(true);
               }}
             >
               <View style={styles.menuItemRow}>
-                <TrashIcon size={18} color="#a1a1aa" />
-                <Text style={styles.dropdownText}>Clear History</Text>
+                <SettingsIcon size={18} color="#38bdf8" />
+                <Text style={styles.dropdownText}>Settings & PBX Host</Text>
               </View>
             </TouchableOpacity>
-          )}
-          {activeTab === 'contacts' && (
+            {activeTab === 'phone' && (
+              <TouchableOpacity
+                style={styles.dropdownItem}
+                onPress={() => {
+                  setShowMenu(false);
+                  onClearHistory();
+                }}
+              >
+                <View style={styles.menuItemRow}>
+                  <TrashIcon size={18} color="#a1a1aa" />
+                  <Text style={styles.dropdownText}>Clear History</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+            {activeTab === 'contacts' && (
+              <TouchableOpacity
+                style={styles.dropdownItem}
+                onPress={() => {
+                  setShowMenu(false);
+                  setShowAddContactModal(true);
+                }}
+              >
+                <View style={styles.menuItemRow}>
+                  <PlusIcon size={18} color="#10b981" />
+                  <Text style={styles.dropdownText}>Add Contact</Text>
+                </View>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
-              style={styles.dropdownItem}
-              onPress={() => {
-                setShowMenu(false);
-                setShowAddContactModal(true);
-              }}
+              style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: '#27272a' }]}
+              onPress={handleSignOutClick}
             >
               <View style={styles.menuItemRow}>
-                <PlusIcon size={18} color="#10b981" />
-                <Text style={styles.dropdownText}>Add Contact</Text>
+                <LogoutIcon size={18} color="#ef4444" />
+                <Text style={[styles.dropdownText, { color: '#ef4444' }]}>Sign Out</Text>
               </View>
             </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: '#27272a' }]}
-            onPress={handleSignOutClick}
-          >
-            <View style={styles.menuItemRow}>
-              <LogoutIcon size={18} color="#ef4444" />
-              <Text style={[styles.dropdownText, { color: '#ef4444' }]}>Sign Out</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
+          </View>
+        </>
       )}
 
       {/* Main Tab Views */}
@@ -586,122 +596,131 @@ export function StandardPhoneScreen({
         </TouchableOpacity>
       </View>
 
-      {/* Settings Modal (Vertically & Horizontally Centered) */}
+      {/* Settings Modal (Click-Outside to Dismiss) */}
       <Modal visible={showSettingsModal} transparent animationType="fade" onRequestClose={() => setShowSettingsModal(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.settingsCardWrapper}>
-            <ScrollView
-              style={styles.settingsScroll}
-              contentContainerStyle={styles.settingsCard}
-              showsVerticalScrollIndicator={false}
-            >
-              <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
+        <TouchableWithoutFeedback onPress={() => setShowSettingsModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+              <View style={styles.settingsCardWrapper}>
+                <ScrollView
+                  style={styles.settingsScroll}
+                  contentContainerStyle={styles.settingsCard}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
 
-              <Text style={styles.fieldLabel}>SIP EXTENSION</Text>
-              <TextInput
-                style={styles.settingsInput}
-                value={editExt}
-                onChangeText={setEditExt}
-                placeholder="e.g. 150"
-                placeholderTextColor="#666"
-                keyboardType="number-pad"
-              />
+                  <Text style={styles.fieldLabel}>SIP EXTENSION</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editExt}
+                    onChangeText={setEditExt}
+                    placeholder="e.g. 150"
+                    placeholderTextColor="#666"
+                    keyboardType="number-pad"
+                  />
 
-              <Text style={styles.fieldLabel}>SIP PASSWORD</Text>
-              <TextInput
-                style={styles.settingsInput}
-                value={editPass}
-                onChangeText={setEditPass}
-                placeholder="SIP Secret (e.g. sss333)"
-                placeholderTextColor="#666"
-                secureTextEntry
-              />
+                  <Text style={styles.fieldLabel}>SIP PASSWORD</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editPass}
+                    onChangeText={setEditPass}
+                    placeholder="SIP Secret (e.g. sss333)"
+                    placeholderTextColor="#666"
+                    secureTextEntry
+                  />
 
-              <Text style={styles.fieldLabel}>PBX SERVER HOST / IP</Text>
-              <TextInput
-                style={styles.settingsInput}
-                value={editHost}
-                onChangeText={setEditHost}
-                placeholder="192.168.100.128"
-                placeholderTextColor="#666"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+                  <Text style={styles.fieldLabel}>PBX SERVER HOST / IP</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editHost}
+                    onChangeText={setEditHost}
+                    placeholder="192.168.100.128"
+                    placeholderTextColor="#666"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
 
-              <View style={styles.switchRow}>
-                <View>
-                  <Text style={styles.switchLabel}>TLS / WSS Protocol</Text>
-                  <Text style={styles.switchSub}>{editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}</Text>
-                </View>
-                <Switch value={editTls} onValueChange={setEditTls} thumbColor={editTls ? '#38bdf8' : '#555'} />
+                  <View style={styles.switchRow}>
+                    <View>
+                      <Text style={styles.switchLabel}>TLS / WSS Protocol</Text>
+                      <Text style={styles.switchSub}>{editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}</Text>
+                    </View>
+                    <Switch value={editTls} onValueChange={setEditTls} thumbColor={editTls ? '#38bdf8' : '#555'} />
+                  </View>
+
+                  <View style={styles.switchRow}>
+                    <View>
+                      <Text style={styles.switchLabel}>Do Not Disturb (DND)</Text>
+                      <Text style={styles.switchSub}>Auto-reject incoming calls</Text>
+                    </View>
+                    <Switch value={editDnd} onValueChange={setEditDnd} thumbColor={editDnd ? '#ef4444' : '#555'} />
+                  </View>
+
+                  <View style={styles.switchRow}>
+                    <View>
+                      <Text style={styles.switchLabel}>Auto-Answer</Text>
+                      <Text style={styles.switchSub}>Auto-accept incoming calls</Text>
+                    </View>
+                    <Switch value={editAuto} onValueChange={setEditAuto} thumbColor={editAuto ? '#10b981' : '#555'} />
+                  </View>
+
+                  <View style={styles.settingsActions}>
+                    {account ? (
+                      <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
+                        <Text style={styles.dialogCancelText}>Cancel</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity onPress={handleSaveSettings} style={styles.settingsSaveBtn}>
+                      <Text style={styles.settingsSaveText}>Save & Connect</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
               </View>
-
-              <View style={styles.switchRow}>
-                <View>
-                  <Text style={styles.switchLabel}>Do Not Disturb (DND)</Text>
-                  <Text style={styles.switchSub}>Auto-reject incoming calls</Text>
-                </View>
-                <Switch value={editDnd} onValueChange={setEditDnd} thumbColor={editDnd ? '#ef4444' : '#555'} />
-              </View>
-
-              <View style={styles.switchRow}>
-                <View>
-                  <Text style={styles.switchLabel}>Auto-Answer</Text>
-                  <Text style={styles.switchSub}>Auto-accept incoming calls</Text>
-                </View>
-                <Switch value={editAuto} onValueChange={setEditAuto} thumbColor={editAuto ? '#10b981' : '#555'} />
-              </View>
-
-              <View style={styles.settingsActions}>
-                {account ? (
-                  <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
-                    <Text style={styles.dialogCancelText}>Cancel</Text>
-                  </TouchableOpacity>
-                ) : null}
-                <TouchableOpacity onPress={handleSaveSettings} style={styles.settingsSaveBtn}>
-                  <Text style={styles.settingsSaveText}>Save & Connect</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
+            </TouchableWithoutFeedback>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </Modal>
 
-      {/* Add Contact Modal */}
+      {/* Add Contact Modal (Click-Outside to Dismiss) */}
       <Modal visible={showAddContactModal} transparent animationType="fade" onRequestClose={() => setShowAddContactModal(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.dialogCard}>
-            <Text style={styles.dialogTitle}>Add New Contact</Text>
+        <TouchableWithoutFeedback onPress={() => setShowAddContactModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+              <View style={styles.dialogCard}>
+                <Text style={styles.dialogTitle}>Add New Contact</Text>
 
-            <Text style={styles.fieldLabel}>NAME</Text>
-            <TextInput
-              style={styles.dialogInput}
-              value={newContactName}
-              onChangeText={setNewContactName}
-              placeholder="e.g. Support"
-              placeholderTextColor="#666"
-            />
+                <Text style={styles.fieldLabel}>NAME</Text>
+                <TextInput
+                  style={styles.dialogInput}
+                  value={newContactName}
+                  onChangeText={setNewContactName}
+                  placeholder="e.g. Support"
+                  placeholderTextColor="#666"
+                />
 
-            <Text style={styles.fieldLabel}>EXTENSION / PHONE</Text>
-            <TextInput
-              style={styles.dialogInput}
-              value={newContactNumber}
-              onChangeText={setNewContactNumber}
-              placeholder="e.g. 101"
-              placeholderTextColor="#666"
-              keyboardType="phone-pad"
-            />
+                <Text style={styles.fieldLabel}>EXTENSION / PHONE</Text>
+                <TextInput
+                  style={styles.dialogInput}
+                  value={newContactNumber}
+                  onChangeText={setNewContactNumber}
+                  placeholder="e.g. 101"
+                  placeholderTextColor="#666"
+                  keyboardType="phone-pad"
+                />
 
-            <View style={styles.dialogActions}>
-              <TouchableOpacity onPress={() => setShowAddContactModal(false)} style={styles.dialogCancelBtn}>
-                <Text style={styles.dialogCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleCreateContact} style={styles.dialogSubmitBtn}>
-                <Text style={styles.dialogSubmitText}>Save</Text>
-              </TouchableOpacity>
-            </View>
+                <View style={styles.dialogActions}>
+                  <TouchableOpacity onPress={() => setShowAddContactModal(false)} style={styles.dialogCancelBtn}>
+                    <Text style={styles.dialogCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleCreateContact} style={styles.dialogSubmitBtn}>
+                    <Text style={styles.dialogSubmitText}>Save</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </Modal>
     </SafeAreaView>
   );
@@ -759,6 +778,14 @@ const styles = StyleSheet.create({
   },
   menuBtn: {
     padding: 8,
+  },
+  menuBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 998,
   },
   dropdownMenu: {
     position: 'absolute',

@@ -38,6 +38,8 @@ export interface IncomingCallInfo {
   extension: string;
   timestamp: number;
   sipWss?: string;
+  callId?: string;
+  nativePresented?: boolean;
 }
 
 export interface SipEvents {
