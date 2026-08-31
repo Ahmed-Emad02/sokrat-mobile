@@ -103,16 +103,9 @@ export default function App() {
     pendingEndUUIDRef.current = uuid;
     updateIncoming(null);
     await clearPendingIncomingCall(uuid);
-    if (sipRef.current?.activeCall) {
-      if (sipRef.current.activeCall.status === 'ringing' && sipRef.current.activeCall.direction === 'inbound') {
-        await sipRef.current.decline();
-      } else {
-        await sipRef.current.hangup();
-      }
-      pendingEndUUIDRef.current = null;
-    } else {
+    try {
       await sipRef.current?.decline();
-    }
+    } catch {}
     dismissNativeCallNotification();
     stopCallManagers();
   };
@@ -129,15 +122,16 @@ export default function App() {
     const sip = new JsSipService({
       onStateChange: (s) => setUiState(s),
       onIncomingCall: (info) => {
-        const uuid = activeCallUUIDRef.current || generateUUID();
-        if (pendingEndUUIDRef.current === uuid) {
+        if (pendingEndUUIDRef.current) {
+          const declineTarget = pendingEndUUIDRef.current;
+          pendingEndUUIDRef.current = null;
           void sip.decline().finally(() => {
-            pendingEndUUIDRef.current = null;
-            void clearPendingIncomingCall(uuid);
+            void clearPendingIncomingCall(declineTarget);
           });
           return;
         }
 
+        const uuid = activeCallUUIDRef.current || generateUUID();
         const correlatedInfo: IncomingCallInfo = {
           ...info,
           callId: uuid,
@@ -162,8 +156,10 @@ export default function App() {
           });
         }
 
-        if (pendingAnswerUUIDRef.current === uuid) {
-          void answerSipCall(uuid);
+        if (pendingAnswerUUIDRef.current) {
+          const answerTarget = pendingAnswerUUIDRef.current;
+          pendingAnswerUUIDRef.current = null;
+          void answerSipCall(answerTarget);
         }
       },
       onCallEstablished: (call) => {

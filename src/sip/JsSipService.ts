@@ -338,12 +338,16 @@ export class JsSipService {
   private async getLocalAudioStream(): Promise<MediaStream | null> {
     try {
       if (Platform.OS === 'android') {
-        const granted = await PermissionsAndroid.request(
+        const hasPerm = await PermissionsAndroid.check(
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
         );
-        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          console.warn('[sip] RECORD_AUDIO permission denied');
-          return null;
+        if (!hasPerm) {
+          const granted = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
+          );
+          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            console.warn('[sip] RECORD_AUDIO permission denied');
+          }
         }
       }
       const stream = (await mediaDevices.getUserMedia({
@@ -351,9 +355,9 @@ export class JsSipService {
         video: false,
       })) as unknown as MediaStream;
       const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
-      for (const t of tracks) {
+      tracks.forEach((t) => {
         t.enabled = true;
-      }
+      });
       console.log('[sip] acquired local microphone audio stream, tracks:', tracks.length);
       return stream;
     } catch (err) {
@@ -402,8 +406,12 @@ export class JsSipService {
     const session = this.currentSession as { answer?: (opt?: unknown) => void } | null;
     if (!session || typeof session.answer !== 'function') return false;
 
-    const localStream = await this.getLocalAudioStream();
-    this.localStream = localStream;
+    let localStream: MediaStream | null = null;
+    try {
+      localStream = await this.getLocalAudioStream();
+      this.localStream = localStream;
+    } catch {}
+
     const options: Record<string, unknown> = {
       mediaConstraints: { audio: true, video: false },
       pcConfig: {
