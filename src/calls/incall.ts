@@ -9,6 +9,7 @@ import { Platform } from 'react-native';
 
 export function startCallManagers() {
   InCallManager.start({ media: 'audio' });
+  InCallManager.setMicrophoneMute(false);
   InCallManager.setForceSpeakerphoneOn(true);
   InCallManager.setKeepScreenOn(true);
 }
