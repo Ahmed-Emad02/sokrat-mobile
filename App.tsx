@@ -27,6 +27,11 @@ import {
   answerIncoming,
 } from './src/calls/callKit';
 import {
+  dismissNativeCallNotification,
+  getInitialNativeCallAction,
+  subscribeNativeCallAction,
+} from './src/calls/nativeCallNotification';
+import {
   startCallManagers,
   stopCallManagers,
   setSpeakerphone,
@@ -87,6 +92,7 @@ export default function App() {
     pendingAnswerUUIDRef.current = null;
     updateIncoming(null);
     await clearPendingIncomingCall(uuid);
+    dismissNativeCallNotification();
     return true;
   };
 
@@ -100,6 +106,7 @@ export default function App() {
       await sipRef.current.hangup();
       pendingEndUUIDRef.current = null;
     }
+    dismissNativeCallNotification();
     stopCallManagers();
   };
   useEffect(() => {
@@ -154,6 +161,7 @@ export default function App() {
       },
       onCallEstablished: (call) => {
         updateActiveCall(call);
+        dismissNativeCallNotification();
         startCallManagers();
       },
       onCallEnded: (_id) => {
@@ -168,6 +176,7 @@ export default function App() {
         pendingEndUUIDRef.current = null;
         updateCallUUID(null);
         updateIncoming(null);
+        dismissNativeCallNotification();
         stopCallManagers();
         if (currentCall) {
           const duration = currentCall.startTime
@@ -274,10 +283,41 @@ export default function App() {
       },
     });
 
+    // 5. Native Android Call Notification Action Handling
+    getInitialNativeCallAction().then((initial) => {
+      if (!initial) return;
+      const uuid = initial.callId || generateUUID();
+      const info: IncomingCallInfo = {
+        type: 'incoming-call',
+        callerId: initial.callerId || '',
+        callerName: initial.callerName || 'Incoming Call',
+        extension: initial.extension || '150',
+        timestamp: initial.timestamp ? Number(initial.timestamp) : Date.now(),
+        callId: uuid,
+        nativePresented: true,
+      };
+      updateCallUUID(uuid);
+      updateIncoming(info);
+
+      if (initial.action === 'ANSWER') {
+        void answerSipCall(uuid);
+      }
+    });
+
+    const unsubNativeAction = subscribeNativeCallAction((payload) => {
+      const uuid = payload.callId || activeCallUUIDRef.current || generateUUID();
+      if (payload.action === 'ANSWER') {
+        void answerSipCall(uuid);
+      } else if (payload.action === 'DECLINE') {
+        void endSipCall(uuid);
+      }
+    });
+
     askNotificationPermission();
 
     return () => {
       sip.disconnect();
+      unsubNativeAction();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

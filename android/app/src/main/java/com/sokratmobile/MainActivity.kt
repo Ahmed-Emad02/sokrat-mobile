@@ -1,5 +1,6 @@
 package com.sokratmobile
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -21,8 +22,14 @@ class MainActivity : ReactActivity() {
       WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
       WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
     )
+    CallNotificationModule.onIntentReceived(intent)
   }
 
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    CallNotificationModule.onIntentReceived(intent)
+  }
   /**
    * Returns the name of the main component registered from JavaScript. This is used to schedule
    * rendering of the component.
