@@ -106,7 +106,7 @@ export function StandardPhoneScreen({
   const [editExt, setEditExt] = useState(account?.extension || '150');
   const [editPass, setEditPass] = useState(account?.password || 'sss333');
   const [editHost, setEditHost] = useState(account?.serverHost || '192.168.100.128');
-  const [editTls, setEditTls] = useState(account?.useTls || false);
+  const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
 

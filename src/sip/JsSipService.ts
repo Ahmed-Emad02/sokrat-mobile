@@ -3,10 +3,14 @@
  * Ported directly from Sokrat Voice softphone-core.js (JsSIP v3 + react-native-webrtc).
  */
 import '../shims';
+import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
-import { mediaDevices, MediaStream, MediaStreamTrack } from 'react-native-webrtc';
+import { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import { CONFIG } from '../config';
 
+try {
+  JsSIP.debug.enable('JsSIP:*');
+} catch {}
 export type SipState =
   | 'disconnected'
   | 'connecting'
@@ -80,13 +84,9 @@ export class JsSipService {
     this.useTls = useTls;
     this.setState('connecting');
     this.reconnectAttempt = 0;
-
-    try {
-      await mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      console.warn('[sip] microphone priming warning:', err);
+    if (Platform.OS === 'android') {
+      PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).catch(() => {});
     }
-
     const domain = this.serverHost;
     const protocol = this.useTls ? 'wss' : 'ws';
     const port = this.useTls ? 8089 : 8088;
@@ -201,6 +201,32 @@ export class JsSipService {
     };
 
     this.activeCall = call;
+
+    // Attach peerconnection remote audio track listeners
+    session.on('peerconnection', (data: { peerconnection?: unknown }) => {
+      const pc = data?.peerconnection as {
+        addEventListener?: (event: string, fn: (evt: unknown) => void) => void;
+      } | undefined;
+      if (pc && typeof pc.addEventListener === 'function') {
+        pc.addEventListener('track', (eventObj: unknown) => {
+          const event = eventObj as { track?: MediaStreamTrack; streams?: MediaStream[] };
+          console.log('[sip] remote audio track received:', event?.track);
+          if (event?.track) {
+            event.track.enabled = true;
+          }
+          if (event?.streams && event.streams[0] && this.activeCall) {
+            this.activeCall.remoteStream = event.streams[0];
+          }
+        });
+        pc.addEventListener('addstream', (eventObj: unknown) => {
+          const event = eventObj as { stream?: MediaStream };
+          console.log('[sip] remote stream added:', event?.stream);
+          if (event?.stream && this.activeCall) {
+            this.activeCall.remoteStream = event.stream;
+          }
+        });
+      }
+    });
 
     // Attach session-level listeners
     session.on('progress', () => {

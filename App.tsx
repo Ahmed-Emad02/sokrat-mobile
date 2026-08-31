@@ -110,13 +110,13 @@ export default function App() {
 
     // 2. Load stored account or auto-initialize ext 150 / sss333 / 192.168.100.128
     StorageService.getAccount().then((acc) => {
-      const activeAcc: SavedAccount = acc || {
-        extension: '150',
-        password: 'sss333',
-        serverHost: '192.168.100.128',
+      const activeAcc: SavedAccount = {
+        extension: acc?.extension || '150',
+        password: acc?.password || 'sss333',
+        serverHost: acc?.serverHost || '192.168.100.128',
         useTls: false,
-        dnd: false,
-        autoAnswer: false,
+        dnd: acc?.dnd || false,
+        autoAnswer: acc?.autoAnswer || false,
       };
 
       setAccount(activeAcc);
@@ -180,6 +180,9 @@ export default function App() {
     try {
       startCallManagers();
       await sipRef.current?.call(target);
+      if (sipRef.current?.activeCall) {
+        setActiveCall({ ...sipRef.current.activeCall });
+      }
     } catch (err) {
       console.error('[app] outbound call failed:', err);
       stopCallManagers();
@@ -263,7 +266,7 @@ export default function App() {
   }
 
   // 2. Incoming Call Overlay
-  if (incoming && !activeCall) {
+  if (incoming) {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
         <StatusBar barStyle="light-content" />

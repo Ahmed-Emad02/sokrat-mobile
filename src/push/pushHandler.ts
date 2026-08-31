@@ -10,6 +10,7 @@ import { Platform } from 'react-native';
 import {
   getMessaging,
   setBackgroundMessageHandler,
+  onMessage,
   getToken,
   onTokenRefresh,
   requestPermission,
@@ -105,6 +106,15 @@ export function initPush(onIncomingCall: PushHandler) {
         console.warn('[push] getToken error:', err);
       });
       onTokenRefresh(messaging, handleToken);
+
+      // Listen for foreground FCM high-priority call messages
+      onMessage(messaging, async (remoteMessage) => {
+        console.log('[push] FCM foreground message received:', remoteMessage);
+        const data = (remoteMessage?.data || {}) as PushPayload;
+        if (data.msg === 'incoming-call' && onIncoming) {
+          onIncoming({ ...data, type: 'incoming-call' });
+        }
+      });
 
       // Flush a background/cold-start payload that arrived before UI booted.
       if (pendingAndroidPayload) {
