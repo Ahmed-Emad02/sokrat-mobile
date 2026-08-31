@@ -71,6 +71,18 @@ jest.mock('@react-native-community/push-notification-ios', () => {
   };
 });
 
+jest.mock('@react-native-firebase/messaging', () => {
+  const noop = () => {};
+  return {
+    getMessaging: () => ({}),
+    setBackgroundMessageHandler: noop,
+    getToken: jest.fn(() => Promise.resolve('mock-token')),
+    onTokenRefresh: noop,
+    requestPermission: jest.fn(() => Promise.resolve(1)),
+    onMessage: noop,
+  };
+});
+
 // sip.js imports browser-only APIs (WebSocketTransport reads `window.location`)
 // that don't exist in Node/Jest. Mock the few symbols we consume.
 jest.mock('sip.js', () => {

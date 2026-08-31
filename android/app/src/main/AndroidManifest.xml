@@ -15,9 +15,12 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- react-native-callkeep / telecom -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- react-native-callkeep / telecom permissions -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
     <!-- react-native-incall-manager proximity sensor -->
     <uses-permission android:name="android.permission.VIBRATE" />
-
     <uses-feature android:name="android.hardware.sensor.proximity" android:required="false" />
 
     <queries>
@@ -56,5 +59,21 @@
             <data android:scheme="tel" />
         </intent-filter>
       </activity>
+
+      <!-- react-native-callkeep VoiceConnectionService for Android Telecom -->
+      <service
+        android:name="io.wazo.callkeep.VoiceConnectionService"
+        android:label="@string/app_name"
+        android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+        android:foregroundServiceType="phoneCall"
+        android:exported="true">
+        <intent-filter>
+          <action android:name="android.telecom.ConnectionService" />
+        </intent-filter>
+      </service>
+
+      <service
+        android:name="io.wazo.callkeep.RNCallKeepBackgroundMessagingService"
+        android:exported="false" />
     </application>
 </manifest>

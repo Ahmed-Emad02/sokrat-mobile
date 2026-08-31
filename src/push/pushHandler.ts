@@ -7,8 +7,14 @@
  * the push gateway on login / token refresh.
  */
 import { Platform } from 'react-native';
+import {
+  getMessaging,
+  setBackgroundMessageHandler,
+  getToken,
+  onTokenRefresh,
+  requestPermission,
+} from '@react-native-firebase/messaging';
 import { CONFIG } from '../config';
-
 export type PushPayload = {
   type?: string;
   msg?: string;
@@ -33,18 +39,21 @@ let pendingAndroidPayload: PushPayload | null = null;
 // with NO UI mounted. If we only registered inside initPush() (which runs from
 // App's useEffect), a background data message would never be handled.
 if (Platform.OS === 'android') {
-  const FCM = require('@react-native-firebase/messaging').default;
-  const messaging = FCM();
-  messaging.setBackgroundMessageHandler(async (remoteMessage: { data?: Record<string, string> }) => {
-    const data = (remoteMessage?.data || {}) as PushPayload;
-    if (data.msg !== 'incoming-call') return;
-    if (onIncoming) {
-      onIncoming({ ...data, type: 'incoming-call' });
-    } else {
-      // App not yet booted (cold start). Queue it; initPush() flushes it.
-      pendingAndroidPayload = { ...data, type: 'incoming-call' };
-    }
-  });
+  try {
+    const messaging = getMessaging();
+    setBackgroundMessageHandler(messaging, async (remoteMessage) => {
+      const data = (remoteMessage?.data || {}) as PushPayload;
+      if (data.msg !== 'incoming-call') return;
+      if (onIncoming) {
+        onIncoming({ ...data, type: 'incoming-call' });
+      } else {
+        // App not yet booted (cold start). Queue it; initPush() flushes it.
+        pendingAndroidPayload = { ...data, type: 'incoming-call' };
+      }
+    });
+  } catch (err) {
+    console.warn('[push] FCM background handler init failed:', err);
+  }
 }
 
 /**
@@ -85,23 +94,29 @@ export function initPush(onIncomingCall: PushHandler) {
   }
   // ---------- Android: FCM high-priority data message ----------
   if (Platform.OS === 'android') {
-    const FCM = require('@react-native-firebase/messaging').default;
-    const messaging = FCM();
+    try {
+      const messaging = getMessaging();
 
-    const handleToken = (token: string) => {
-      fcmTokenCache = token;
-      setTimeout(() => sendTokenToGateway('android', token, null, currentExtension));
-    };
-    messaging.getToken().then(handleToken).catch(() => {});
-    messaging.onTokenRefresh(handleToken);
+      const handleToken = (token: string) => {
+        fcmTokenCache = token;
+        setTimeout(() => sendTokenToGateway('android', token, null, currentExtension));
+      };
+      getToken(messaging).then(handleToken).catch((err) => {
+        console.warn('[push] getToken error:', err);
+      });
+      onTokenRefresh(messaging, handleToken);
 
-    // Flush a background/cold-start payload that arrived before UI booted.
-    if (pendingAndroidPayload) {
-      const p = pendingAndroidPayload;
-      pendingAndroidPayload = null;
-      onIncoming && onIncoming(p);
+      // Flush a background/cold-start payload that arrived before UI booted.
+      if (pendingAndroidPayload) {
+        const p = pendingAndroidPayload;
+        pendingAndroidPayload = null;
+        onIncoming && onIncoming(p);
+      }
+    } catch (err) {
+      console.warn('[push] FCM init error:', err);
     }
   }
+  return;
 }
 
 /** Call after the user logs in so token registration knows the extension. */
@@ -148,9 +163,11 @@ export function askNotificationPermission() {
     const PushNotificationIOS = require('@react-native-community/push-notification-ios').default || require('@react-native-community/push-notification-ios');
     PushNotificationIOS.requestPermissions();
   } else if (Platform.OS === 'android') {
-    const FCM = require('@react-native-firebase/messaging').default;
-    const messaging = FCM();
-    // Android 13+ requires POST_NOTIFICATIONS at runtime.
-    messaging.requestPermission().catch(() => {});
+    try {
+      const messaging = getMessaging();
+      requestPermission(messaging).catch(() => {});
+    } catch (err) {
+      console.warn('[push] FCM requestPermission error:', err);
+    }
   }
 }

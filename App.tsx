@@ -7,8 +7,9 @@
  *  3. sip.connect()   — on login OR on incoming push (cold start)
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { StatusBar } from 'react-native';
+import { COLORS } from './src/theme';
 import { SipService, SipState, IncomingCallInfo } from './src/sip/sipService';
 import { initPush, bindExtension, askNotificationPermission } from './src/push/pushHandler';
 import {
@@ -19,12 +20,12 @@ import { LoginScreen } from './src/ui/LoginScreen';
 import { RingingScreen } from './src/ui/RingingScreen';
 
 export default function App() {
+  console.log('[App] rendering App component');
   const sipRef = useRef<SipService | null>(null);
   const [uiState, setUiState] = useState<SipState>('disconnected');
   const [account, setAccount] = useState<{ extension: string } | null>(null);
   const [incoming, setIncoming] = useState<IncomingCallInfo | null>(null);
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
-
   useEffect(() => {
     const sip = new SipService({
       onStateChange: (s) => setUiState(s),
@@ -96,15 +97,14 @@ export default function App() {
 
   if (!account) {
     return (
-      <SafeAreaProvider>
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: COLORS.bg }}>
         <StatusBar barStyle="light-content" />
         <LoginScreen onLogin={handleLogin} state={uiState} />
       </SafeAreaProvider>
     );
   }
-
   return (
-    <SafeAreaProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics} style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <StatusBar barStyle="light-content" />
       {incoming ? (
         <RingingScreen

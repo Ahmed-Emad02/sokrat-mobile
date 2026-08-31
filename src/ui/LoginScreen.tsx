@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import {
   StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 
 type Props = {
@@ -25,7 +26,7 @@ export function LoginScreen({ onLogin, state, registeredAs }: Props) {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <Text style={styles.logo}>SOKRAT</Text>
       <Text style={styles.subtitle}>VOICE · Mobile</Text>
       {registeredAs ? (
@@ -37,34 +38,34 @@ export function LoginScreen({ onLogin, state, registeredAs }: Props) {
         </>
       ) : (
         <View style={styles.card}>
-        <Text style={styles.label}>EXTENSION</Text>
-        <TextInput
-          style={styles.input}
-          value={extension}
-          onChangeText={setExtension}
-          placeholder="e.g. 150"
-          placeholderTextColor={COLORS.textMuted}
-          keyboardType="number-pad"
-        />
-        <Text style={styles.label}>PASSWORD</Text>
-        <TextInput
-          style={styles.input}
-          value={password}
-          onChangeText={setPassword}
-          placeholder="SIP password"
-          placeholderTextColor={COLORS.textMuted}
-          secureTextEntry
-        />
-        <TouchableOpacity style={styles.button} onPress={submit}>
-          <Text style={styles.buttonText}>
-            {state === 'connecting' ? 'REGISTERING…' : 'SIGN IN'}
-          </Text>
-        </TouchableOpacity>
-        {state === 'failed' && <Text style={styles.error}>Registration failed</Text>}
-        {state === 'registered' && <Text style={styles.ok}>Registered ✓</Text>}
+          <Text style={styles.label}>EXTENSION</Text>
+          <TextInput
+            style={styles.input}
+            value={extension}
+            onChangeText={setExtension}
+            placeholder="e.g. 150"
+            placeholderTextColor={COLORS.textMuted}
+            keyboardType="number-pad"
+          />
+          <Text style={styles.label}>PASSWORD</Text>
+          <TextInput
+            style={styles.input}
+            value={password}
+            onChangeText={setPassword}
+            placeholder="SIP password"
+            placeholderTextColor={COLORS.textMuted}
+            secureTextEntry
+          />
+          <TouchableOpacity style={styles.button} onPress={submit}>
+            <Text style={styles.buttonText}>
+              {state === 'connecting' ? 'REGISTERING…' : 'SIGN IN'}
+            </Text>
+          </TouchableOpacity>
+          {state === 'failed' && <Text style={styles.error}>Registration failed</Text>}
+          {state === 'registered' && <Text style={styles.ok}>Registered ✓</Text>}
         </View>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
