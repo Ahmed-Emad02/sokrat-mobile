@@ -428,6 +428,10 @@ export class JsSipService {
    * Terminate/hangup active call.
    */
   async hangup(): Promise<void> {
+    if (this.activeCall?.status === 'ringing' && this.activeCall?.direction === 'inbound') {
+      await this.decline();
+      return;
+    }
     if (this.localStream) {
       try {
         const tracks = this.localStream.getTracks ? this.localStream.getTracks() : [];
@@ -437,7 +441,7 @@ export class JsSipService {
       } catch {}
       this.localStream = null;
     }
-    const session = this.currentSession as { terminate?: () => void } | null;
+    const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
     if (session && typeof session.terminate === 'function') {
       try {
         session.terminate();
@@ -448,10 +452,31 @@ export class JsSipService {
   }
 
   /**
-   * Decline incoming call.
+   * Decline incoming call with explicit SIP 603 Decline.
    */
   async decline(): Promise<void> {
-    await this.hangup();
+    if (this.localStream) {
+      try {
+        const tracks = this.localStream.getTracks ? this.localStream.getTracks() : [];
+        for (const t of tracks) {
+          t.stop();
+        }
+      } catch {}
+      this.localStream = null;
+    }
+    const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
+    if (session && typeof session.terminate === 'function') {
+      try {
+        session.terminate({
+          status_code: 603,
+          reason_phrase: 'Decline',
+        });
+      } catch (err) {
+        console.warn('[sip] decline call error:', err);
+      }
+    }
+    this.currentSession = null;
+    this.activeCall = null;
   }
 
   toggleMute(): boolean {

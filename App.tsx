@@ -104,8 +104,14 @@ export default function App() {
     updateIncoming(null);
     await clearPendingIncomingCall(uuid);
     if (sipRef.current?.activeCall) {
-      await sipRef.current.hangup();
+      if (sipRef.current.activeCall.status === 'ringing' && sipRef.current.activeCall.direction === 'inbound') {
+        await sipRef.current.decline();
+      } else {
+        await sipRef.current.hangup();
+      }
       pendingEndUUIDRef.current = null;
+    } else {
+      await sipRef.current?.decline();
     }
     dismissNativeCallNotification();
     stopCallManagers();
@@ -125,7 +131,7 @@ export default function App() {
       onIncomingCall: (info) => {
         const uuid = activeCallUUIDRef.current || generateUUID();
         if (pendingEndUUIDRef.current === uuid) {
-          void sip.hangup().finally(() => {
+          void sip.decline().finally(() => {
             pendingEndUUIDRef.current = null;
             void clearPendingIncomingCall(uuid);
           });
@@ -369,7 +375,11 @@ export default function App() {
       await endSipCall(uuid);
       reportEnded(uuid);
     } else {
-      await sipRef.current?.hangup();
+      if (incomingRef.current) {
+        await sipRef.current?.decline();
+      } else {
+        await sipRef.current?.hangup();
+      }
       stopCallManagers();
       updateIncoming(null);
     }
