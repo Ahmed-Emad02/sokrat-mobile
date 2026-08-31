@@ -83,11 +83,21 @@ jest.mock('@react-native-firebase/messaging', () => {
   };
 });
 
-jest.mock('react-native-webview', () => {
+jest.mock('react-native-svg', () => {
   const React = require('react');
   const { View } = require('react-native');
+  const mockComponent = (name) => (props) => React.createElement(View, { testID: name, ...props });
   return {
-    WebView: (props) => React.createElement(View, props),
+    __esModule: true,
+    default: mockComponent('Svg'),
+    Svg: mockComponent('Svg'),
+    Path: mockComponent('Path'),
+    Circle: mockComponent('Circle'),
+    Rect: mockComponent('Rect'),
+    Line: mockComponent('Line'),
+    Polyline: mockComponent('Polyline'),
+    Polygon: mockComponent('Polygon'),
+    G: mockComponent('G'),
   };
 });
 jest.mock('@react-native-async-storage/async-storage', () => ({

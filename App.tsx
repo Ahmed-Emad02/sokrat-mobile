@@ -36,7 +36,7 @@ import { CONFIG } from './src/config';
 // Main Native Phone Screen & Call Screens
 import { StandardPhoneScreen } from './src/ui/StandardPhoneScreen';
 import { RingingScreen } from './src/ui/RingingScreen';
-
+import { LoginScreen } from './src/ui/LoginScreen';
 export default function App() {
   const sipRef = useRef<JsSipService | null>(null);
 
@@ -108,26 +108,18 @@ export default function App() {
 
     sipRef.current = sip;
 
-    // 2. Load stored account or initialize default ext 150 / sss333 / 192.168.100.128
+    // 2. Load stored account
     StorageService.getAccount().then((acc) => {
-      const activeAcc: SavedAccount = acc || {
-        extension: '150',
-        password: 'sss333',
-        serverHost: '192.168.100.128',
-        useTls: false,
-        dnd: false,
-        autoAnswer: false,
-      };
+      if (acc) {
+        setAccount(acc);
+        CONFIG.sipDomain = acc.serverHost;
+        CONFIG.sipWss = `${acc.useTls ? 'wss' : 'ws'}://${acc.serverHost}:${acc.useTls ? 8089 : 8088}/ws`;
+        CONFIG.pushGateway = `http://${acc.serverHost}:8095`;
 
-      setAccount(activeAcc);
-      CONFIG.sipDomain = activeAcc.serverHost;
-      CONFIG.sipWss = `${activeAcc.useTls ? 'wss' : 'ws'}://${activeAcc.serverHost}:${activeAcc.useTls ? 8089 : 8088}/ws`;
-      CONFIG.pushGateway = `http://${activeAcc.serverHost}:8095`;
-
-      bindExtension(activeAcc.extension);
-      sip.connect(activeAcc.extension, activeAcc.password, activeAcc.serverHost, activeAcc.useTls);
+        bindExtension(acc.extension);
+        sip.connect(acc.extension, acc.password, acc.serverHost, acc.useTls);
+      }
     });
-
     // Populate history & contacts
     StorageService.getCallHistory().then(setCallsHistory);
     StorageService.getContacts().then(setContacts);
@@ -239,8 +231,30 @@ export default function App() {
     setCallsHistory([]);
     await StorageService.clearCallHistory();
   };
+  // 1. Not Logged In -> Show Full Dedicated Login Screen
+  if (!account) {
+    return (
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
+        <StatusBar barStyle="light-content" />
+        <LoginScreen
+          onLogin={async (ext, password, serverHost) => {
+            const newAcc: SavedAccount = {
+              extension: ext,
+              password,
+              serverHost: serverHost || '192.168.100.128',
+              useTls: false,
+              dnd: false,
+              autoAnswer: false,
+            };
+            await handleSaveAccount(newAcc);
+          }}
+          state={uiState}
+        />
+      </SafeAreaProvider>
+    );
+  }
 
-  // Incoming Call Overlay
+  // 2. Incoming Call Overlay
   if (incoming && !activeCall) {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
@@ -254,7 +268,6 @@ export default function App() {
       </SafeAreaProvider>
     );
   }
-
   // Standard Phone Application View
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>

@@ -14,6 +14,27 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { CallRecord, Contact, SavedAccount } from '../storage/store';
 import { SipState, ActiveCall } from '../sip/JsSipService';
+import {
+  PhoneIcon,
+  ContactsIcon,
+  StarIcon,
+  SettingsIcon,
+  MenuDotsIcon,
+  KeypadIcon,
+  BackspaceIcon,
+  TrashIcon,
+  PlusIcon,
+  LogoutIcon,
+  MicIcon,
+  MicOffIcon,
+  SpeakerIcon,
+  PauseIcon,
+  PlayIcon,
+  TransferIcon,
+  InfoIcon,
+  VoicemailIcon,
+  UserIcon,
+} from './Icons';
 
 type Props = {
   account: SavedAccount | null;
@@ -39,7 +60,7 @@ type Props = {
 type BottomTab = 'phone' | 'contacts' | 'favourites';
 
 const DIALPAD_KEYS = [
-  { digit: '1', sub: '➿' },
+  { digit: '1', sub: 'VM', isVm: true },
   { digit: '2', sub: 'ABC' },
   { digit: '3', sub: 'DEF' },
   { digit: '4', sub: 'GHI' },
@@ -77,7 +98,7 @@ export function StandardPhoneScreen({
   const [activeTab, setActiveTab] = useState<BottomTab>('phone');
   const [digits, setDigits] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(!account);
   const [showAddContactModal, setShowAddContactModal] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
 
@@ -165,6 +186,12 @@ export function StandardPhoneScreen({
     setShowAddContactModal(false);
   };
 
+  const handleSignOutClick = () => {
+    setShowMenu(false);
+    onLogout();
+    setShowSettingsModal(true);
+  };
+
   // --- Active In-Call View ---
   if (activeCall) {
     return (
@@ -203,17 +230,17 @@ export function StandardPhoneScreen({
                 style={[styles.inCallBtn, activeCall.isMuted && styles.inCallBtnActive]}
                 onPress={onToggleMute}
               >
-                <Text style={styles.inCallIcon}>{activeCall.isMuted ? '🔇' : '🎙️'}</Text>
+                {activeCall.isMuted ? <MicOffIcon size={26} color="#38bdf8" /> : <MicIcon size={26} color="#ffffff" />}
                 <Text style={styles.inCallBtnLabel}>{activeCall.isMuted ? 'Unmute' : 'Mute'}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowInCallDtmf(true)}>
-                <Text style={styles.inCallIcon}>🔢</Text>
+                <KeypadIcon size={26} color="#ffffff" />
                 <Text style={styles.inCallBtnLabel}>Keypad</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.inCallBtn} onPress={onToggleSpeaker}>
-                <Text style={styles.inCallIcon}>🔊</Text>
+                <SpeakerIcon size={26} color="#ffffff" />
                 <Text style={styles.inCallBtnLabel}>Speaker</Text>
               </TouchableOpacity>
             </View>
@@ -223,12 +250,12 @@ export function StandardPhoneScreen({
                 style={[styles.inCallBtn, activeCall.isHeld && styles.inCallBtnActive]}
                 onPress={onToggleHold}
               >
-                <Text style={styles.inCallIcon}>{activeCall.isHeld ? '▶️' : '⏸️'}</Text>
+                {activeCall.isHeld ? <PlayIcon size={26} color="#38bdf8" /> : <PauseIcon size={26} color="#ffffff" />}
                 <Text style={styles.inCallBtnLabel}>{activeCall.isHeld ? 'Resume' : 'Hold'}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowTransferModal(true)}>
-                <Text style={styles.inCallIcon}>↪️</Text>
+                <TransferIcon size={26} color="#ffffff" />
                 <Text style={styles.inCallBtnLabel}>Transfer</Text>
               </TouchableOpacity>
             </View>
@@ -279,13 +306,41 @@ export function StandardPhoneScreen({
   // --- Main Phone Application ---
   return (
     <SafeAreaView style={styles.container}>
-      {/* Top Title Bar */}
+      {/* Top Title Bar with Connection Status Badge */}
       <View style={styles.topBar}>
-        <Text style={styles.topTitle}>
-          {activeTab === 'phone' ? 'Phone' : activeTab === 'contacts' ? 'Contacts' : 'Favourites'}
-        </Text>
+        <View>
+          <Text style={styles.topTitle}>
+            {activeTab === 'phone' ? 'Phone' : activeTab === 'contacts' ? 'Contacts' : 'Favourites'}
+          </Text>
+          <TouchableOpacity
+            style={[
+              styles.statusBadge,
+              state === 'registered' ? styles.statusBadgeOk : state === 'connecting' ? styles.statusBadgeWait : styles.statusBadgeErr,
+            ]}
+            onPress={() => setShowSettingsModal(true)}
+          >
+            <View
+              style={[
+                styles.statusDot,
+                { backgroundColor: state === 'registered' ? '#10b981' : state === 'connecting' ? '#f59e0b' : '#ef4444' },
+              ]}
+            />
+            <Text
+              style={[
+                styles.statusBadgeText,
+                { color: state === 'registered' ? '#10b981' : state === 'connecting' ? '#f59e0b' : '#ef4444' },
+              ]}
+            >
+              {state === 'registered'
+                ? `Ext ${account?.extension || '150'} · Connected ✓`
+                : state === 'connecting'
+                ? `Ext ${account?.extension || '150'} · Connecting…`
+                : `Ext ${account?.extension || '150'} · Offline`}
+            </Text>
+          </TouchableOpacity>
+        </View>
         <TouchableOpacity style={styles.menuBtn} onPress={() => setShowMenu(!showMenu)}>
-          <Text style={styles.menuDots}>⋮</Text>
+          <MenuDotsIcon size={24} color="#ffffff" />
         </TouchableOpacity>
       </View>
 
@@ -299,7 +354,10 @@ export function StandardPhoneScreen({
               setShowSettingsModal(true);
             }}
           >
-            <Text style={styles.dropdownText}>⚙️ Settings & PBX Host</Text>
+            <View style={styles.menuItemRow}>
+              <SettingsIcon size={18} color="#38bdf8" />
+              <Text style={styles.dropdownText}>Settings & PBX Host</Text>
+            </View>
           </TouchableOpacity>
           {activeTab === 'phone' && (
             <TouchableOpacity
@@ -309,7 +367,10 @@ export function StandardPhoneScreen({
                 onClearHistory();
               }}
             >
-              <Text style={styles.dropdownText}>🗑️ Clear History</Text>
+              <View style={styles.menuItemRow}>
+                <TrashIcon size={18} color="#a1a1aa" />
+                <Text style={styles.dropdownText}>Clear History</Text>
+              </View>
             </TouchableOpacity>
           )}
           {activeTab === 'contacts' && (
@@ -320,17 +381,20 @@ export function StandardPhoneScreen({
                 setShowAddContactModal(true);
               }}
             >
-              <Text style={styles.dropdownText}>➕ Add Contact</Text>
+              <View style={styles.menuItemRow}>
+                <PlusIcon size={18} color="#10b981" />
+                <Text style={styles.dropdownText}>Add Contact</Text>
+              </View>
             </TouchableOpacity>
           )}
           <TouchableOpacity
-            style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: '#222' }]}
-            onPress={() => {
-              setShowMenu(false);
-              onLogout();
-            }}
+            style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: '#27272a' }]}
+            onPress={handleSignOutClick}
           >
-            <Text style={[styles.dropdownText, { color: '#ef4444' }]}>🚪 Sign Out</Text>
+            <View style={styles.menuItemRow}>
+              <LogoutIcon size={18} color="#ef4444" />
+              <Text style={[styles.dropdownText, { color: '#ef4444' }]}>Sign Out</Text>
+            </View>
           </TouchableOpacity>
         </View>
       )}
@@ -352,9 +416,7 @@ export function StandardPhoneScreen({
                 renderItem={({ item }) => (
                   <TouchableOpacity style={styles.recentItem} onPress={() => onCall(item.number)}>
                     <View style={styles.avatarMini}>
-                      <Text style={styles.avatarMiniText}>
-                        {item.name.charAt(0) || item.number.charAt(0) || '?'}
-                      </Text>
+                      <UserIcon size={20} color="#a1a1aa" />
                     </View>
 
                     <View style={styles.recentInfo}>
@@ -374,7 +436,7 @@ export function StandardPhoneScreen({
 
                     <Text style={styles.recentTime}>{formatTimeAgo(item.timestamp)}</Text>
                     <TouchableOpacity style={styles.infoCircleBtn} onPress={() => onCall(item.number)}>
-                      <Text style={styles.infoCircleText}>ⓘ</Text>
+                      <InfoIcon size={20} color="#71717a" />
                     </TouchableOpacity>
                   </TouchableOpacity>
                 )}
@@ -400,7 +462,13 @@ export function StandardPhoneScreen({
                   onPress={() => handleDigitPress(k.digit)}
                 >
                   <Text style={styles.keyNumber}>{k.digit}</Text>
-                  {k.sub ? <Text style={styles.keyLetters}>{k.sub}</Text> : null}
+                  {k.isVm ? (
+                    <View style={{ marginTop: 2 }}>
+                      <VoicemailIcon size={12} color="#a1a1aa" />
+                    </View>
+                  ) : k.sub ? (
+                    <Text style={styles.keyLetters}>{k.sub}</Text>
+                  ) : null}
                 </TouchableOpacity>
               ))}
             </View>
@@ -408,7 +476,7 @@ export function StandardPhoneScreen({
             {/* Bottom Action Bar */}
             <View style={styles.dialActionsRow}>
               <TouchableOpacity style={styles.dialAuxBtn} onPress={() => setDigits('')}>
-                <Text style={styles.dialAuxIcon}>⌨</Text>
+                <KeypadIcon size={22} color="#a1a1aa" />
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -416,14 +484,14 @@ export function StandardPhoneScreen({
                 onPress={handleDial}
                 disabled={!digits}
               >
-                <Text style={styles.callPillPhoneIcon}>📞</Text>
+                <PhoneIcon size={18} color="#000000" />
                 <Text style={styles.callPillText}>
                   {account ? `Ext ${account.extension}` : 'Call'}
                 </Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.dialAuxBtn} onPress={handleBackspace}>
-                <Text style={styles.dialAuxIcon}>⌫</Text>
+                <BackspaceIcon size={22} color="#a1a1aa" />
               </TouchableOpacity>
             </View>
           </View>
@@ -448,16 +516,14 @@ export function StandardPhoneScreen({
             renderItem={({ item }) => (
               <View style={styles.contactRow}>
                 <TouchableOpacity style={styles.favStarBtn} onPress={() => onToggleFavorite(item.id)}>
-                  <Text style={[styles.favStarText, item.favorite && styles.favStarActive]}>
-                    {item.favorite ? '★' : '☆'}
-                  </Text>
+                  <StarIcon size={22} color={item.favorite ? '#f59e0b' : '#71717a'} fill={item.favorite ? '#f59e0b' : 'none'} />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.contactDetailCol} onPress={() => onCall(item.extension)}>
                   <Text style={styles.contactRowName}>{item.name}</Text>
                   <Text style={styles.contactRowExt}>Ext {item.extension}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.contactCallBtn} onPress={() => onCall(item.extension)}>
-                  <Text style={styles.contactCallIcon}>📞</Text>
+                  <PhoneIcon size={16} color="#10b981" />
                 </TouchableOpacity>
               </View>
             )}
@@ -478,14 +544,14 @@ export function StandardPhoneScreen({
             renderItem={({ item }) => (
               <View style={styles.contactRow}>
                 <TouchableOpacity style={styles.favStarBtn} onPress={() => onToggleFavorite(item.id)}>
-                  <Text style={[styles.favStarText, styles.favStarActive]}>★</Text>
+                  <StarIcon size={22} color="#f59e0b" fill="#f59e0b" />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.contactDetailCol} onPress={() => onCall(item.extension)}>
                   <Text style={styles.contactRowName}>{item.name}</Text>
                   <Text style={styles.contactRowExt}>Ext {item.extension}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.contactCallBtn} onPress={() => onCall(item.extension)}>
-                  <Text style={styles.contactCallIcon}>📞</Text>
+                  <PhoneIcon size={16} color="#10b981" />
                 </TouchableOpacity>
               </View>
             )}
@@ -499,7 +565,7 @@ export function StandardPhoneScreen({
           style={styles.navItem}
           onPress={() => setActiveTab('phone')}
         >
-          <Text style={[styles.navIcon, activeTab === 'phone' && styles.navIconActive]}>📞</Text>
+          <PhoneIcon size={20} color={activeTab === 'phone' ? '#38bdf8' : '#71717a'} />
           <Text style={[styles.navLabel, activeTab === 'phone' && styles.navLabelActive]}>Phone</Text>
         </TouchableOpacity>
 
@@ -507,7 +573,7 @@ export function StandardPhoneScreen({
           style={styles.navItem}
           onPress={() => setActiveTab('contacts')}
         >
-          <Text style={[styles.navIcon, activeTab === 'contacts' && styles.navIconActive]}>👥</Text>
+          <ContactsIcon size={20} color={activeTab === 'contacts' ? '#38bdf8' : '#71717a'} />
           <Text style={[styles.navLabel, activeTab === 'contacts' && styles.navLabelActive]}>Contacts</Text>
         </TouchableOpacity>
 
@@ -515,86 +581,94 @@ export function StandardPhoneScreen({
           style={styles.navItem}
           onPress={() => setActiveTab('favourites')}
         >
-          <Text style={[styles.navIcon, activeTab === 'favourites' && styles.navIconActive]}>★</Text>
+          <StarIcon size={20} color={activeTab === 'favourites' ? '#38bdf8' : '#71717a'} fill={activeTab === 'favourites' ? '#38bdf8' : 'none'} />
           <Text style={[styles.navLabel, activeTab === 'favourites' && styles.navLabelActive]}>Favourites</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Settings Modal */}
-      <Modal visible={showSettingsModal} transparent animationType="slide">
+      {/* Settings Modal (Vertically & Horizontally Centered) */}
+      <Modal visible={showSettingsModal} transparent animationType="fade" onRequestClose={() => setShowSettingsModal(false)}>
         <View style={styles.modalBackdrop}>
-          <ScrollView contentContainerStyle={styles.settingsCard}>
-            <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
+          <View style={styles.settingsCardWrapper}>
+            <ScrollView
+              style={styles.settingsScroll}
+              contentContainerStyle={styles.settingsCard}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
 
-            <Text style={styles.fieldLabel}>SIP EXTENSION</Text>
-            <TextInput
-              style={styles.settingsInput}
-              value={editExt}
-              onChangeText={setEditExt}
-              placeholder="e.g. 150"
-              placeholderTextColor="#666"
-              keyboardType="number-pad"
-            />
+              <Text style={styles.fieldLabel}>SIP EXTENSION</Text>
+              <TextInput
+                style={styles.settingsInput}
+                value={editExt}
+                onChangeText={setEditExt}
+                placeholder="e.g. 150"
+                placeholderTextColor="#666"
+                keyboardType="number-pad"
+              />
 
-            <Text style={styles.fieldLabel}>SIP PASSWORD</Text>
-            <TextInput
-              style={styles.settingsInput}
-              value={editPass}
-              onChangeText={setEditPass}
-              placeholder="SIP Secret"
-              placeholderTextColor="#666"
-              secureTextEntry
-            />
+              <Text style={styles.fieldLabel}>SIP PASSWORD</Text>
+              <TextInput
+                style={styles.settingsInput}
+                value={editPass}
+                onChangeText={setEditPass}
+                placeholder="SIP Secret (e.g. sss333)"
+                placeholderTextColor="#666"
+                secureTextEntry
+              />
 
-            <Text style={styles.fieldLabel}>PBX SERVER HOST / IP</Text>
-            <TextInput
-              style={styles.settingsInput}
-              value={editHost}
-              onChangeText={setEditHost}
-              placeholder="192.168.100.128"
-              placeholderTextColor="#666"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
+              <Text style={styles.fieldLabel}>PBX SERVER HOST / IP</Text>
+              <TextInput
+                style={styles.settingsInput}
+                value={editHost}
+                onChangeText={setEditHost}
+                placeholder="192.168.100.128"
+                placeholderTextColor="#666"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
 
-            <View style={styles.switchRow}>
-              <View>
-                <Text style={styles.switchLabel}>TLS / WSS Protocol</Text>
-                <Text style={styles.switchSub}>{editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}</Text>
+              <View style={styles.switchRow}>
+                <View>
+                  <Text style={styles.switchLabel}>TLS / WSS Protocol</Text>
+                  <Text style={styles.switchSub}>{editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}</Text>
+                </View>
+                <Switch value={editTls} onValueChange={setEditTls} thumbColor={editTls ? '#38bdf8' : '#555'} />
               </View>
-              <Switch value={editTls} onValueChange={setEditTls} thumbColor={editTls ? '#38bdf8' : '#555'} />
-            </View>
 
-            <View style={styles.switchRow}>
-              <View>
-                <Text style={styles.switchLabel}>Do Not Disturb (DND)</Text>
-                <Text style={styles.switchSub}>Auto-reject incoming calls</Text>
+              <View style={styles.switchRow}>
+                <View>
+                  <Text style={styles.switchLabel}>Do Not Disturb (DND)</Text>
+                  <Text style={styles.switchSub}>Auto-reject incoming calls</Text>
+                </View>
+                <Switch value={editDnd} onValueChange={setEditDnd} thumbColor={editDnd ? '#ef4444' : '#555'} />
               </View>
-              <Switch value={editDnd} onValueChange={setEditDnd} thumbColor={editDnd ? '#ef4444' : '#555'} />
-            </View>
 
-            <View style={styles.switchRow}>
-              <View>
-                <Text style={styles.switchLabel}>Auto-Answer</Text>
-                <Text style={styles.switchSub}>Auto-accept incoming calls</Text>
+              <View style={styles.switchRow}>
+                <View>
+                  <Text style={styles.switchLabel}>Auto-Answer</Text>
+                  <Text style={styles.switchSub}>Auto-accept incoming calls</Text>
+                </View>
+                <Switch value={editAuto} onValueChange={setEditAuto} thumbColor={editAuto ? '#10b981' : '#555'} />
               </View>
-              <Switch value={editAuto} onValueChange={setEditAuto} thumbColor={editAuto ? '#10b981' : '#555'} />
-            </View>
 
-            <View style={styles.settingsActions}>
-              <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
-                <Text style={styles.dialogCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleSaveSettings} style={styles.settingsSaveBtn}>
-                <Text style={styles.settingsSaveText}>Save & Connect</Text>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
+              <View style={styles.settingsActions}>
+                {account ? (
+                  <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
+                    <Text style={styles.dialogCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity onPress={handleSaveSettings} style={styles.settingsSaveBtn}>
+                  <Text style={styles.settingsSaveText}>Save & Connect</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
         </View>
       </Modal>
 
       {/* Add Contact Modal */}
-      <Modal visible={showAddContactModal} transparent animationType="fade">
+      <Modal visible={showAddContactModal} transparent animationType="fade" onRequestClose={() => setShowAddContactModal(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.dialogCard}>
             <Text style={styles.dialogTitle}>Add New Contact</Text>
@@ -648,37 +722,68 @@ const styles = StyleSheet.create({
   },
   topTitle: {
     color: '#ffffff',
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignSelf: 'flex-start',
+    backgroundColor: '#09090b',
+  },
+  statusBadgeOk: {
+    borderColor: '#064e3b',
+  },
+  statusBadgeWait: {
+    borderColor: '#78350f',
+  },
+  statusBadgeErr: {
+    borderColor: '#450a0a',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
     letterSpacing: 0.5,
   },
   menuBtn: {
     padding: 8,
-  },
-  menuDots: {
-    color: '#ffffff',
-    fontSize: 24,
-    fontWeight: '700',
   },
   dropdownMenu: {
     position: 'absolute',
     top: 56,
     right: 20,
     backgroundColor: '#18181b',
-    borderRadius: 12,
+    borderRadius: 14,
     paddingVertical: 6,
     borderColor: '#27272a',
     borderWidth: 1,
     zIndex: 999,
     shadowColor: '#000',
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
-    elevation: 8,
-    minWidth: 180,
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
+    elevation: 10,
+    minWidth: 200,
   },
   dropdownItem: {
     paddingHorizontal: 16,
     paddingVertical: 12,
+  },
+  menuItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   dropdownText: {
     color: '#f4f4f5',
@@ -713,14 +818,11 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#27272a',
+    backgroundColor: '#18181b',
+    borderColor: '#27272a',
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  avatarMiniText: {
-    color: '#a1a1aa',
-    fontSize: 18,
-    fontWeight: '600',
   },
   recentInfo: {
     flex: 1,
@@ -745,11 +847,7 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   infoCircleBtn: {
-    padding: 4,
-  },
-  infoCircleText: {
-    color: '#71717a',
-    fontSize: 18,
+    padding: 6,
   },
   dialpadSection: {
     paddingHorizontal: 24,
@@ -805,10 +903,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dialAuxIcon: {
-    color: '#ffffff',
-    fontSize: 24,
-  },
   mainCallPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -820,9 +914,6 @@ const styles = StyleSheet.create({
   },
   mainCallPillDisabled: {
     opacity: 0.35,
-  },
-  callPillPhoneIcon: {
-    fontSize: 18,
   },
   callPillText: {
     color: '#000000',
@@ -839,14 +930,7 @@ const styles = StyleSheet.create({
   },
   navItem: {
     alignItems: 'center',
-    gap: 3,
-  },
-  navIcon: {
-    fontSize: 20,
-    color: '#71717a',
-  },
-  navIconActive: {
-    color: '#38bdf8',
+    gap: 4,
   },
   navLabel: {
     color: '#71717a',
@@ -869,6 +953,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 12,
     fontSize: 14,
+    borderColor: '#27272a',
+    borderWidth: 1,
   },
   contactRow: {
     flexDirection: 'row',
@@ -879,13 +965,6 @@ const styles = StyleSheet.create({
   },
   favStarBtn: {
     padding: 6,
-  },
-  favStarText: {
-    color: '#71717a',
-    fontSize: 20,
-  },
-  favStarActive: {
-    color: '#f59e0b',
   },
   contactDetailCol: {
     flex: 1,
@@ -906,16 +985,30 @@ const styles = StyleSheet.create({
     backgroundColor: '#064e3b',
     borderRadius: 20,
   },
-  contactCallIcon: {
-    fontSize: 16,
-  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'center',
+    alignItems: 'center',
     paddingHorizontal: 20,
   },
+  settingsCardWrapper: {
+    width: '100%',
+    maxHeight: '85%',
+    backgroundColor: '#18181b',
+    borderRadius: 20,
+    borderColor: '#27272a',
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  settingsScroll: {
+    maxHeight: '100%',
+  },
+  settingsCard: {
+    padding: 22,
+  },
   dialogCard: {
+    width: '100%',
     backgroundColor: '#18181b',
     borderRadius: 16,
     padding: 20,
@@ -962,13 +1055,6 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 14,
     fontWeight: '700',
-  },
-  settingsCard: {
-    backgroundColor: '#18181b',
-    borderRadius: 16,
-    padding: 20,
-    borderColor: '#27272a',
-    borderWidth: 1,
   },
   settingsTitle: {
     color: '#ffffff',
@@ -1100,9 +1186,6 @@ const styles = StyleSheet.create({
   inCallBtnActive: {
     borderColor: '#38bdf8',
     backgroundColor: '#082f49',
-  },
-  inCallIcon: {
-    fontSize: 24,
   },
   inCallBtnLabel: {
     color: '#a1a1aa',
