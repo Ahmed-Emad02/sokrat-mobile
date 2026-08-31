@@ -994,15 +994,17 @@ const styles = StyleSheet.create({
   },
   settingsCardWrapper: {
     width: '100%',
+    maxWidth: 400,
     maxHeight: '85%',
     backgroundColor: '#18181b',
     borderRadius: 20,
     borderColor: '#27272a',
     borderWidth: 1,
     overflow: 'hidden',
+    alignSelf: 'center',
   },
   settingsScroll: {
-    maxHeight: '100%',
+    flexGrow: 0,
   },
   settingsCard: {
     padding: 22,

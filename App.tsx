@@ -108,19 +108,26 @@ export default function App() {
 
     sipRef.current = sip;
 
-    // 2. Load stored account
+    // 2. Load stored account or auto-initialize ext 150 / sss333 / 192.168.100.128
     StorageService.getAccount().then((acc) => {
-      if (acc) {
-        setAccount(acc);
-        CONFIG.sipDomain = acc.serverHost;
-        CONFIG.sipWss = `${acc.useTls ? 'wss' : 'ws'}://${acc.serverHost}:${acc.useTls ? 8089 : 8088}/ws`;
-        CONFIG.pushGateway = `http://${acc.serverHost}:8095`;
+      const activeAcc: SavedAccount = acc || {
+        extension: '150',
+        password: 'sss333',
+        serverHost: '192.168.100.128',
+        useTls: false,
+        dnd: false,
+        autoAnswer: false,
+      };
 
-        bindExtension(acc.extension);
-        sip.connect(acc.extension, acc.password, acc.serverHost, acc.useTls);
-      }
+      setAccount(activeAcc);
+      StorageService.saveAccount(activeAcc);
+      CONFIG.sipDomain = activeAcc.serverHost;
+      CONFIG.sipWss = `${activeAcc.useTls ? 'wss' : 'ws'}://${activeAcc.serverHost}:${activeAcc.useTls ? 8089 : 8088}/ws`;
+      CONFIG.pushGateway = `http://${activeAcc.serverHost}:8095`;
+
+      bindExtension(activeAcc.extension);
+      sip.connect(activeAcc.extension, activeAcc.password, activeAcc.serverHost, activeAcc.useTls);
     });
-    // Populate history & contacts
     StorageService.getCallHistory().then(setCallsHistory);
     StorageService.getContacts().then(setContacts);
 
