@@ -1,7 +1,7 @@
 <!DOCTYPE html>
-<html lang="en" dir="ltr">
+<html lang="en" dir="ltr" class="is-popout">
 <head>
-    <script>// Local App Mode</script>
+    <!-- Local Mobile App Mode -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sokrat VOICE</title>
@@ -2672,8 +2672,124 @@ html.light-theme .vu-meter-label svg {
 }
 
     </style>
+
+<style>
+/* --- Sokrat Mobile Full-Height Stretch & Tab Isolation --- */
+html, body, html.is-popout, body.is-popout {
+    width: 100vw !important;
+    height: 100vh !important;
+    min-height: 100vh !important;
+    max-height: 100vh !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+.app-window, html.is-popout .app-window, body.is-popout .app-window {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    min-height: 100vh !important;
+    max-height: 100vh !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    overflow: hidden !important;
+}
+
+.app-body {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+.workspace {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
+/* Strict Tab View Scoping: Only .active tab is visible */
+.tab-view-content {
+    display: none !important;
+}
+
+.tab-view-content.active {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow-y: auto !important;
+}
+
+#tabContentDialer.active {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    justify-content: space-between !important;
+    padding: 6px 12px 8px !important;
+}
+
+.dialer-col {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-height: 0 !important;
+}
+
+.dialer-input-box {
+    margin-bottom: 6px !important;
+}
+
+.keypad-grid {
+    flex: 1 !important;
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    grid-auto-rows: 1fr !important;
+    gap: 6px !important;
+    margin: 4px 0 6px !important;
+    min-height: 180px !important;
+}
+
+.keypad-btn {
+    height: 100% !important;
+    min-height: 44px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+.keypad-action-row {
+    margin-bottom: 6px !important;
+}
+
+.dialer-tool-bar {
+    margin-bottom: 6px !important;
+}
+
+.dual-vu-meters-deck {
+    margin-top: auto !important;
+    padding-bottom: 4px !important;
+}
+</style>
+
 </head>
-<body>
+<body class="is-popout">
 <!-- Toast Notification Container -->
     <div id="toastContainer" class="toast-container"></div>
 
@@ -2687,13 +2803,13 @@ html.light-theme .vu-meter-label svg {
                 <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin:0 auto;"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
             </div>
             <h3 style="font-size: 15px; font-weight: 800; margin-bottom: 6px;">
-                <%= isRtl ? 'الهاتف نشط في نافذة أخرى' : 'Softphone Active in Another Window' %>
+                Softphone Active in Another Window
             </h3>
             <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 16px;">
-                <%= isRtl ? 'يوجد اتصال نشط قيد التشغيل في علامة تبويب أخرى. للحفاظ على استقرار المكالمات، يتم تشغيل هاتف واحد فقط.' : 'An active softphone session is currently running in another browser tab. Only one session can register at a time.' %>
+                An active softphone session is currently running in another browser tab. Only one session can register at a time.
             </p>
             <button type="button" onclick="window.softphoneUi.core.takeOverOwnership()" class="btn btn-primary w-full">
-                <%= isRtl ? 'سحب التحكم إلى هذه النافذة ↗' : 'Take Over Control ↗' %>
+                Take Over Control ↗
             </button>
         </div>
     </div>
@@ -2708,11 +2824,11 @@ html.light-theme .vu-meter-label svg {
             <div class="titlebar-actions">
                 <button type="button" class="titlebar-action-pill" onclick="window.softphoneUi.openPresetModal()" title="Accounts">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    <span><%= isRtl ? 'الحسابات' : 'Accounts' %></span>
+                    <span>Accounts</span>
                 </button>
                 <button type="button" class="titlebar-action-pill" onclick="window.softphoneUi.openAudioModal()" title="Audio Settings">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"></path><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path></svg>
-                    <span><%= isRtl ? 'الصوت' : 'Audio' %></span>
+                    <span>Audio</span>
                 </button>
                 <button type="button" onclick="window.softphoneUi.toggleSplitView()" id="splitViewToggleBtn" class="titlebar-btn" title="Toggle Split View / Dual Line Mode" style="display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 800; padding: 3px 8px; border: 1px solid var(--border-primary); border-radius: var(--radius-sm);">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="0"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
@@ -2737,13 +2853,13 @@ html.light-theme .vu-meter-label svg {
                         <option value="ext_150" selected>Ext 150 (pjsip)</option>
                         <option value="ext_151">Ext 151 (Line 2 Ext 151)</option>
                     </select>
-                    <input type="password" id="passwordInput" placeholder="<%= isRtl ? 'كلمة السر' : 'Password' %>" class="input-text font-mono" style="width: 85px;">
+                    <input type="password" id="passwordInput" placeholder="Password" class="input-text font-mono" style="width: 85px;">
                     <button type="button" id="connectBtn" class="btn btn-primary">
-                        <%= isRtl ? 'اتصال' : 'Connect' %>
+                        Connect
                     </button>
                     <div id="statusBadge" class="status-pill">
                         <span style="font-size: 7px;">●</span>
-                        <span id="statusText"><%= isRtl ? 'غير متصل' : 'Offline' %></span>
+                        <span id="statusText">Offline</span>
                     </div>
                 </div>
             </div>
@@ -2769,10 +2885,10 @@ html.light-theme .vu-meter-label svg {
                 <div id="micBanner" style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 8px 12px; margin-bottom: 10px; display: none; align-items: center; justify-content: space-between;">
                     <div style="font-size: 11px; font-weight: 700; color: #fbbf24; display: flex; align-items: center; gap: 6px;">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
-                        <span><%= isRtl ? 'إذن الميكروفون مطلوب لإجراء واستقبال المكالمات.' : 'Microphone permission required for voice calls.' %></span>
+                        <span>Microphone permission required for voice calls.</span>
                     </div>
                     <button type="button" onclick="window.softphoneUi.core.acquireMicrophone()" class="btn btn-primary" style="padding: 4px 10px; font-size: 10px;">
-                        <%= isRtl ? 'السماح' : 'Grant' %>
+                        Grant
                     </button>
                 </div>
 
@@ -2780,15 +2896,15 @@ html.light-theme .vu-meter-label svg {
                 <div class="sub-nav-tabs">
                     <button type="button" class="sub-nav-tab active" id="tabBtnDialer" onclick="window.softphoneUi.switchTab('dialer')">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                        <span><%= isRtl ? 'لوحة الاتصال' : 'Dialer' %></span>
+                        <span>Dialer</span>
                     </button>
                     <button type="button" class="sub-nav-tab" id="tabBtnContacts" onclick="window.softphoneUi.switchTab('contacts')">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                        <span><%= isRtl ? 'جهات الاتصال' : 'Contacts' %></span>
+                        <span>Contacts</span>
                     </button>
                     <button type="button" class="sub-nav-tab" id="tabBtnHistory" onclick="window.softphoneUi.switchTab('history')">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        <span><%= isRtl ? 'سجل المكالمات' : 'Recent Calls' %></span>
+                        <span>Recent Calls</span>
                     </button>
                 </div>
 
@@ -2828,27 +2944,27 @@ html.light-theme .vu-meter-label svg {
                         <div class="keypad-action-row">
                             <button type="button" id="callBtn" class="call-pill-btn" title="Place Call">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                                <span><%= isRtl ? 'اتصال' : 'Call' %></span>
+                                <span>Call</span>
                             </button>
                             <button type="button" class="call-aux-btn" onclick="document.getElementById('dialInput').value=''" title="Clear">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                                <span><%= isRtl ? 'مسح' : 'Clear' %></span>
+                                <span>Clear</span>
                             </button>
                         </div>
 
                                                 <!-- Live In-Call & Toggle Tools Bar (With Sokrat Hardware Controls & State Glows) -->
                         <div class="dialer-tool-bar">
-                            <button type="button" class="tool-icon-btn" id="toolBtnSpeakerMute" onclick="window.softphoneUi.toggleSpeakerMute()" title="<%= isRtl ? 'كتم صوت السماعة' : 'Mute Speaker Audio' %>">
+                            <button type="button" class="tool-icon-btn" id="toolBtnSpeakerMute" onclick="window.softphoneUi.toggleSpeakerMute()" title="Mute Speaker Audio">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"></path><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path></svg>
-                                <span class="tool-label"><%= isRtl ? 'سماعة' : 'Speaker' %></span>
+                                <span class="tool-label">Speaker</span>
                             </button>
-                            <button type="button" class="tool-icon-btn" id="toolBtnDnd" onclick="document.getElementById('dndCheckbox').checked=!document.getElementById('dndCheckbox').checked; document.getElementById('dndCheckbox').dispatchEvent(new Event('change'))" title="<%= isRtl ? 'وضع عدم الإزعاج' : 'Do Not Disturb (DND)' %>">
+                            <button type="button" class="tool-icon-btn" id="toolBtnDnd" onclick="document.getElementById('dndCheckbox').checked=!document.getElementById('dndCheckbox').checked; document.getElementById('dndCheckbox').dispatchEvent(new Event('change'))" title="Do Not Disturb (DND)">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-                                <span class="tool-label"><%= isRtl ? 'إزعاج' : 'DND' %></span>
+                                <span class="tool-label">DND</span>
                             </button>
-                            <button type="button" class="tool-icon-btn" id="toolBtnAuto" onclick="document.getElementById('autoAnswerCheckbox').checked=!document.getElementById('autoAnswerCheckbox').checked; document.getElementById('autoAnswerCheckbox').dispatchEvent(new Event('change'))" title="<%= isRtl ? 'الرد التلقائي' : 'Auto Answer' %>">
+                            <button type="button" class="tool-icon-btn" id="toolBtnAuto" onclick="document.getElementById('autoAnswerCheckbox').checked=!document.getElementById('autoAnswerCheckbox').checked; document.getElementById('autoAnswerCheckbox').dispatchEvent(new Event('change'))" title="Auto Answer">
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                                <span class="tool-label"><%= isRtl ? 'تلقائي' : 'Auto' %></span>
+                                <span class="tool-label">Auto</span>
                             </button>
                         </div>
 
@@ -2859,12 +2975,12 @@ html.light-theme .vu-meter-label svg {
                         <div class="dual-vu-meters-deck">
                             <div class="vu-channel-card">
                                 <div class="vu-channel-header">
-                                    <div class="vu-meter-label" title="<%= isRtl ? 'مستوى صوت وحساسية الميكروفون' : 'Microphone Input & Volume' %>">
+                                    <div class="vu-meter-label" title="Microphone Input &amp; Volume">
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
-                                        <span><%= isRtl ? 'ميك' : 'MIC' %></span>
+                                        <span>MIC</span>
                                     </div>
                                     <div class="vu-slider-wrap">
-                                        <input type="range" id="micVolumeSlider" class="vu-volume-slider" min="0" max="100" value="100" step="1" title="<%= isRtl ? 'التحكم في صوت الميكروفون' : 'Microphone Volume Control' %>">
+                                        <input type="range" id="micVolumeSlider" class="vu-volume-slider" min="0" max="100" value="100" step="1" title="Microphone Volume Control">
                                         <span id="micVolumeVal" class="vu-vol-val">100%</span>
                                     </div>
                                 </div>
@@ -2874,12 +2990,12 @@ html.light-theme .vu-meter-label svg {
                             </div>
                             <div class="vu-channel-card">
                                 <div class="vu-channel-header">
-                                    <div class="vu-meter-label" title="<%= isRtl ? 'مستوى صوت السماعة' : 'Speaker Output & Volume' %>">
+                                    <div class="vu-meter-label" title="Speaker Output &amp; Volume">
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
-                                        <span><%= isRtl ? 'سماعة' : 'SPK' %></span>
+                                        <span>SPK</span>
                                     </div>
                                     <div class="vu-slider-wrap">
-                                        <input type="range" id="speakerVolumeSlider" class="vu-volume-slider" min="0" max="100" value="100" step="1" title="<%= isRtl ? 'التحكم في صوت السماعة' : 'Speaker Volume Control' %>">
+                                        <input type="range" id="speakerVolumeSlider" class="vu-volume-slider" min="0" max="100" value="100" step="1" title="Speaker Volume Control">
                                         <span id="speakerVolumeVal" class="vu-vol-val">100%</span>
                                     </div>
                                 </div>
@@ -2901,11 +3017,11 @@ html.light-theme .vu-meter-label svg {
                     <div class="recent-calls-sec">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
                             <div class="recent-calls-title">
-                                <%= isRtl ? 'سجل المكالمات الأخيرة' : 'Recent Calls' %>
+                                Recent Calls
                             </div>
                             <button type="button" onclick="window.softphoneUi.clearCallLogs()" class="btn btn-secondary text-xs" style="padding: 4px 10px; font-size: 11px; gap: 4px;">
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                                <span><%= isRtl ? 'مسح السجل' : 'Clear History' %></span>
+                                <span>Clear History</span>
                             </button>
                         </div>
                         <div class="recent-calls-list" id="callHistoryList"></div>
@@ -2920,7 +3036,7 @@ html.light-theme .vu-meter-label svg {
         <div class="modal-card" style="max-width: 480px;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
                 <h3 id="modalPresetTitle" style="font-size: 15px; font-weight: 800; color: var(--accent-color); margin: 0;">
-                    <%= isRtl ? 'إدارة الحسابات المحفوظة' : 'Manage Accounts' %>
+                    Manage Accounts
                 </h3>
                 <button type="button" onclick="window.softphoneUi.closePresetModal()" style="background: none; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; padding: 2px;">✕</button>
             </div>
@@ -2928,10 +3044,10 @@ html.light-theme .vu-meter-label svg {
             <!-- Modal Sub-Tabs (Saved Accounts vs Add Account) -->
             <div class="modal-tabs">
                 <button type="button" id="modalTabBtnSaved" class="modal-tab-btn active" onclick="window.softphoneUi.switchModalTab('saved')">
-                    <%= isRtl ? 'الحسابات المحفوظة (دخول سريع)' : 'Saved Accounts' %>
+                    Saved Accounts
                 </button>
                 <button type="button" id="modalTabBtnAdd" class="modal-tab-btn" onclick="window.softphoneUi.switchModalTab('add')">
-                    <%= isRtl ? '+ إضافة حساب جديد' : '+ Add Account' %>
+                    + Add Account
                 </button>
             </div>
 
@@ -2940,7 +3056,7 @@ html.light-theme .vu-meter-label svg {
                 <div id="modalSavedAccountsList" class="saved-accounts-roster"></div>
                 <div style="display: flex; justify-content: flex-end;">
                     <button type="button" onclick="window.softphoneUi.closePresetModal()" class="btn btn-secondary text-xs">
-                        <%= isRtl ? 'إغلاق' : 'Close' %>
+                        Close
                     </button>
                 </div>
             </div>
@@ -2950,55 +3066,63 @@ html.light-theme .vu-meter-label svg {
                 <input type="hidden" id="presetIdInput">
                 <div class="flex flex-col gap-2 mb-3">
                     <div>
-                        <label class="text-xs font-bold text-secondary"><%= isRtl ? 'اختر التحويلة من السيرفر:' : 'Select Extension from PBX:' %></label>
+                        <label class="text-xs font-bold text-secondary">Select Extension from PBX:</label>
                         <select id="presetExtSelect" class="input-text font-mono font-bold mt-1" onchange="window.softphoneUi.onModalExtensionSelected()">
-                            <option value=""><%= isRtl ? '-- اختر التحويلة من السيرفر --' : '-- Select PBX Extension --' %></option>
-                            <% (typeof extensions !== 'undefined' && Array.isArray(extensions) ? extensions : [{extension: '150', name: '150'}, {extension: '151', name: '151'}]).forEach(function(ext) { %>
-                                <option value="<%= ext.extension %>" data-name="<%= ext.name || ext.extension %>">
-                                    <%= (ext.name && ext.name !== ext.extension) ? (ext.extension + ' (' + ext.name + ')') : ('Ext ' + ext.extension) %> (<%= ext.tech || 'pjsip' %>)
+                            <option value="">-- Select PBX Extension --</option>
+                            
+                                <option value="150" data-name="150 (WebRTC)">
+                                    150 (150 (WebRTC)) (pjsip)
                                 </option>
-                            <% }); %>
+                            
+                                <option value="101" data-name="101 (Support)">
+                                    101 (101 (Support)) (pjsip)
+                                </option>
+                            
+                                <option value="102" data-name="102 (Sales)">
+                                    102 (102 (Sales)) (pjsip)
+                                </option>
+                            
                         </select>
                     </div>
                     <div>
-                        <label class="text-xs font-bold text-secondary"><%= isRtl ? 'اسم الحساب:' : 'Account Label:' %></label>
+                        <label class="text-xs font-bold text-secondary">Account Label:</label>
                         <input type="text" id="presetLabelInput" class="input-text mt-1" placeholder="Office Phone">
                     </div>
                     <div>
-                        <label class="text-xs font-bold text-secondary"><%= isRtl ? 'رقم التحويلة:' : 'Extension Number:' %></label>
+                        <label class="text-xs font-bold text-secondary">Extension Number:</label>
                         <input type="text" id="presetExtInput" class="input-text font-mono mt-1" placeholder="150">
                     </div>
                     <div>
-                        <label class="text-xs font-bold text-secondary"><%= isRtl ? 'كلمة سر التحويلة:' : 'Extension Password / Secret:' %></label>
+                        <label class="text-xs font-bold text-secondary">Extension Password / Secret:</label>
                         <input type="password" id="presetSecretInput" class="input-text font-mono mt-1" placeholder="••••••••">
                     </div>
                     <div>
-                        <label class="text-xs font-bold text-secondary"><%= isRtl ? 'نطاق الخادم (Domain/IP):' : 'SIP Domain / Host IP:' %></label>
+                        <label class="text-xs font-bold text-secondary">SIP Domain / Host IP:</label>
                         <input type="text" id="presetDomainInput" class="input-text font-mono mt-1" placeholder="192.168.100.128">
                     </div>
                     <div>
-                        <label class="text-xs font-bold text-secondary"><%= isRtl ? 'رابط WebSocket (WSS):' : 'WebSocket WSS URL:' %></label>
+                        <label class="text-xs font-bold text-secondary">WebSocket WSS URL:</label>
                         <input type="text" id="presetWssInput" class="input-text font-mono mt-1" placeholder="wss://192.168.100.128:8089/ws">
                     </div>
                     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; margin-top: 4px;">
                         <input type="checkbox" id="presetAutoConnectCheckbox" checked style="accent-color: var(--accent-color);">
-                        <span style="font-weight: 700;"><%= isRtl ? 'حفظ كلمة السر والدخول التلقائي فور الاختيار' : 'Save password & auto-login on select' %></span>
+                        <span style="font-weight: 700;">Save password &amp; auto-login on select</span>
                     </label>
                     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
                         <input type="checkbox" id="presetDefaultCheckbox" style="accent-color: var(--accent-color);">
-                        <span style="font-weight: 700;"><%= isRtl ? 'تعيين كحساب افتراضي' : 'Set as default account' %></span>
+                        <span style="font-weight: 700;">Set as default account</span>
                     </label>
                 </div>
                 <div class="flex items-center justify-between gap-2">
                     <button type="button" onclick="window.softphoneUi.deleteCurrentPreset(); window.softphoneUi.closePresetModal();" class="btn btn-danger text-xs">
-                        <%= isRtl ? 'حذف' : 'Delete' %>
+                        Delete
                     </button>
                     <div class="flex gap-2">
                         <button type="button" onclick="window.softphoneUi.switchModalTab('saved')" class="btn btn-secondary text-xs">
-                            <%= isRtl ? 'إلغاء' : 'Cancel' %>
+                            Cancel
                         </button>
                         <button type="button" onclick="window.softphoneUi.savePresetFromModal()" class="btn btn-primary text-xs">
-                            <%= isRtl ? 'حفظ' : 'Save' %>
+                            Save
                         </button>
                     </div>
                 </div>
@@ -3010,26 +3134,26 @@ html.light-theme .vu-meter-label svg {
     <div id="transferModal" class="modal-backdrop hidden">
         <div class="modal-card">
             <h3 style="font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--accent-color);">
-                <%= isRtl ? 'تحويل المكالمة' : 'Transfer Call' %>
+                Transfer Call
             </h3>
             <input type="hidden" id="transferCallIdInput">
             <div class="mb-3">
-                <label class="text-xs font-bold text-secondary"><%= isRtl ? 'الرقم الهدف للتحويل:' : 'Target Extension / Number:' %></label>
+                <label class="text-xs font-bold text-secondary">Target Extension / Number:</label>
                 <input type="text" id="transferTargetInput" class="input-text font-mono mt-1" placeholder="102">
             </div>
 
             <!-- Quick PBX Extensions Roster Grid -->
             <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase;">
-                <%= isRtl ? 'أو اختر تحويلة من السيرفر:' : 'Or Select Extension:' %>
+                Or Select Extension:
             </div>
             <div id="transferExtList" class="transfer-ext-list"></div>
 
             <div class="flex items-center justify-end gap-2">
                 <button type="button" onclick="window.softphoneUi.closeTransferModal()" class="btn btn-secondary text-xs">
-                    <%= isRtl ? 'إلغاء' : 'Cancel' %>
+                    Cancel
                 </button>
                 <button type="button" onclick="window.softphoneUi.executeBlindTransfer()" class="btn btn-primary text-xs">
-                    <%= isRtl ? 'تحويل' : 'Transfer' %>
+                    Transfer
                 </button>
             </div>
         </div>
@@ -3039,25 +3163,25 @@ html.light-theme .vu-meter-label svg {
     <div id="audioModal" class="modal-backdrop hidden">
         <div class="modal-card">
             <h3 style="font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--accent-color);">
-                <%= isRtl ? 'إعدادات أجهزة الصوت' : 'Audio & Device Settings' %>
+                Audio &amp; Device Settings
             </h3>
             <div class="flex flex-col gap-2 mb-3">
                 <div>
-                    <label class="text-xs font-bold text-secondary"><%= isRtl ? 'ميكروفون الإدخال:' : 'Microphone Input:' %></label>
+                    <label class="text-xs font-bold text-secondary">Microphone Input:</label>
                     <select id="audioInputSelect" class="input-text mt-1"></select>
                 </div>
                 <div>
-                    <label class="text-xs font-bold text-secondary"><%= isRtl ? 'سماعة الإخراج:' : 'Speaker Output:' %></label>
+                    <label class="text-xs font-bold text-secondary">Speaker Output:</label>
                     <select id="audioOutputSelect" class="input-text mt-1"></select>
                 </div>
             </div>
             <div class="flex items-center justify-between">
                 <button type="button" onclick="window.softphoneUi.testSpeakerOutput()" class="btn btn-secondary text-xs">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="display:inline;vertical-align:middle;margin-right:3px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-                    <span><%= isRtl ? 'اختبار الصوت' : 'Test Audio' %></span>
+                    <span>Test Audio</span>
                 </button>
                 <button type="button" onclick="document.getElementById('audioModal').classList.add('hidden')" class="btn btn-primary text-xs">
-                    <%= isRtl ? 'تم' : 'Done' %>
+                    Done
                 </button>
             </div>
         </div>
@@ -7943,23 +8067,38 @@ html.light-theme .vu-meter-label svg {
 })(window, document);
 </script>
 
+
 <script>
-// --- React Native Mobile WebView Bridge ---
+// --- Sokrat Mobile Native Bridge ---
 window.isReactNativeMobile = true;
-window.addEventListener('load', () => {
-    if (window.softphoneUI) {
-        const originalSetRegState = window.softphoneUI.core.setRegState.bind(window.softphoneUI.core);
-        window.softphoneUI.core.setRegState = function(state) {
-            originalSetRegState(state);
-            if (window.ReactNativeWebView) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({
-                    type: 'REG_STATE_CHANGE',
-                    state: state,
-                    extension: window.softphoneUI.core.activePreset?.extension || ''
-                }));
+window.addEventListener('DOMContentLoaded', () => {
+    // Mobile touch and audio optimization
+    document.addEventListener('touchstart', function() {}, { passive: true });
+    
+    setTimeout(() => {
+        if (window.softphoneUI) {
+            // Hook registration state changes to sync FCM token with native Android
+            const origSetRegState = window.softphoneUI.core.setRegState.bind(window.softphoneUI.core);
+            window.softphoneUI.core.setRegState = function(state) {
+                origSetRegState(state);
+                if (window.ReactNativeWebView) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'REG_STATE_CHANGE',
+                        state: state,
+                        extension: window.softphoneUI.core.activePreset?.extension || ''
+                    }));
+                }
+            };
+
+            // Auto-open accounts/login modal if not currently registered
+            if (!window.softphoneUI.core.isRegistered()) {
+                const presets = window.softphoneUI.loadPresets();
+                if (!presets || presets.length === 0) {
+                    window.softphoneUI.openPresetModal('add');
+                }
             }
-        };
-    }
+        }
+    }, 400);
 });
 </script>
 
