@@ -4,6 +4,8 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+export type CodecPreference = 'auto' | 'opus' | 'g722' | 'pcmu' | 'pcma';
+
 export interface SavedAccount {
   extension: string;
   password: string;
@@ -11,6 +13,7 @@ export interface SavedAccount {
   useTls: boolean;
   dnd: boolean;
   autoAnswer: boolean;
+  preferredCodec?: CodecPreference;
 }
 
 export interface CallRecord {

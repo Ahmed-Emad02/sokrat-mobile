@@ -91,9 +91,9 @@ export default function App() {
   const answerSipCall = async (callId: string): Promise<boolean> => {
     pendingAnswerUUIDRef.current = callId;
     recordNativeCallAction(callId, 'ANSWER');
+    startCallManagers();
     const answered = await sipRef.current?.answer(callId);
     if (!answered) return false;
-
     pendingAnswerUUIDRef.current = null;
     acknowledgeNativeCallAction(callId, 'ANSWER');
     if (sipRef.current?.activeCall) {
@@ -254,7 +254,9 @@ export default function App() {
         useTls: false,
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
+        preferredCodec: storedAccount?.preferredCodec || 'opus',
       };
+      sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
       setAccount(activeAccount);
       setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
@@ -428,6 +430,7 @@ export default function App() {
   const handleSaveAccount = async (newAcc: SavedAccount) => {
     setAccount(newAcc);
     await StorageService.saveAccount(newAcc);
+    sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
     CONFIG.sipDomain = newAcc.serverHost;
     CONFIG.sipWss = `${newAcc.useTls ? 'wss' : 'ws'}://${newAcc.serverHost}:${newAcc.useTls ? 8089 : 8088}/ws`;
     CONFIG.pushGateway = `http://${newAcc.serverHost}:8095`;

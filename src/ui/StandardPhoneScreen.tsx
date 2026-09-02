@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
-import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService } from '../storage/store';
+import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, CodecPreference } from '../storage/store';
 import { SipState, ActiveCall } from '../sip/JsSipService';
 import {
   PhoneIcon,
@@ -125,6 +125,7 @@ export function StandardPhoneScreen({
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
+  const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'opus');
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
@@ -198,6 +199,18 @@ export function StandardPhoneScreen({
       }
     } catch {}
   };
+
+  useEffect(() => {
+    if (account) {
+      setEditExt(account.extension);
+      setEditPass(account.password);
+      setEditHost(account.serverHost);
+      setEditTls(account.useTls);
+      setEditDnd(account.dnd);
+      setEditAuto(account.autoAnswer);
+      setEditCodec(account.preferredCodec || 'opus');
+    }
+  }, [account]);
 
   useEffect(() => {
     void fetchExtensions();
@@ -333,6 +346,7 @@ export function StandardPhoneScreen({
       useTls: editTls,
       dnd: editDnd,
       autoAnswer: editAuto,
+      preferredCodec: editCodec,
     });
     const newSpeedDial: SpeedDialMap = {};
     for (let d = 1; d <= 9; d++) {
@@ -1111,6 +1125,39 @@ export function StandardPhoneScreen({
                     </View>
                   </TouchableOpacity>
 
+
+                  <View style={styles.settingsSectionDivider} />
+                  <Text style={styles.settingsSectionTitle}>Preferred Audio Codec</Text>
+                  <Text style={styles.settingsSectionSub}>
+                    Select your preferred codec for voice calls. Opus delivers HD clarity; G.722 & PCMU offer legacy VoIP compatibility:
+                  </Text>
+
+                  <View style={styles.codecGrid}>
+                    {[
+                      { id: 'opus', label: 'Opus HD', sub: '48 kHz Fullband (Recommended)' },
+                      { id: 'g722', label: 'G.722 HD', sub: '16 kHz Wideband VoIP' },
+                      { id: 'pcmu', label: 'PCMU / G.711u', sub: '8 kHz Standard PSTN' },
+                      { id: 'pcma', label: 'PCMA / G.711a', sub: '8 kHz European PSTN' },
+                      { id: 'auto', label: 'Auto', sub: 'Negotiate all supported codecs' },
+                    ].map((item) => {
+                      const isSelected = editCodec === item.id;
+                      return (
+                        <TouchableOpacity
+                          key={item.id}
+                          style={[styles.codecPill, isSelected && styles.codecPillActive]}
+                          onPress={() => setEditCodec(item.id as CodecPreference)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.codecPillLabel, isSelected && styles.codecPillLabelActive]}>
+                            {item.label}
+                          </Text>
+                          <Text style={[styles.codecPillSub, isSelected && styles.codecPillSubActive]}>
+                            {item.sub}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                   <View style={styles.settingsSectionDivider} />
                   <Text style={styles.settingsSectionTitle}>Speed Dial (Keys 1 – 9)</Text>
                   <Text style={styles.settingsSectionSub}>
@@ -2116,6 +2163,42 @@ const styles = StyleSheet.create({
     color: '#71717a',
     fontSize: 12,
     marginTop: 2,
+  },
+  codecGrid: {
+    flexDirection: 'column',
+    gap: 8,
+    marginTop: 10,
+  },
+  codecPill: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#121214',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  codecPillActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#0c2738',
+  },
+  codecPillLabel: {
+    color: '#a1a1aa',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  codecPillLabelActive: {
+    color: '#38bdf8',
+    fontWeight: '700',
+  },
+  codecPillSub: {
+    color: '#71717a',
+    fontSize: 12,
+  },
+  codecPillSubActive: {
+    color: '#93c5fd',
   },
   settingsActions: {
     flexDirection: 'row',

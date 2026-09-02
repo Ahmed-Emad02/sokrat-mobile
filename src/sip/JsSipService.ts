@@ -7,6 +7,8 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import { CONFIG } from '../config';
+import { startCallManagers } from '../calls/incall';
+import { CodecPreference } from '../storage/store';
 
 const CALL_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -53,12 +55,18 @@ export interface SipEvents {
   onCallHoldChange?: (isHeld: boolean) => void;
   onCallMuteChange?: (isMuted: boolean) => void;
 }
-
 export class JsSipService {
   private ua: JsSIP.UA | null = null;
   private currentSession: unknown = null;
+  private preferredCodec: CodecPreference = 'auto';
+
+  setPreferredCodec(codec: CodecPreference): void {
+    this.preferredCodec = codec;
+    console.log(`[sip] preferred audio codec set to: ${codec}`);
+  }
+
+  private readonly events: SipEvents;
   private localStream: MediaStream | null = null;
-  private events: SipEvents;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
@@ -266,6 +274,17 @@ export class JsSipService {
       }
     });
 
+    // Intercept local SDP to prioritize user's preferred audio codec and enable FEC
+    const rtcSession = session as {
+      on?: (event: string, fn: (data: unknown) => void) => void;
+    };
+    rtcSession.on?.('sdp', (evt: unknown) => {
+      const data = evt as { originator?: string; type?: string; sdp?: string };
+      if (data && data.originator === 'local' && data.sdp) {
+        data.sdp = this.prioritizeCodecInSdp(data.sdp, this.preferredCodec);
+      }
+    });
+
     // Attach session-level listeners
     session.on('progress', () => {
       if (this.activeCall) {
@@ -375,18 +394,35 @@ export class JsSipService {
       console.warn('[sip] microphone acquisition timed out after 3000ms');
       resolve(null);
     }, 3000);
+    // 1. Ensure phone audio mode is in communication mode (VOICE_COMMUNICATION)
+    // before capturing the microphone so Android HAL attaches the hardware voice mic,
+    // acoustic echo canceler, and noise suppressor.
+    startCallManagers();
 
-    mediaDevices.getUserMedia({ audio: true, video: false })
+    // 2. Explicit voice-processing constraints for WebRTC Audio Processing Module (APM)
+    const audioConstraints: Record<string, unknown> = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      googEchoCancellation: true,
+      googNoiseSuppression: true,
+      googAutoGainControl: true,
+      googHighpassFilter: true,
+      googAudioMirroring: false,
+    };
+
+    mediaDevices
+      .getUserMedia({ audio: audioConstraints, video: false })
       .then((value) => {
         const stream = value as unknown as MediaStream;
         if (finished) {
-          stream.getTracks?.().forEach((track) => track.stop());
+          stream.getTracks?.().forEach((track: MediaStreamTrack) => track.stop());
           return;
         }
         finished = true;
         clearTimeout(timer);
         const tracks = stream.getAudioTracks?.() || [];
-        tracks.forEach((track) => { track.enabled = true; });
+        tracks.forEach((track: MediaStreamTrack) => { track.enabled = true; });
         console.log(`[sip] microphone acquired tracks=${tracks.length}`);
         resolve(tracks.length > 0 ? stream : null);
       })
@@ -661,5 +697,69 @@ export class JsSipService {
 
   isConnectedOrConnecting(): boolean {
     return this.state === 'registered' || this.state === 'connecting';
+  }
+
+  /**
+   * Reorder audio payload types in local SDP so the user's preferred codec
+   * is placed at highest priority, and ensure inband FEC is enabled for Opus.
+   */
+  private prioritizeCodecInSdp(sdp: string, preferred: CodecPreference): string {
+    if (!sdp) return sdp;
+
+    const lines = sdp.split('\r\n');
+    const targetCodec = preferred.toLowerCase();
+
+    // 1. Build payload-to-codec mapping from rtpmap attributes
+    const payloadToCodec: Record<string, string> = {
+      '0': 'pcmu',
+      '8': 'pcma',
+      '9': 'g722',
+    };
+
+    for (const line of lines) {
+      const match = /^a=rtpmap:(\d+)\s+([\w-]+)\//i.exec(line);
+      if (match) {
+        payloadToCodec[match[1]] = match[2].toLowerCase();
+      }
+    }
+
+    let targetPayload: string | null = null;
+    if (preferred !== 'auto') {
+      for (const [pt, codecName] of Object.entries(payloadToCodec)) {
+        if (codecName === targetCodec) {
+          targetPayload = pt;
+          break;
+        }
+      }
+    }
+
+    // 2. Reorder m=audio line if a target payload is selected
+    const updatedLines = lines.map((line) => {
+      if (targetPayload && line.startsWith('m=audio ')) {
+        const parts = line.split(' ');
+        if (parts.length > 3) {
+          const prefix = parts.slice(0, 3);
+          const payloads = parts.slice(3);
+          const remaining = payloads.filter((p) => p !== targetPayload);
+          const reordered = [targetPayload, ...remaining];
+          return `${prefix.join(' ')} ${reordered.join(' ')}`;
+        }
+      }
+      return line;
+    });
+
+    // 3. For Opus, ensure inband FEC (useinbandfec=1) is active for packet loss protection
+    const opusPayload = Object.entries(payloadToCodec).find(([, name]) => name === 'opus')?.[0];
+    if (opusPayload) {
+      for (let i = 0; i < updatedLines.length; i++) {
+        if (updatedLines[i].startsWith(`a=fmtp:${opusPayload} `)) {
+          if (!updatedLines[i].includes('useinbandfec=1')) {
+            updatedLines[i] = `${updatedLines[i]};useinbandfec=1`;
+          }
+        }
+      }
+    }
+
+    return updatedLines.join('\r\n');
   }
 }
