@@ -223,6 +223,7 @@ export function StandardPhoneScreen({
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState<BottomTab>('phone');
   const [digits, setDigits] = useState('');
+  const [cursorIndex, setCursorIndex] = useState(0);
   const [showMenu, setShowMenu] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showAddContactModal, setShowAddContactModal] = useState(false);
@@ -449,12 +450,24 @@ export function StandardPhoneScreen({
 
   const handleDigitPress = (d: string) => {
     cursorOpacity.setValue(1);
-    setDigits((prev) => prev + d);
+    setDigits((prev) => {
+      const idx = Math.max(0, Math.min(prev.length, cursorIndex));
+      const next = prev.slice(0, idx) + d + prev.slice(idx);
+      setCursorIndex(idx + 1);
+      return next;
+    });
   };
 
   const handleBackspace = () => {
     cursorOpacity.setValue(1);
-    setDigits((prev) => prev.slice(0, -1));
+    setDigits((prev) => {
+      if (!prev) return '';
+      const idx = Math.max(0, Math.min(prev.length, cursorIndex));
+      if (idx <= 0) return prev;
+      const next = prev.slice(0, idx - 1) + prev.slice(idx);
+      setCursorIndex(idx - 1);
+      return next;
+    });
   };
 
   const hasDigits = digits.trim().length > 0;
@@ -469,6 +482,7 @@ export function StandardPhoneScreen({
       setShowAddContactModal(true);
     } else if (hasRedial) {
       setDigits(lastCallNumber);
+      setCursorIndex(lastCallNumber.length);
     }
   };
 
@@ -476,6 +490,7 @@ export function StandardPhoneScreen({
     if (!digits.trim()) return;
     onCall(digits.trim());
     setDigits('');
+    setCursorIndex(0);
   };
 
   const handleSaveSettings = () => {
@@ -935,19 +950,85 @@ export function StandardPhoneScreen({
           >
             {isDialpadVisible && (
               <>
-                {/* Number Display with inline Backspace & Blinking Caret Indicator */}
+                {/* Number Display with inline Backspace & Movable Caret Indicator */}
                 <View style={styles.numberRow}>
-                  <View style={styles.digitsWrapper}>
-                    <Text style={styles.dialedDigits} numberOfLines={1}>
-                      {digits}
-                    </Text>
-                    <Animated.View
-                      style={[
-                        styles.cursorCaret,
-                        { opacity: cursorOpacity },
-                      ]}
-                    />
-                  </View>
+                  {digits.length === 0 ? (
+                    <View style={styles.digitsWrapper}>
+                      <Animated.View
+                        style={[
+                          styles.cursorCaret,
+                          { opacity: cursorOpacity },
+                        ]}
+                      />
+                    </View>
+                  ) : (
+                    <View style={styles.digitsWrapper}>
+                      {/* Leading edge touch target */}
+                      <TouchableOpacity
+                        style={styles.cursorEdgeTouch}
+                        onPress={() => {
+                          cursorOpacity.setValue(1);
+                          setCursorIndex(0);
+                        }}
+                        hitSlop={{ top: 12, bottom: 12, left: 16, right: 4 }}
+                        activeOpacity={1}
+                      />
+
+                      {digits.split('').map((char, index) => {
+                        const isCaretHere = cursorIndex === index;
+                        return (
+                          <React.Fragment key={`${index}-${char}`}>
+                            {isCaretHere && (
+                              <Animated.View
+                                style={[
+                                  styles.cursorCaret,
+                                  { opacity: cursorOpacity },
+                                ]}
+                              />
+                            )}
+                            <TouchableOpacity
+                              style={styles.digitCharTouch}
+                              onPress={(e) => {
+                                cursorOpacity.setValue(1);
+                                const locX = e.nativeEvent.locationX;
+                                if (locX < 10) {
+                                  setCursorIndex(index);
+                                } else {
+                                  setCursorIndex(index + 1);
+                                }
+                              }}
+                              hitSlop={{ top: 10, bottom: 10, left: 2, right: 2 }}
+                              activeOpacity={1}
+                            >
+                              <Text style={styles.dialedDigits}>{char}</Text>
+                            </TouchableOpacity>
+                          </React.Fragment>
+                        );
+                      })}
+
+                      {/* Caret at trailing end */}
+                      {cursorIndex >= digits.length && (
+                        <Animated.View
+                          style={[
+                            styles.cursorCaret,
+                            { opacity: cursorOpacity },
+                          ]}
+                        />
+                      )}
+
+                      {/* Trailing edge touch target */}
+                      <TouchableOpacity
+                        style={styles.cursorEdgeTouch}
+                        onPress={() => {
+                          cursorOpacity.setValue(1);
+                          setCursorIndex(digits.length);
+                        }}
+                        hitSlop={{ top: 12, bottom: 12, left: 4, right: 16 }}
+                        activeOpacity={1}
+                      />
+                    </View>
+                  )}
+
                   {hasDigits ? (
                     <TouchableOpacity
                       style={styles.topBackspaceBtn}
@@ -955,6 +1036,7 @@ export function StandardPhoneScreen({
                       onLongPress={() => {
                         cursorOpacity.setValue(1);
                         setDigits('');
+                        setCursorIndex(0);
                       }}
                       hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
                       activeOpacity={0.6}
@@ -1792,12 +1874,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 2,
   },
+  digitCharTouch: {
+    paddingHorizontal: 1,
+    paddingVertical: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cursorEdgeTouch: {
+    width: 6,
+    height: 32,
+  },
   cursorCaret: {
     width: 2.5,
     height: 28,
     backgroundColor: '#38bdf8',
     borderRadius: 1.5,
-    marginLeft: 3,
+    marginHorizontal: 1.5,
   },
   keypadGrid: {
     flexDirection: 'row',
