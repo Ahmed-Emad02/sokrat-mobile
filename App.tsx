@@ -262,6 +262,7 @@ export default function App() {
       sip.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
       void setNativeSpeakerVolume(activeAccount.speakerVolume ?? 85);
       setAccount(activeAccount);
+      setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
       CONFIG.sipDomain = activeAccount.serverHost;
       CONFIG.sipWss =
@@ -275,6 +276,9 @@ export default function App() {
         activeAccount.serverHost,
         activeAccount.useTls,
       );
+    }).catch((err) => {
+      console.error('[app] account load failed:', err);
+      setIsAuthLoaded(true);
     });
     StorageService.getCallHistory().then(setCallsHistory);
     StorageService.getContacts().then(setContacts);
