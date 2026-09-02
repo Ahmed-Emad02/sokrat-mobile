@@ -770,7 +770,12 @@ export function StandardPhoneScreen({
           </View>
 
           {/* Lower Half: Dialpad Display & 3x4 Keypad */}
-          <View style={styles.dialpadSection}>
+          <View
+            style={[
+              styles.dialpadSection,
+              !isDialpadVisible && styles.dialpadSectionCollapsed,
+            ]}
+          >
             {isDialpadVisible && (
               <>
                 {/* Number Display with inline Backspace */}
@@ -838,7 +843,12 @@ export function StandardPhoneScreen({
             )}
 
             {/* Bottom Action Bar */}
-            <View style={styles.dialActionsRow}>
+            <View
+              style={[
+                styles.dialActionsRow,
+                isDialpadVisible && styles.dialActionsRowExpanded,
+              ]}
+            >
               <TouchableOpacity
                 style={[
                   styles.dialAuxBtn,
@@ -1004,14 +1014,14 @@ export function StandardPhoneScreen({
       <Modal visible={showSettingsModal} transparent animationType="fade" onRequestClose={() => setShowSettingsModal(false)}>
         <TouchableWithoutFeedback onPress={() => setShowSettingsModal(false)}>
           <View style={styles.modalBackdrop}>
-            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-              <View style={styles.settingsCardWrapper}>
-                <ScrollView
-                  style={styles.settingsScroll}
-                  contentContainerStyle={styles.settingsCard}
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                >
+            <View style={styles.settingsCardWrapper}>
+              <ScrollView
+                style={styles.settingsScroll}
+                contentContainerStyle={styles.settingsCard}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled={true}
+              >
                   <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
 
                   <Text style={styles.fieldLabel}>SIP EXTENSION</Text>
@@ -1045,29 +1055,61 @@ export function StandardPhoneScreen({
                     autoCorrect={false}
                   />
 
-                  <View style={styles.switchRow}>
-                    <View>
+                  <TouchableOpacity
+                    style={styles.switchRow}
+                    activeOpacity={0.7}
+                    onPress={() => setEditTls(!editTls)}
+                  >
+                    <View style={styles.switchTextCol}>
                       <Text style={styles.switchLabel}>TLS / WSS Protocol</Text>
-                      <Text style={styles.switchSub}>{editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}</Text>
+                      <Text style={styles.switchSub}>
+                        {editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}
+                      </Text>
                     </View>
-                    <Switch value={editTls} onValueChange={setEditTls} thumbColor={editTls ? '#38bdf8' : '#555'} />
-                  </View>
+                    <View pointerEvents="none">
+                      <Switch
+                        value={editTls}
+                        thumbColor={editTls ? '#38bdf8' : '#71717a'}
+                        trackColor={{ false: '#3f3f46', true: '#0369a1' }}
+                      />
+                    </View>
+                  </TouchableOpacity>
 
-                  <View style={styles.switchRow}>
-                    <View>
+                  <TouchableOpacity
+                    style={styles.switchRow}
+                    activeOpacity={0.7}
+                    onPress={() => setEditDnd(!editDnd)}
+                  >
+                    <View style={styles.switchTextCol}>
                       <Text style={styles.switchLabel}>Do Not Disturb (DND)</Text>
                       <Text style={styles.switchSub}>Auto-reject incoming calls</Text>
                     </View>
-                    <Switch value={editDnd} onValueChange={setEditDnd} thumbColor={editDnd ? '#ef4444' : '#555'} />
-                  </View>
+                    <View pointerEvents="none">
+                      <Switch
+                        value={editDnd}
+                        thumbColor={editDnd ? '#ef4444' : '#71717a'}
+                        trackColor={{ false: '#3f3f46', true: '#991b1b' }}
+                      />
+                    </View>
+                  </TouchableOpacity>
 
-                  <View style={styles.switchRow}>
-                    <View>
+                  <TouchableOpacity
+                    style={styles.switchRow}
+                    activeOpacity={0.7}
+                    onPress={() => setEditAuto(!editAuto)}
+                  >
+                    <View style={styles.switchTextCol}>
                       <Text style={styles.switchLabel}>Auto-Answer</Text>
                       <Text style={styles.switchSub}>Auto-accept incoming calls</Text>
                     </View>
-                    <Switch value={editAuto} onValueChange={setEditAuto} thumbColor={editAuto ? '#10b981' : '#555'} />
-                  </View>
+                    <View pointerEvents="none">
+                      <Switch
+                        value={editAuto}
+                        thumbColor={editAuto ? '#10b981' : '#71717a'}
+                        trackColor={{ false: '#3f3f46', true: '#065f46' }}
+                      />
+                    </View>
+                  </TouchableOpacity>
 
                   <View style={styles.settingsSectionDivider} />
                   <Text style={styles.settingsSectionTitle}>Speed Dial (Keys 1 – 9)</Text>
@@ -1124,7 +1166,6 @@ export function StandardPhoneScreen({
                   </View>
                 </ScrollView>
               </View>
-            </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
@@ -1498,6 +1539,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 8,
   },
+  dialpadSectionCollapsed: {
+    paddingTop: 16,
+    paddingBottom: 16,
+    minHeight: 80,
+    justifyContent: 'center',
+  },
   numberRow: {
     minHeight: 44,
     justifyContent: 'center',
@@ -1557,8 +1604,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 12,
     paddingHorizontal: 16,
+  },
+  dialActionsRowExpanded: {
+    marginTop: 12,
   },
   dialAuxBtn: {
     width: 48,
@@ -1572,10 +1621,11 @@ const styles = StyleSheet.create({
   mainCallPill: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#38bdf8',
     paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: 30,
+    height: 48,
+    borderRadius: 24,
     gap: 8,
   },
   mainCallPillDisabled: {
@@ -1585,6 +1635,8 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontWeight: '700',
     fontSize: 14,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
   },
   bottomNav: {
     flexDirection: 'row',
@@ -2050,6 +2102,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 14,
     paddingVertical: 4,
+  },
+  switchTextCol: {
+    flex: 1,
+    marginRight: 12,
   },
   switchLabel: {
     color: '#ffffff',
