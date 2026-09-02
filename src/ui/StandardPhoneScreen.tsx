@@ -668,36 +668,45 @@ export function StandardPhoneScreen({
                 keyExtractor={(item) => item.id}
                 showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => (
-                  <TouchableOpacity style={styles.recentItem} onPress={() => onCall(item.number)}>
-                    <View style={styles.avatarMini}>
-                      <UserIcon size={20} color="#a1a1aa" />
-                    </View>
+                  <View style={styles.recentItem}>
+                    <TouchableOpacity
+                      style={styles.recentMainCol}
+                      onPress={() => onCall(item.number)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.avatarMini}>
+                        <UserIcon size={20} color="#a1a1aa" />
+                      </View>
 
-                    <View style={styles.recentInfo}>
-                      <Text
-                        style={[
-                          styles.recentName,
-                          item.direction === 'missed' && styles.recentNameMissed,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {item.name || item.number}
-                      </Text>
-                      <Text style={styles.recentSub}>
-                        {item.direction === 'missed' ? 'Missed call' : 'VoIP'}
-                      </Text>
-                    </View>
+                      <View style={styles.recentInfo}>
+                        <Text
+                          style={[
+                            styles.recentName,
+                            item.direction === 'missed' && styles.recentNameMissed,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.name || item.number}
+                        </Text>
+                        <Text style={styles.recentSub}>
+                          {item.direction === 'missed' ? 'Missed call' : 'VoIP'}
+                        </Text>
+                      </View>
 
-                    <Text style={styles.recentTime}>{formatTimeAgo(item.timestamp)}</Text>
+                      <Text style={styles.recentTime}>{formatTimeAgo(item.timestamp)}</Text>
+                    </TouchableOpacity>
+
                     <TouchableOpacity
                       style={styles.infoCircleBtn}
                       onPress={() => handleOpenCallDetails(item)}
+                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                      activeOpacity={0.6}
                       accessibilityRole="button"
                       accessibilityLabel={`Call details for ${item.name || item.number}`}
                     >
-                      <InfoIcon size={20} color="#71717a" />
+                      <InfoIcon size={20} color="#38bdf8" />
                     </TouchableOpacity>
-                  </TouchableOpacity>
+                  </View>
                 )}
               />
             )}
@@ -887,136 +896,7 @@ export function StandardPhoneScreen({
               </View>
             )}
           />
-      {/* Call Details & Quick Actions Sheet */}
-      <Modal
-        visible={showCallDetailsModal && Boolean(selectedCallRecord)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowCallDetailsModal(false)}
-      >
-        <TouchableWithoutFeedback onPress={() => setShowCallDetailsModal(false)}>
-          <View style={styles.modalBackdrop}>
-            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-              <View style={styles.callDetailsCard}>
-                <View style={styles.callDetailsHeaderRow}>
-                  <Text style={styles.dialogTitle}>Call Details</Text>
-                  <TouchableOpacity
-                    onPress={() => setShowCallDetailsModal(false)}
-                    style={styles.transferDismissBtn}
-                  >
-                    <Text style={styles.transferDismissText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
 
-                {selectedCallRecord && (
-                  <>
-                    {/* Caller Avatar & Name */}
-                    <View style={styles.callDetailsIdentity}>
-                      <View style={styles.callDetailsAvatar}>
-                        <UserIcon size={34} color="#38bdf8" />
-                      </View>
-                      <Text style={styles.callDetailsName} numberOfLines={1}>
-                        {selectedCallRecord.name || selectedCallRecord.number}
-                      </Text>
-                      <Text style={styles.callDetailsNumber}>
-                        {selectedCallRecord.name && selectedCallRecord.name !== selectedCallRecord.number
-                          ? `Ext ${selectedCallRecord.number} · VoIP`
-                          : 'VoIP Extension'}
-                      </Text>
-                    </View>
-
-                    {/* Quick Action Buttons Row */}
-                    <View style={styles.callDetailsActionsRow}>
-                      <TouchableOpacity
-                        style={styles.callDetailsActionPill}
-                        onPress={() => {
-                          const num = selectedCallRecord.number;
-                          setShowCallDetailsModal(false);
-                          onCall(num);
-                        }}
-                      >
-                        <PhoneIcon size={16} color="#000000" />
-                        <Text style={styles.callDetailsActionText}>Call</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.callDetailsActionSecondary}
-                        onPress={() => {
-                          const num = selectedCallRecord.number;
-                          const name =
-                            selectedCallRecord.name !== selectedCallRecord.number
-                              ? selectedCallRecord.name
-                              : '';
-                          setShowCallDetailsModal(false);
-                          setNewContactName(name);
-                          setNewContactNumber(num);
-                          setShowAddContactModal(true);
-                        }}
-                      >
-                        <UserPlusIcon size={16} color="#ffffff" />
-                        <Text style={styles.callDetailsSecondaryText}>Add Contact</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.callDetailsActionDanger}
-                        onPress={() => {
-                          if (onDeleteCallRecord) {
-                            onDeleteCallRecord(selectedCallRecord.id);
-                          }
-                          setShowCallDetailsModal(false);
-                        }}
-                      >
-                        <TrashIcon size={16} color="#ef4444" />
-                        <Text style={styles.callDetailsDangerText}>Delete</Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Detailed Metadata Card */}
-                    <View style={styles.callDetailsMetaCard}>
-                      <View style={styles.callDetailsMetaRow}>
-                        <Text style={styles.callDetailsMetaLabel}>Call Type</Text>
-                        <Text
-                          style={[
-                            styles.callDetailsMetaValue,
-                            selectedCallRecord.direction === 'missed' && { color: '#ef4444' },
-                          ]}
-                        >
-                          {selectedCallRecord.direction === 'inbound'
-                            ? 'Incoming (Answered)'
-                            : selectedCallRecord.direction === 'outbound'
-                            ? 'Outgoing Call'
-                            : 'Missed Call'}
-                        </Text>
-                      </View>
-
-                      <View style={styles.callDetailsMetaDivider} />
-
-                      <View style={styles.callDetailsMetaRow}>
-                        <Text style={styles.callDetailsMetaLabel}>Date & Time</Text>
-                        <Text style={styles.callDetailsMetaValue}>
-                          {formatExactDate(selectedCallRecord.timestamp)}
-                        </Text>
-                      </View>
-
-                      {selectedCallRecord.duration != null && selectedCallRecord.duration > 0 && (
-                        <>
-                          <View style={styles.callDetailsMetaDivider} />
-                          <View style={styles.callDetailsMetaRow}>
-                            <Text style={styles.callDetailsMetaLabel}>Duration</Text>
-                            <Text style={styles.callDetailsMetaValue}>
-                              {formatCallTime(selectedCallRecord.duration)}
-                            </Text>
-                          </View>
-                        </>
-                      )}
-                    </View>
-                  </>
-                )}
-              </View>
-            </TouchableWithoutFeedback>
-          </View>
-        </TouchableWithoutFeedback>
-      </Modal>
         </View>
       )}
 
@@ -1209,6 +1089,136 @@ export function StandardPhoneScreen({
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+      {/* Call Details & Quick Actions Sheet */}
+      <Modal
+        visible={showCallDetailsModal && Boolean(selectedCallRecord)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCallDetailsModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowCallDetailsModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+              <View style={styles.callDetailsCard}>
+                <View style={styles.callDetailsHeaderRow}>
+                  <Text style={styles.dialogTitle}>Call Details</Text>
+                  <TouchableOpacity
+                    onPress={() => setShowCallDetailsModal(false)}
+                    style={styles.transferDismissBtn}
+                  >
+                    <Text style={styles.transferDismissText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {selectedCallRecord && (
+                  <>
+                    {/* Caller Avatar & Name */}
+                    <View style={styles.callDetailsIdentity}>
+                      <View style={styles.callDetailsAvatar}>
+                        <UserIcon size={34} color="#38bdf8" />
+                      </View>
+                      <Text style={styles.callDetailsName} numberOfLines={1}>
+                        {selectedCallRecord.name || selectedCallRecord.number}
+                      </Text>
+                      <Text style={styles.callDetailsNumber}>
+                        {selectedCallRecord.name && selectedCallRecord.name !== selectedCallRecord.number
+                          ? `Ext ${selectedCallRecord.number} · VoIP`
+                          : 'VoIP Extension'}
+                      </Text>
+                    </View>
+
+                    {/* Quick Action Buttons Row */}
+                    <View style={styles.callDetailsActionsRow}>
+                      <TouchableOpacity
+                        style={styles.callDetailsActionPill}
+                        onPress={() => {
+                          const num = selectedCallRecord.number;
+                          setShowCallDetailsModal(false);
+                          onCall(num);
+                        }}
+                      >
+                        <PhoneIcon size={16} color="#000000" />
+                        <Text style={styles.callDetailsActionText}>Call</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.callDetailsActionSecondary}
+                        onPress={() => {
+                          const num = selectedCallRecord.number;
+                          const name =
+                            selectedCallRecord.name !== selectedCallRecord.number
+                              ? selectedCallRecord.name
+                              : '';
+                          setShowCallDetailsModal(false);
+                          setNewContactName(name);
+                          setNewContactNumber(num);
+                          setShowAddContactModal(true);
+                        }}
+                      >
+                        <UserPlusIcon size={16} color="#ffffff" />
+                        <Text style={styles.callDetailsSecondaryText}>Add Contact</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.callDetailsActionDanger}
+                        onPress={() => {
+                          if (onDeleteCallRecord) {
+                            onDeleteCallRecord(selectedCallRecord.id);
+                          }
+                          setShowCallDetailsModal(false);
+                        }}
+                      >
+                        <TrashIcon size={16} color="#ef4444" />
+                        <Text style={styles.callDetailsDangerText}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Detailed Metadata Card */}
+                    <View style={styles.callDetailsMetaCard}>
+                      <View style={styles.callDetailsMetaRow}>
+                        <Text style={styles.callDetailsMetaLabel}>Call Type</Text>
+                        <Text
+                          style={[
+                            styles.callDetailsMetaValue,
+                            selectedCallRecord.direction === 'missed' && { color: '#ef4444' },
+                          ]}
+                        >
+                          {selectedCallRecord.direction === 'inbound'
+                            ? 'Incoming (Answered)'
+                            : selectedCallRecord.direction === 'outbound'
+                            ? 'Outgoing Call'
+                            : 'Missed Call'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.callDetailsMetaDivider} />
+
+                      <View style={styles.callDetailsMetaRow}>
+                        <Text style={styles.callDetailsMetaLabel}>Date & Time</Text>
+                        <Text style={styles.callDetailsMetaValue}>
+                          {formatExactDate(selectedCallRecord.timestamp)}
+                        </Text>
+                      </View>
+
+                      {selectedCallRecord.duration != null && selectedCallRecord.duration > 0 && (
+                        <>
+                          <View style={styles.callDetailsMetaDivider} />
+                          <View style={styles.callDetailsMetaRow}>
+                            <Text style={styles.callDetailsMetaLabel}>Duration</Text>
+                            <Text style={styles.callDetailsMetaValue}>
+                              {formatCallTime(selectedCallRecord.duration)}
+                            </Text>
+                          </View>
+                        </>
+                      )}
+                    </View>
+                  </>
+                )}
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1262,6 +1272,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.5,
+  },
+  recentMainCol: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   menuBtn: {
     padding: 8,
