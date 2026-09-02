@@ -129,15 +129,18 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     fun setSpeakerVolume(percent: Double, promise: Promise) {
         try {
             val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-            val streamType = if (audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION) {
-                android.media.AudioManager.STREAM_VOICE_CALL
-            } else {
-                android.media.AudioManager.STREAM_MUSIC
-            }
-            val maxVol = audioManager.getStreamMaxVolume(streamType)
-            val target = ((percent / 100.0) * maxVol.toDouble()).toInt().coerceIn(0, maxVol)
-            audioManager.setStreamVolume(streamType, target, 0)
-            promise.resolve(target)
+            
+            // 1. In-call voice stream (earpiece / handset)
+            val maxVoice = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
+            val targetVoice = ((percent / 100.0) * maxVoice.toDouble()).toInt().coerceIn(0, maxVoice)
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, targetVoice, 0)
+
+            // 2. Media / loudspeaker stream
+            val maxMusic = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            val targetMusic = ((percent / 100.0) * maxMusic.toDouble()).toInt().coerceIn(0, maxMusic)
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetMusic, 0)
+
+            promise.resolve(targetVoice)
         } catch (e: Exception) {
             promise.reject("VOLUME_ERROR", e.message, e)
         }

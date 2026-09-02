@@ -69,7 +69,7 @@ export class JsSipService {
 
   setMicVolume(percent: number): void {
     this.micVolume = Math.max(0, Math.min(100, percent));
-    const gain = this.micVolume / 100.0;
+    const gain = this.micVolume / 50.0;
     if (this.localStream) {
       try {
         const tracks = this.localStream.getAudioTracks ? this.localStream.getAudioTracks() : [];
@@ -84,7 +84,7 @@ export class JsSipService {
 
   setSpeakerVolume(percent: number): void {
     this.speakerVolume = Math.max(0, Math.min(100, percent));
-    const gain = this.speakerVolume / 100.0;
+    const gain = this.speakerVolume / 50.0;
     if (this.activeCall?.remoteStream) {
       try {
         const tracks = this.activeCall.remoteStream.getAudioTracks ? this.activeCall.remoteStream.getAudioTracks() : [];
@@ -98,8 +98,12 @@ export class JsSipService {
   }
 
   private applyTrackVolume(track: unknown, gain: number): void {
-    if (track && typeof track === 'object' && '_setVolume' in track && typeof track._setVolume === 'function') {
-      track._setVolume(gain);
+    if (track && typeof track === 'object') {
+      if ('_setVolume' in track && typeof track._setVolume === 'function') {
+        track._setVolume(gain);
+      } else if ('setVolume' in track && typeof track.setVolume === 'function') {
+        track.setVolume(gain);
+      }
     }
   }
 

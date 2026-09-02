@@ -586,6 +586,14 @@ export default function App() {
         onDeleteContact={handleDeleteContact}
         onSaveContactsBatch={handleSaveContactsBatch}
         onToggleFavorite={handleToggleFavorite}
+        onUpdateVolume={(type, val) => {
+          if (type === 'mic') {
+            sipRef.current?.setMicVolume(val);
+          } else {
+            sipRef.current?.setSpeakerVolume(val);
+            void setNativeSpeakerVolume(val);
+          }
+        }}
       />
     </SafeAreaProvider>
   );

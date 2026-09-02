@@ -178,6 +178,7 @@ type Props = {
   onDeleteContact: (id: string) => void;
   onDeleteCallRecord?: (id: string) => void;
   onToggleFavorite: (id: string) => void;
+  onUpdateVolume?: (type: 'mic' | 'speaker', value: number) => void;
 };
 
 type BottomTab = 'phone' | 'contacts' | 'favourites';
@@ -219,6 +220,7 @@ export function StandardPhoneScreen({
   onDeleteContact,
   onDeleteCallRecord,
   onToggleFavorite,
+  onUpdateVolume,
 }: Props) {
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState<BottomTab>('phone');
@@ -1406,7 +1408,10 @@ export function StandardPhoneScreen({
                   <VolumeSlider
                     label="Microphone Volume"
                     value={editMicVol}
-                    onChange={setEditMicVol}
+                    onChange={(val) => {
+                      setEditMicVol(val);
+                      onUpdateVolume?.('mic', val);
+                    }}
                     icon={<MicIcon size={18} color="#38bdf8" />}
                     description="Controls microphone capture gain and input sensitivity during calls."
                   />
@@ -1414,7 +1419,10 @@ export function StandardPhoneScreen({
                   <VolumeSlider
                     label="Speaker Volume"
                     value={editSpeakerVol}
-                    onChange={setEditSpeakerVol}
+                    onChange={(val) => {
+                      setEditSpeakerVol(val);
+                      onUpdateVolume?.('speaker', val);
+                    }}
                     icon={<SpeakerIcon size={18} color="#38bdf8" />}
                     description="Controls in-call earpiece and loudspeaker audio output level."
                   />
