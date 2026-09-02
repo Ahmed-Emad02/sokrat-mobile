@@ -104,6 +104,14 @@ export function KeypadIcon({ size = 20, color = '#ffffff' }: IconProps) {
     </Svg>
   );
 }
+export function ChevronDownIcon({ size = 20, color = '#ffffff' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Polyline points="6 9 12 15 18 9" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
 export function RedialIcon({ size = 20, color = '#ffffff' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">

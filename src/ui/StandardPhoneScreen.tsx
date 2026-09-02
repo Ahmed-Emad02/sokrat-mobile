@@ -38,6 +38,7 @@ import {
   UserIcon,
   RedialIcon,
   UserPlusIcon,
+  ChevronDownIcon,
 } from './Icons';
 import { fetchDeviceContacts } from '../calls/nativeCallNotification';
 
@@ -128,6 +129,18 @@ export function StandardPhoneScreen({
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
 
+  // Dialpad Collapse / Expand Toggle
+  const [isDialpadVisible, setIsDialpadVisible] = useState(true);
+
+  // Recents History Filter (All vs Missed)
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'missed'>('all');
+
+  const displayedCalls = callsHistory.filter((item) => {
+    if (historyFilter === 'missed') {
+      return item.direction === 'missed';
+    }
+    return true;
+  });
   // Live PBX Extensions (for 1-click transfer)
   const [serverExtensions, setServerExtensions] = useState<Array<{ extension: string; name: string }>>([
     { extension: '101', name: 'ahmed' },
@@ -657,15 +670,58 @@ export function StandardPhoneScreen({
       {/* Main Tab Views */}
       {activeTab === 'phone' && (
         <View style={styles.phoneTabContent}>
-          {/* Top Half: Recents History List */}
+          {/* Top: All / Missed Calls Filter Segmented Switch */}
+          <View style={styles.historyFilterRow}>
+            <View style={styles.historyFilterSegmented}>
+              <TouchableOpacity
+                style={[
+                  styles.filterSegmentBtn,
+                  historyFilter === 'all' && styles.filterSegmentBtnActive,
+                ]}
+                onPress={() => setHistoryFilter('all')}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.filterSegmentText,
+                    historyFilter === 'all' && styles.filterSegmentTextActive,
+                  ]}
+                >
+                  All
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.filterSegmentBtn,
+                  historyFilter === 'missed' && styles.filterSegmentBtnActive,
+                ]}
+                onPress={() => setHistoryFilter('missed')}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.filterSegmentText,
+                    historyFilter === 'missed' && styles.filterSegmentTextActive,
+                  ]}
+                >
+                  Missed
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Recents History List */}
           <View style={styles.recentsSection}>
-            {callsHistory.length === 0 ? (
+            {displayedCalls.length === 0 ? (
               <View style={styles.emptyHistory}>
-                <Text style={styles.emptyHistoryText}>No recent calls</Text>
+                <Text style={styles.emptyHistoryText}>
+                  {historyFilter === 'missed' ? 'No missed calls' : 'No recent calls'}
+                </Text>
               </View>
             ) : (
               <FlatList
-                data={callsHistory.slice(0, 20)}
+                data={displayedCalls.slice(0, 40)}
                 keyExtractor={(item) => item.id}
                 showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => (
@@ -715,54 +771,71 @@ export function StandardPhoneScreen({
 
           {/* Lower Half: Dialpad Display & 3x4 Keypad */}
           <View style={styles.dialpadSection}>
-            {/* Number Display */}
-            <View style={styles.numberRow}>
-              <Text style={styles.dialedDigits} numberOfLines={1}>
-                {digits || ' '}
-              </Text>
-            </View>
+            {isDialpadVisible && (
+              <>
+                {/* Number Display with inline Backspace */}
+                <View style={styles.numberRow}>
+                  <Text style={styles.dialedDigits} numberOfLines={1}>
+                    {digits || ' '}
+                  </Text>
+                  {hasDigits ? (
+                    <TouchableOpacity
+                      style={styles.topBackspaceBtn}
+                      onPress={handleBackspace}
+                      onLongPress={() => setDigits('')}
+                      hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                      activeOpacity={0.6}
+                      accessibilityRole="button"
+                      accessibilityLabel="Delete digit (hold to clear)"
+                    >
+                      <BackspaceIcon size={22} color="#a1a1aa" />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
 
-            {/* 3x4 Dialpad Grid */}
-            <View style={styles.keypadGrid}>
-              {DIALPAD_KEYS.map((k) => {
-                const speedTarget = speedDial[k.digit]?.trim();
-                const isConfigured = Boolean(speedTarget);
-                return (
-                  <TouchableOpacity
-                    key={k.digit}
-                    style={styles.keyBtn}
-                    onPress={() => handleDigitPress(k.digit)}
-                    onLongPress={() => handleKeyLongPress(k.digit)}
-                    delayLongPress={450}
-                    activeOpacity={0.6}
-                    accessibilityLabel={
-                      isConfigured
-                        ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
-                        : `Digit ${k.digit}`
-                    }
-                  >
-                    <Text style={styles.keyNumber}>{k.digit}</Text>
-                    <View style={styles.keySubRow}>
-                      {k.digit === '1' ? (
-                        <VoicemailIcon
-                          size={14}
-                          color={isConfigured ? '#38bdf8' : '#a1a1aa'}
-                        />
-                      ) : k.sub ? (
-                        <Text
-                          style={[
-                            styles.keyLetters,
-                            isConfigured && styles.keyLettersActive,
-                          ]}
-                        >
-                          {k.sub}
-                        </Text>
-                      ) : null}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+                {/* 3x4 Dialpad Grid */}
+                <View style={styles.keypadGrid}>
+                  {DIALPAD_KEYS.map((k) => {
+                    const speedTarget = speedDial[k.digit]?.trim();
+                    const isConfigured = Boolean(speedTarget);
+                    return (
+                      <TouchableOpacity
+                        key={k.digit}
+                        style={styles.keyBtn}
+                        onPress={() => handleDigitPress(k.digit)}
+                        onLongPress={() => handleKeyLongPress(k.digit)}
+                        delayLongPress={450}
+                        activeOpacity={0.6}
+                        accessibilityLabel={
+                          isConfigured
+                            ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
+                            : `Digit ${k.digit}`
+                        }
+                      >
+                        <Text style={styles.keyNumber}>{k.digit}</Text>
+                        <View style={styles.keySubRow}>
+                          {k.digit === '1' ? (
+                            <VoicemailIcon
+                              size={14}
+                              color={isConfigured ? '#38bdf8' : '#a1a1aa'}
+                            />
+                          ) : k.sub ? (
+                            <Text
+                              style={[
+                                styles.keyLetters,
+                                isConfigured && styles.keyLettersActive,
+                              ]}
+                            >
+                              {k.sub}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             {/* Bottom Action Bar */}
             <View style={styles.dialActionsRow}>
@@ -806,21 +879,20 @@ export function StandardPhoneScreen({
                 </Text>
               </TouchableOpacity>
 
+              {/* Pull Down / Pull Up Dialpad Toggle Button */}
               <TouchableOpacity
-                style={[
-                  styles.dialAuxBtn,
-                  !hasDigits && styles.dialAuxBtnDisabled,
-                ]}
-                onPress={handleBackspace}
-                onLongPress={() => setDigits('')}
-                disabled={!hasDigits}
+                style={styles.dialAuxBtn}
+                onPress={() => setIsDialpadVisible(!isDialpadVisible)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                activeOpacity={0.6}
                 accessibilityRole="button"
-                accessibilityLabel="Backspace (hold to clear)"
+                accessibilityLabel={isDialpadVisible ? 'Hide dialpad' : 'Show dialpad'}
               >
-                <BackspaceIcon
-                  size={22}
-                  color={hasDigits ? '#a1a1aa' : '#52525b'}
-                />
+                {isDialpadVisible ? (
+                  <ChevronDownIcon size={24} color="#a1a1aa" />
+                ) : (
+                  <KeypadIcon size={22} color="#38bdf8" />
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -1331,6 +1403,38 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
   },
+  historyFilterRow: {
+    paddingHorizontal: 20,
+    paddingTop: 2,
+    paddingBottom: 8,
+  },
+  historyFilterSegmented: {
+    flexDirection: 'row',
+    backgroundColor: '#18181b',
+    borderRadius: 24,
+    padding: 3,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  filterSegmentBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+  },
+  filterSegmentBtnActive: {
+    backgroundColor: '#27272a',
+  },
+  filterSegmentText: {
+    color: '#71717a',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  filterSegmentTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
   recentsSection: {
     flex: 1,
     paddingHorizontal: 20,
@@ -1387,14 +1491,25 @@ const styles = StyleSheet.create({
     padding: 6,
   },
   dialpadSection: {
+    backgroundColor: '#000000',
+    borderTopColor: '#27272a',
+    borderTopWidth: 1,
+    paddingTop: 8,
     paddingHorizontal: 24,
     paddingBottom: 8,
   },
   numberRow: {
-    minHeight: 38,
+    minHeight: 44,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4,
+    paddingHorizontal: 48,
+    position: 'relative',
+  },
+  topBackspaceBtn: {
+    position: 'absolute',
+    right: 8,
+    padding: 6,
   },
   dialedDigits: {
     color: '#ffffff',
