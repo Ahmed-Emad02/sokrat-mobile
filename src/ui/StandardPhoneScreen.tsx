@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Alert,
+  Animated,
   FlatList,
   Modal,
   ScrollView,
@@ -256,6 +257,28 @@ export function StandardPhoneScreen({
     }
     return true;
   });
+
+  // Animated Dialpad Input Cursor Caret
+  const cursorOpacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(cursorOpacity, {
+          toValue: 0,
+          duration: 530,
+          useNativeDriver: true,
+        }),
+        Animated.timing(cursorOpacity, {
+          toValue: 1,
+          duration: 530,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [cursorOpacity]);
   // Live PBX Extensions (for 1-click transfer)
   const [serverExtensions, setServerExtensions] = useState<Array<{ extension: string; name: string }>>([
     { extension: '101', name: 'ahmed' },
@@ -425,10 +448,12 @@ export function StandardPhoneScreen({
   };
 
   const handleDigitPress = (d: string) => {
+    cursorOpacity.setValue(1);
     setDigits((prev) => prev + d);
   };
 
   const handleBackspace = () => {
+    cursorOpacity.setValue(1);
     setDigits((prev) => prev.slice(0, -1));
   };
 
@@ -910,16 +935,27 @@ export function StandardPhoneScreen({
           >
             {isDialpadVisible && (
               <>
-                {/* Number Display with inline Backspace */}
+                {/* Number Display with inline Backspace & Blinking Caret Indicator */}
                 <View style={styles.numberRow}>
-                  <Text style={styles.dialedDigits} numberOfLines={1}>
-                    {digits || ' '}
-                  </Text>
+                  <View style={styles.digitsWrapper}>
+                    <Text style={styles.dialedDigits} numberOfLines={1}>
+                      {digits}
+                    </Text>
+                    <Animated.View
+                      style={[
+                        styles.cursorCaret,
+                        { opacity: cursorOpacity },
+                      ]}
+                    />
+                  </View>
                   {hasDigits ? (
                     <TouchableOpacity
                       style={styles.topBackspaceBtn}
                       onPress={handleBackspace}
-                      onLongPress={() => setDigits('')}
+                      onLongPress={() => {
+                        cursorOpacity.setValue(1);
+                        setDigits('');
+                      }}
                       hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
                       activeOpacity={0.6}
                       accessibilityRole="button"
@@ -1744,11 +1780,24 @@ const styles = StyleSheet.create({
     right: 8,
     padding: 6,
   },
+  digitsWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: '100%',
+  },
   dialedDigits: {
     color: '#ffffff',
     fontSize: 28,
     fontWeight: '600',
     letterSpacing: 2,
+  },
+  cursorCaret: {
+    width: 2.5,
+    height: 28,
+    backgroundColor: '#38bdf8',
+    borderRadius: 1.5,
+    marginLeft: 3,
   },
   keypadGrid: {
     flexDirection: 'row',
