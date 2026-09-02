@@ -1723,7 +1723,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     paddingTop: 8,
     paddingHorizontal: 24,
-    paddingBottom: 8,
+    paddingBottom: 16,
   },
   dialpadSectionCollapsed: {
     paddingTop: 16,
