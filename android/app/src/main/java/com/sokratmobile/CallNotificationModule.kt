@@ -32,6 +32,10 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         if (!IncomingCallStore.isValidCallId(callId)) return
         IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, callId)
         IncomingCallStore.remove(reactApplicationContext, callId)
+    }
+
+    @ReactMethod
+    fun clearCallWindow() {
         MainActivity.clearIncomingCallWindow()
     }
 

@@ -463,7 +463,10 @@ export class JsSipService {
 
     try {
       session.answer(options);
-      console.log(`[sip][callId=${callId}] answer dispatched`);
+      this.activeCall.status = 'active';
+      if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
+      console.log(`[sip][callId=${callId}] answer dispatched -> active call established`);
+      this.events.onCallEstablished(this.activeCall);
       return true;
     } catch (error) {
       localStream.getTracks?.().forEach((track) => track.stop());

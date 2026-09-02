@@ -108,7 +108,7 @@ export function StandardPhoneScreen({
   const [activeTab, setActiveTab] = useState<BottomTab>('phone');
   const [digits, setDigits] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(!account);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showAddContactModal, setShowAddContactModal] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
 
@@ -327,7 +327,7 @@ export function StandardPhoneScreen({
   const handleSignOutClick = () => {
     setShowMenu(false);
     onLogout();
-    setShowSettingsModal(true);
+    setShowSettingsModal(false);
   };
 
   // --- Active In-Call View ---

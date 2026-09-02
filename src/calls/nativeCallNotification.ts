@@ -31,6 +31,15 @@ export function dismissNativeCallNotification(callId: string) {
     console.warn('[native-call] dismiss failed:', error);
   }
 }
+export function clearNativeCallWindow() {
+  if (Platform.OS !== 'android' || !CallNotificationModule?.clearCallWindow) return;
+  try {
+    CallNotificationModule.clearCallWindow();
+  } catch (error) {
+    console.warn('[native-call] clearCallWindow failed:', error);
+  }
+}
+
 
 export async function getPendingNativeCalls(): Promise<CallActionPayload[]> {
   if (Platform.OS !== 'android' || !CallNotificationModule?.getPendingCalls) return [];

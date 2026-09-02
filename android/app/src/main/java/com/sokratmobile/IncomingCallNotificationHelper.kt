@@ -16,7 +16,41 @@ object IncomingCallNotificationHelper {
     const val CHANNEL_ID = "sokrat_incoming_calls"
     const val CHANNEL_NAME = "Incoming Calls"
     private const val NOTIFICATION_ID_BASE = 2000
+    private var screenWakeLock: android.os.PowerManager.WakeLock? = null
 
+    @Synchronized
+    private fun acquireScreenWakeLock(context: Context) {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager ?: return
+            if (screenWakeLock?.isHeld == true) {
+                screenWakeLock?.release()
+            }
+            @Suppress("DEPRECATION")
+            screenWakeLock = pm.newWakeLock(
+                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    android.os.PowerManager.ON_AFTER_RELEASE,
+                "sokrat:incoming_call_screen_wake"
+            ).apply {
+                setReferenceCounted(false)
+                acquire(25_000)
+            }
+        } catch (error: Exception) {
+            error.printStackTrace()
+        }
+    }
+
+    @Synchronized
+    private fun releaseScreenWakeLock() {
+        try {
+            if (screenWakeLock?.isHeld == true) {
+                screenWakeLock?.release()
+            }
+            screenWakeLock = null
+        } catch (error: Exception) {
+            error.printStackTrace()
+        }
+    }
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -52,6 +86,7 @@ object IncomingCallNotificationHelper {
         extension: String,
         timestamp: String
     ) {
+        acquireScreenWakeLock(context)
         createNotificationChannel(context)
         val title = callerName.ifBlank { callerId.ifBlank { "Incoming Call" } }
         val subtitle = if (callerId.isNotBlank() && callerId != callerName) {
@@ -127,9 +162,19 @@ object IncomingCallNotificationHelper {
         } catch (error: SecurityException) {
             error.printStackTrace()
         }
+
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        if (pm?.isInteractive != true) {
+            try {
+                context.startActivity(showIntent)
+            } catch (error: Exception) {
+                // Full screen intent via notification handles launch if background start blocked
+            }
+        }
     }
 
     fun dismissCallNotification(context: Context, callId: String) {
+        releaseScreenWakeLock()
         try {
             NotificationManagerCompat.from(context).cancel(notificationId(callId))
         } catch (error: Exception) {

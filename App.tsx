@@ -27,6 +27,7 @@ import {
 } from './src/calls/callKit';
 import {
   acknowledgeNativeCallAction,
+  clearNativeCallWindow,
   dismissNativeCallNotification,
   getPendingNativeCalls,
   recordNativeCallAction,
@@ -61,6 +62,7 @@ export default function App() {
 
   // App State
   const [account, setAccount] = useState<SavedAccount | null>(null);
+  const [isAuthLoaded, setIsAuthLoaded] = useState(false);
   const [uiState, setUiState] = useState<SipState>('disconnected');
   const [callsHistory, setCallsHistory] = useState<CallRecord[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -94,6 +96,13 @@ export default function App() {
 
     pendingAnswerUUIDRef.current = null;
     acknowledgeNativeCallAction(callId, 'ANSWER');
+    if (sipRef.current?.activeCall) {
+      updateActiveCall({
+        ...sipRef.current.activeCall,
+        status: 'active',
+        startTime: Date.now(),
+      });
+    }
     updateIncoming(null);
     await clearPendingIncomingCall(callId);
     dismissNativeCallNotification(callId);
@@ -107,6 +116,7 @@ export default function App() {
     recordNativeCallAction(callId, 'DECLINE');
     updateIncoming(null);
     dismissNativeCallNotification(callId);
+    clearNativeCallWindow();
     stopCallManagers();
 
     const declined = await sipRef.current?.decline(callId);
@@ -220,6 +230,7 @@ export default function App() {
           }).then(setCallsHistory);
         }
         updateActiveCall(null);
+        clearNativeCallWindow();
       },
       onCallHoldChange: (isHeld) => {
         if (activeCallRef.current) {
@@ -245,6 +256,7 @@ export default function App() {
         autoAnswer: storedAccount?.autoAnswer || false,
       };
       setAccount(activeAccount);
+      setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
       CONFIG.sipDomain = activeAccount.serverHost;
       CONFIG.sipWss =
@@ -411,8 +423,8 @@ export default function App() {
     updateIncoming(null);
     updateActiveCall(null);
     updateCallUUID(null);
+    clearNativeCallWindow();
   };
-
   const handleSaveAccount = async (newAcc: SavedAccount) => {
     setAccount(newAcc);
     await StorageService.saveAccount(newAcc);
@@ -469,7 +481,31 @@ export default function App() {
     setCallsHistory([]);
     await StorageService.clearCallHistory();
   };
-  // 1. Not Logged In -> Show Full Dedicated Login Screen
+  // 1. Storage Authentication Initializing (prevents flash of login screen)
+  if (!isAuthLoaded) {
+    return (
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
+        <StatusBar barStyle="light-content" />
+      </SafeAreaProvider>
+    );
+  }
+
+  // 2. Incoming Call Overlay (Ringing Screen takes precedence over login)
+  if (incoming) {
+    return (
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
+        <StatusBar barStyle="light-content" />
+        <RingingScreen
+          callerId={incoming.callerId}
+          callerName={incoming.callerName}
+          onAnswer={handleAnswer}
+          onDecline={handleHangup}
+        />
+      </SafeAreaProvider>
+    );
+  }
+
+  // 3. Not Logged In -> Show Full Dedicated Login Screen
   if (!account) {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
@@ -487,21 +523,6 @@ export default function App() {
             await handleSaveAccount(newAcc);
           }}
           state={uiState}
-        />
-      </SafeAreaProvider>
-    );
-  }
-
-  // 2. Incoming Call Overlay
-  if (incoming) {
-    return (
-      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
-        <StatusBar barStyle="light-content" />
-        <RingingScreen
-          callerId={incoming.callerId}
-          callerName={incoming.callerName}
-          onAnswer={handleAnswer}
-          onDecline={handleHangup}
         />
       </SafeAreaProvider>
     );
