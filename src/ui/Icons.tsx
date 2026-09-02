@@ -104,6 +104,32 @@ export function KeypadIcon({ size = 20, color = '#ffffff' }: IconProps) {
     </Svg>
   );
 }
+export function RedialIcon({ size = 20, color = '#ffffff' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Polyline points="1 4 1 10 7 10" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+      <Path
+        d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"
+        stroke={color}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+export function UserPlusIcon({ size = 20, color = '#ffffff' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+      <Circle cx="8.5" cy="7" r="4" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+      <Line x1="20" y1="8" x2="20" y2="14" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+      <Line x1="23" y1="11" x2="17" y2="11" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
 
 export function BackspaceIcon({ size = 20, color = '#ffffff' }: IconProps) {
   return (

@@ -36,6 +36,8 @@ import {
   InfoIcon,
   VoicemailIcon,
   UserIcon,
+  RedialIcon,
+  UserPlusIcon,
 } from './Icons';
 import { fetchDeviceContacts } from '../calls/nativeCallNotification';
 
@@ -198,6 +200,21 @@ export function StandardPhoneScreen({
 
   const handleBackspace = () => {
     setDigits((prev) => prev.slice(0, -1));
+  };
+
+  const hasDigits = digits.trim().length > 0;
+  const lastCallNumber =
+    callsHistory.length > 0 ? (callsHistory[0]?.number || '').trim() : '';
+  const hasRedial = lastCallNumber.length > 0;
+
+  const handleAuxAction = () => {
+    if (hasDigits) {
+      setNewContactName('');
+      setNewContactNumber(digits.trim());
+      setShowAddContactModal(true);
+    } else if (hasRedial) {
+      setDigits(lastCallNumber);
+    }
   };
 
   const handleDial = () => {
@@ -553,14 +570,39 @@ export function StandardPhoneScreen({
 
             {/* Bottom Action Bar */}
             <View style={styles.dialActionsRow}>
-              <TouchableOpacity style={styles.dialAuxBtn} onPress={() => setDigits('')}>
-                <KeypadIcon size={22} color="#a1a1aa" />
+              <TouchableOpacity
+                style={[
+                  styles.dialAuxBtn,
+                  !hasDigits && !hasRedial && styles.dialAuxBtnDisabled,
+                ]}
+                onPress={handleAuxAction}
+                disabled={!hasDigits && !hasRedial}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  hasDigits ? 'Add to contacts' : 'Redial last number'
+                }
+              >
+                {hasDigits ? (
+                  <UserPlusIcon size={22} color="#38bdf8" />
+                ) : (
+                  <RedialIcon
+                    size={22}
+                    color={hasRedial ? '#a1a1aa' : '#52525b'}
+                  />
+                )}
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.mainCallPill, !digits && styles.mainCallPillDisabled]}
+                style={[
+                  styles.mainCallPill,
+                  !digits && styles.mainCallPillDisabled,
+                ]}
                 onPress={handleDial}
                 disabled={!digits}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  account ? `Call from extension ${account.extension}` : 'Place call'
+                }
               >
                 <PhoneIcon size={18} color="#000000" />
                 <Text style={styles.callPillText}>
@@ -568,8 +610,21 @@ export function StandardPhoneScreen({
                 </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.dialAuxBtn} onPress={handleBackspace}>
-                <BackspaceIcon size={22} color="#a1a1aa" />
+              <TouchableOpacity
+                style={[
+                  styles.dialAuxBtn,
+                  !hasDigits && styles.dialAuxBtnDisabled,
+                ]}
+                onPress={handleBackspace}
+                onLongPress={() => setDigits('')}
+                disabled={!hasDigits}
+                accessibilityRole="button"
+                accessibilityLabel="Backspace (hold to clear)"
+              >
+                <BackspaceIcon
+                  size={22}
+                  color={hasDigits ? '#a1a1aa' : '#52525b'}
+                />
               </TouchableOpacity>
             </View>
           </View>
@@ -1009,6 +1064,9 @@ const styles = StyleSheet.create({
     height: 48,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  dialAuxBtnDisabled: {
+    opacity: 0.35,
   },
   mainCallPill: {
     flexDirection: 'row',
