@@ -59,10 +59,48 @@ export class JsSipService {
   private ua: JsSIP.UA | null = null;
   private currentSession: unknown = null;
   private preferredCodec: CodecPreference = 'auto';
+  private micVolume = 85;
+  private speakerVolume = 85;
 
   setPreferredCodec(codec: CodecPreference): void {
     this.preferredCodec = codec;
     console.log(`[sip] preferred audio codec set to: ${codec}`);
+  }
+
+  setMicVolume(percent: number): void {
+    this.micVolume = Math.max(0, Math.min(100, percent));
+    const gain = this.micVolume / 100.0;
+    if (this.localStream) {
+      try {
+        const tracks = this.localStream.getAudioTracks ? this.localStream.getAudioTracks() : [];
+        tracks.forEach((t: unknown) => {
+          this.applyTrackVolume(t, gain);
+        });
+      } catch (err) {
+        console.warn('[sip] failed to set mic volume on track:', err);
+      }
+    }
+  }
+
+  setSpeakerVolume(percent: number): void {
+    this.speakerVolume = Math.max(0, Math.min(100, percent));
+    const gain = this.speakerVolume / 100.0;
+    if (this.activeCall?.remoteStream) {
+      try {
+        const tracks = this.activeCall.remoteStream.getAudioTracks ? this.activeCall.remoteStream.getAudioTracks() : [];
+        tracks.forEach((t: unknown) => {
+          this.applyTrackVolume(t, gain);
+        });
+      } catch (err) {
+        console.warn('[sip] failed to set speaker volume on track:', err);
+      }
+    }
+  }
+
+  private applyTrackVolume(track: unknown, gain: number): void {
+    if (track && typeof track === 'object' && '_setVolume' in track && typeof track._setVolume === 'function') {
+      track._setVolume(gain);
+    }
   }
 
   private readonly events: SipEvents;
@@ -261,6 +299,7 @@ export class JsSipService {
             event.track.enabled = true;
           }
           if (event?.streams && event.streams[0] && this.activeCall) {
+            this.setSpeakerVolume(this.speakerVolume);
             this.activeCall.remoteStream = event.streams[0];
           }
         });
@@ -270,6 +309,7 @@ export class JsSipService {
           if (event?.stream && this.activeCall) {
             this.activeCall.remoteStream = event.stream;
           }
+            this.setSpeakerVolume(this.speakerVolume);
         });
       }
     });
@@ -398,6 +438,7 @@ export class JsSipService {
         tracks.forEach((track: MediaStreamTrack) => { track.enabled = true; });
         console.log(`[sip] microphone acquired tracks=${tracks.length}`);
         resolve(tracks.length > 0 ? stream : null);
+        this.setMicVolume(this.micVolume);
       })
       .catch((error) => {
         if (finished) return;

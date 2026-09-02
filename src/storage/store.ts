@@ -14,6 +14,8 @@ export interface SavedAccount {
   dnd: boolean;
   autoAnswer: boolean;
   preferredCodec?: CodecPreference;
+  micVolume?: number;
+  speakerVolume?: number;
 }
 
 export interface CallRecord {

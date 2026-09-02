@@ -105,3 +105,21 @@ export async function fetchDeviceContacts(): Promise<DeviceContact[]> {
   }
   return [];
 }
+
+export async function setNativeSpeakerVolume(percent: number): Promise<void> {
+  if (Platform.OS !== 'android' || !CallNotificationModule?.setSpeakerVolume) return;
+  try {
+    await CallNotificationModule.setSpeakerVolume(percent);
+  } catch (error) {
+    console.warn('[native-call] setSpeakerVolume failed:', error);
+  }
+}
+
+export async function getNativeSpeakerVolume(): Promise<number> {
+  if (Platform.OS !== 'android' || !CallNotificationModule?.getSpeakerVolume) return 80;
+  try {
+    return await CallNotificationModule.getSpeakerVolume();
+  } catch {
+    return 80;
+  }
+}

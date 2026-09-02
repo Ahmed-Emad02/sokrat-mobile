@@ -19,6 +19,7 @@ import {
   clearPendingIncomingCall,
   unregisterCurrentDevice,
 } from './src/push/pushHandler';
+import { CONFIG } from './src/config';
 import {
   setupCallKeep,
   reportIncomingCall,
@@ -32,6 +33,7 @@ import {
   getPendingNativeCalls,
   recordNativeCallAction,
   subscribeNativeCallAction,
+  setNativeSpeakerVolume,
   CallActionPayload,
 } from './src/calls/nativeCallNotification';
 import {
@@ -46,12 +48,9 @@ import {
   CallRecord,
   Contact,
 } from './src/storage/store';
-import { CONFIG } from './src/config';
-
-// Main Native Phone Screen & Call Screens
-import { StandardPhoneScreen } from './src/ui/StandardPhoneScreen';
-import { RingingScreen } from './src/ui/RingingScreen';
 import { LoginScreen } from './src/ui/LoginScreen';
+import { RingingScreen } from './src/ui/RingingScreen';
+import { StandardPhoneScreen } from './src/ui/StandardPhoneScreen';
 export default function App() {
   const sipRef = useRef<JsSipService | null>(null);
   const incomingRef = useRef<IncomingCallInfo | null>(null);
@@ -255,10 +254,14 @@ export default function App() {
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
         preferredCodec: storedAccount?.preferredCodec || 'opus',
+        micVolume: storedAccount?.micVolume ?? 85,
+        speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
       sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
+      sip.setMicVolume(activeAccount.micVolume ?? 85);
+      sip.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
+      void setNativeSpeakerVolume(activeAccount.speakerVolume ?? 85);
       setAccount(activeAccount);
-      setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
       CONFIG.sipDomain = activeAccount.serverHost;
       CONFIG.sipWss =
@@ -431,6 +434,9 @@ export default function App() {
     setAccount(newAcc);
     await StorageService.saveAccount(newAcc);
     sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
+    sipRef.current?.setMicVolume(newAcc.micVolume ?? 85);
+    sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
+    void setNativeSpeakerVolume(newAcc.speakerVolume ?? 85);
     CONFIG.sipDomain = newAcc.serverHost;
     CONFIG.sipWss = `${newAcc.useTls ? 'wss' : 'ws'}://${newAcc.serverHost}:${newAcc.useTls ? 8089 : 8088}/ws`;
     CONFIG.pushGateway = `http://${newAcc.serverHost}:8095`;
@@ -566,8 +572,8 @@ export default function App() {
           setIsSpeakerOn(next);
           setSpeakerphone(next);
         }}
-        onSendDtmf={(d) => sipRef.current?.sendDTMF(d)}
-        onTransfer={(t) => sipRef.current?.blindTransfer(t)}
+        onSendDtmf={(d: string) => sipRef.current?.sendDTMF(d)}
+        onTransfer={(t: string) => sipRef.current?.blindTransfer(t)}
         onSaveAccount={handleSaveAccount}
         onLogout={handleLogout}
         onClearHistory={handleClearHistory}

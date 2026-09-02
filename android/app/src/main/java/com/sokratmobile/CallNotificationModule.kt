@@ -125,6 +125,42 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         }
     }
 
+    @ReactMethod
+    fun setSpeakerVolume(percent: Double, promise: Promise) {
+        try {
+            val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            val streamType = if (audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION) {
+                android.media.AudioManager.STREAM_VOICE_CALL
+            } else {
+                android.media.AudioManager.STREAM_MUSIC
+            }
+            val maxVol = audioManager.getStreamMaxVolume(streamType)
+            val target = ((percent / 100.0) * maxVol.toDouble()).toInt().coerceIn(0, maxVol)
+            audioManager.setStreamVolume(streamType, target, 0)
+            promise.resolve(target)
+        } catch (e: Exception) {
+            promise.reject("VOLUME_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getSpeakerVolume(promise: Promise) {
+        try {
+            val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            val streamType = if (audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION) {
+                android.media.AudioManager.STREAM_VOICE_CALL
+            } else {
+                android.media.AudioManager.STREAM_MUSIC
+            }
+            val maxVol = audioManager.getStreamMaxVolume(streamType)
+            val current = audioManager.getStreamVolume(streamType)
+            val pct = if (maxVol > 0) ((current.toDouble() / maxVol.toDouble()) * 100.0).toInt() else 80
+            promise.resolve(pct)
+        } catch (e: Exception) {
+            promise.resolve(80)
+        }
+    }
+
     companion object {
         private var instance: CallNotificationModule? = null
 

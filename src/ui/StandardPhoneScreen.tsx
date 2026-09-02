@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
+  GestureResponderEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
@@ -41,6 +42,117 @@ import {
   ChevronDownIcon,
 } from './Icons';
 import { fetchDeviceContacts } from '../calls/nativeCallNotification';
+
+function VolumeSlider({
+  label,
+  value,
+  onChange,
+  icon,
+  description,
+}: {
+  label: string;
+  value: number;
+  onChange: (val: number) => void;
+  icon: React.ReactNode;
+  description: string;
+}) {
+  const [trackWidth, setTrackWidth] = useState(0);
+
+  const handleTouch = (evt: GestureResponderEvent) => {
+    if (trackWidth <= 0) return;
+    const x = evt.nativeEvent.locationX;
+    const pct = Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100)));
+    onChange(pct);
+  };
+
+  const stepDown = () => {
+    onChange(Math.max(0, value - 5));
+  };
+
+  const stepUp = () => {
+    onChange(Math.min(100, value + 5));
+  };
+
+  return (
+    <View style={styles.volSliderContainer}>
+      <View style={styles.volSliderHeader}>
+        <View style={styles.volSliderTitleRow}>
+          {icon}
+          <Text style={styles.volSliderLabel}>{label}</Text>
+        </View>
+        <View style={styles.volSliderValueBadge}>
+          <Text style={styles.volSliderValueText}>{value}%</Text>
+        </View>
+      </View>
+
+      <Text style={styles.volSliderSub}>{description}</Text>
+
+      {/* Interactive Slider Track with +/- Steppers */}
+      <View style={styles.volSliderControlsRow}>
+        <TouchableOpacity
+          style={styles.volStepBtn}
+          onPress={stepDown}
+          activeOpacity={0.6}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={styles.volStepBtnText}>−</Text>
+        </TouchableOpacity>
+
+        <View
+          style={styles.volTrackTouchArea}
+          onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => true}
+          onResponderGrant={handleTouch}
+          onResponderMove={handleTouch}
+        >
+          <View style={styles.volTrackBg}>
+            <View style={[styles.volTrackFill, { width: `${value}%` }]} />
+          </View>
+          <View
+            style={[
+              styles.volThumb,
+              { left: `${Math.max(0, Math.min(94, value - 3))}%` },
+            ]}
+          />
+        </View>
+
+        <TouchableOpacity
+          style={styles.volStepBtn}
+          onPress={stepUp}
+          activeOpacity={0.6}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={styles.volStepBtnText}>+</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Preset Pills */}
+      <View style={styles.volPresetRow}>
+        {[25, 50, 75, 100].map((p) => {
+          const isSelected = value === p;
+          return (
+            <TouchableOpacity
+              key={p}
+              style={[styles.volPresetPill, isSelected && styles.volPresetPillActive]}
+              onPress={() => onChange(p)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.volPresetText,
+                  isSelected && styles.volPresetTextActive,
+                ]}
+              >
+                {p}%
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
 
 
 type Props = {
@@ -126,6 +238,8 @@ export function StandardPhoneScreen({
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
   const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'opus');
+  const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 85);
+  const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
@@ -209,6 +323,8 @@ export function StandardPhoneScreen({
       setEditDnd(account.dnd);
       setEditAuto(account.autoAnswer);
       setEditCodec(account.preferredCodec || 'opus');
+      setEditMicVol(account.micVolume ?? 85);
+      setEditSpeakerVol(account.speakerVolume ?? 85);
     }
   }, [account]);
 
@@ -347,6 +463,8 @@ export function StandardPhoneScreen({
       dnd: editDnd,
       autoAnswer: editAuto,
       preferredCodec: editCodec,
+      micVolume: editMicVol,
+      speakerVolume: editSpeakerVol,
     });
     const newSpeedDial: SpeedDialMap = {};
     for (let d = 1; d <= 9; d++) {
@@ -1158,6 +1276,28 @@ export function StandardPhoneScreen({
                       );
                     })}
                   </View>
+
+                  <View style={styles.settingsSectionDivider} />
+                  <Text style={styles.settingsSectionTitle}>Audio & Volume Levels</Text>
+                  <Text style={styles.settingsSectionSub}>
+                    Fine-tune microphone capture sensitivity and in-call speaker loudness:
+                  </Text>
+
+                  <VolumeSlider
+                    label="Microphone Volume"
+                    value={editMicVol}
+                    onChange={setEditMicVol}
+                    icon={<MicIcon size={18} color="#38bdf8" />}
+                    description="Controls microphone capture gain and input sensitivity during calls."
+                  />
+
+                  <VolumeSlider
+                    label="Speaker Volume"
+                    value={editSpeakerVol}
+                    onChange={setEditSpeakerVol}
+                    icon={<SpeakerIcon size={18} color="#38bdf8" />}
+                    description="Controls in-call earpiece and loudspeaker audio output level."
+                  />
                   <View style={styles.settingsSectionDivider} />
                   <Text style={styles.settingsSectionTitle}>Speed Dial (Keys 1 – 9)</Text>
                   <Text style={styles.settingsSectionSub}>
@@ -2199,6 +2339,130 @@ const styles = StyleSheet.create({
   },
   codecPillSubActive: {
     color: '#93c5fd',
+  },
+  volSliderContainer: {
+    backgroundColor: '#121214',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 10,
+  },
+  volSliderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  volSliderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  volSliderLabel: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  volSliderValueBadge: {
+    backgroundColor: '#0c2738',
+    borderColor: '#38bdf8',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  volSliderValueText: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  volSliderSub: {
+    color: '#71717a',
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  volSliderControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+  },
+  volStepBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#1f1f23',
+    borderWidth: 1,
+    borderColor: '#3f3f46',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  volStepBtnText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '600',
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  volTrackTouchArea: {
+    flex: 1,
+    height: 32,
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  volTrackBg: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#27272a',
+    overflow: 'hidden',
+  },
+  volTrackFill: {
+    height: '100%',
+    backgroundColor: '#38bdf8',
+    borderRadius: 3,
+  },
+  volThumb: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#38bdf8',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    top: 7,
+    elevation: 3,
+    shadowColor: '#38bdf8',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.5,
+    shadowRadius: 2,
+  },
+  volPresetRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 10,
+  },
+  volPresetPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#1f1f23',
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  volPresetPillActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#0c2738',
+  },
+  volPresetText: {
+    color: '#71717a',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  volPresetTextActive: {
+    color: '#38bdf8',
+    fontWeight: '700',
   },
   settingsActions: {
     flexDirection: 'row',
