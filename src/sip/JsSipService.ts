@@ -274,16 +274,6 @@ export class JsSipService {
       }
     });
 
-    // Intercept local SDP to prioritize user's preferred audio codec and enable FEC
-    const rtcSession = session as {
-      on?: (event: string, fn: (data: unknown) => void) => void;
-    };
-    rtcSession.on?.('sdp', (evt: unknown) => {
-      const data = evt as { originator?: string; type?: string; sdp?: string };
-      if (data && data.originator === 'local' && data.sdp) {
-        data.sdp = this.prioritizeCodecInSdp(data.sdp, this.preferredCodec);
-      }
-    });
 
     // Attach session-level listeners
     session.on('progress', () => {
@@ -394,25 +384,8 @@ export class JsSipService {
       console.warn('[sip] microphone acquisition timed out after 3000ms');
       resolve(null);
     }, 3000);
-    // 1. Ensure phone audio mode is in communication mode (VOICE_COMMUNICATION)
-    // before capturing the microphone so Android HAL attaches the hardware voice mic,
-    // acoustic echo canceler, and noise suppressor.
-    startCallManagers();
-
-    // 2. Explicit voice-processing constraints for WebRTC Audio Processing Module (APM)
-    const audioConstraints: Record<string, unknown> = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-      googEchoCancellation: true,
-      googNoiseSuppression: true,
-      googAutoGainControl: true,
-      googHighpassFilter: true,
-      googAudioMirroring: false,
-    };
-
     mediaDevices
-      .getUserMedia({ audio: audioConstraints, video: false })
+      .getUserMedia({ audio: true, video: false })
       .then((value) => {
         const stream = value as unknown as MediaStream;
         if (finished) {
