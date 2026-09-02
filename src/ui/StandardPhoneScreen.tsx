@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
-import { CallRecord, Contact, SavedAccount } from '../storage/store';
+import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService } from '../storage/store';
 import { SipState, ActiveCall } from '../sip/JsSipService';
 import {
   PhoneIcon,
@@ -119,6 +119,23 @@ export function StandardPhoneScreen({
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
+  // Speed Dial Configuration
+  const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
+  const [editSpeedDial1, setEditSpeedDial1] = useState('*97');
+  const [editSpeedDial2, setEditSpeedDial2] = useState('');
+  const [editSpeedDial3, setEditSpeedDial3] = useState('');
+
+  // Live PBX Extensions (for 1-click transfer)
+  const [serverExtensions, setServerExtensions] = useState<Array<{ extension: string; name: string }>>([
+    { extension: '101', name: 'ahmed' },
+    { extension: '102', name: 'mazen' },
+    { extension: '103', name: '103' },
+    { extension: '111', name: 'cisco' },
+    { extension: '150', name: '150' },
+    { extension: '151', name: '151' },
+    { extension: '170', name: '170' },
+    { extension: '200', name: '200' },
+  ]);
 
   // New Contact Form
   const [newContactName, setNewContactName] = useState('');
@@ -142,6 +159,56 @@ export function StandardPhoneScreen({
     };
   }, [activeCall?.status]);
 
+  useEffect(() => {
+    StorageService.getSpeedDial().then((sd) => {
+      setSpeedDial(sd);
+      setEditSpeedDial1(sd['1'] || '*97');
+      setEditSpeedDial2(sd['2'] || '');
+      setEditSpeedDial3(sd['3'] || '');
+    });
+  }, []);
+
+  const fetchExtensions = async () => {
+    try {
+      const host = account?.serverHost || '192.168.100.128';
+      let res = await fetch(`http://${host}:8095/api/push/extensions`).catch(() => null);
+      if (!res || !res.ok) {
+        res = await fetch(`http://${host}:8080/api/federation/v1/extensions`).catch(() => null);
+      }
+      if (res && res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.extensions) && json.extensions.length > 0) {
+          setServerExtensions(json.extensions);
+        }
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    void fetchExtensions();
+  }, [account?.serverHost]);
+
+  const handleKeyLongPress = (digit: string) => {
+    const target = speedDial[digit]?.trim();
+    console.log(`[speed-dial] long-press digit=${digit} target=${target || 'none'}`);
+    if (target) {
+      setDigits('');
+      onCall(target);
+    } else if (digit === '0') {
+      setDigits((prev) => prev + '+');
+    }
+  };
+
+  const filteredTransferExtensions = serverExtensions
+    .filter((e) => e.extension !== account?.extension)
+    .filter((e) => {
+      const q = transferTarget.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        e.extension.toLowerCase().includes(q) ||
+        (e.name || '').toLowerCase().includes(q)
+      );
+    });
   const formatCallTime = (sec: number) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -233,6 +300,14 @@ export function StandardPhoneScreen({
       dnd: editDnd,
       autoAnswer: editAuto,
     });
+    const newSpeedDial: SpeedDialMap = {
+      ...speedDial,
+      '1': editSpeedDial1.trim() || '*97',
+      '2': editSpeedDial2.trim(),
+      '3': editSpeedDial3.trim(),
+    };
+    setSpeedDial(newSpeedDial);
+    StorageService.saveSpeedDial(newSpeedDial);
     setShowSettingsModal(false);
   };
 
@@ -340,36 +415,96 @@ export function StandardPhoneScreen({
           </TouchableOpacity>
         </View>
 
-        {/* Transfer Dialog */}
-        <Modal visible={showTransferModal} transparent animationType="fade" onRequestClose={() => setShowTransferModal(false)}>
+        {/* Transfer Dialog with 1-Click Server Extension List */}
+        <Modal
+          visible={showTransferModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowTransferModal(false)}
+        >
           <TouchableWithoutFeedback onPress={() => setShowTransferModal(false)}>
             <View style={styles.modalBackdrop}>
               <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-                <View style={styles.dialogCard}>
-                  <Text style={styles.dialogTitle}>Transfer Call</Text>
-                  <TextInput
-                    style={styles.dialogInput}
-                    value={transferTarget}
-                    onChangeText={setTransferTarget}
-                    placeholder="Extension (e.g. 102)"
-                    placeholderTextColor="#666"
-                    keyboardType="phone-pad"
-                    autoFocus
-                  />
-                  <View style={styles.dialogActions}>
-                    <TouchableOpacity onPress={() => setShowTransferModal(false)} style={styles.dialogCancelBtn}>
-                      <Text style={styles.dialogCancelText}>Cancel</Text>
-                    </TouchableOpacity>
+                <View style={styles.transferDialogCard}>
+                  <View style={styles.transferHeaderRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.dialogTitle}>Transfer Call</Text>
+                      <Text style={styles.transferSubTitle}>
+                        Tap an extension below to transfer with 1 click:
+                      </Text>
+                    </View>
                     <TouchableOpacity
-                      onPress={() => {
-                        if (transferTarget.trim()) onTransfer(transferTarget.trim());
-                        setShowTransferModal(false);
-                      }}
-                      style={styles.dialogSubmitBtn}
+                      onPress={() => setShowTransferModal(false)}
+                      style={styles.transferDismissBtn}
                     >
-                      <Text style={styles.dialogSubmitText}>Transfer</Text>
+                      <Text style={styles.transferDismissText}>✕</Text>
                     </TouchableOpacity>
                   </View>
+
+                  <TextInput
+                    style={styles.transferSearchInput}
+                    value={transferTarget}
+                    onChangeText={setTransferTarget}
+                    placeholder="Filter or enter custom extension…"
+                    placeholderTextColor="#666"
+                    keyboardType="phone-pad"
+                  />
+
+                  {/* 1-Click Server Extensions List */}
+                  <ScrollView
+                    style={styles.transferListScroll}
+                    contentContainerStyle={styles.transferListContent}
+                    showsVerticalScrollIndicator={true}
+                    keyboardShouldPersistTaps="handled"
+                  >
+                    {filteredTransferExtensions.map((item) => (
+                      <TouchableOpacity
+                        key={item.extension}
+                        style={styles.transferExtRow}
+                        onPress={() => {
+                          onTransfer(item.extension);
+                          setShowTransferModal(false);
+                          setTransferTarget('');
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.transferAvatarMini}>
+                          <Text style={styles.transferAvatarText}>
+                            {(item.name || item.extension).slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={styles.transferExtInfo}>
+                          <Text style={styles.transferExtName} numberOfLines={1}>
+                            {item.name && item.name !== item.extension
+                              ? item.name
+                              : `Extension ${item.extension}`}
+                          </Text>
+                          <Text style={styles.transferExtNumber}>Ext {item.extension}</Text>
+                        </View>
+                        <View style={styles.transferActionBadge}>
+                          <Text style={styles.transferActionText}>Transfer</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+
+                  {/* Manual Transfer Button for custom numbers */}
+                  {transferTarget.trim().length > 0 && (
+                    <TouchableOpacity
+                      style={styles.transferManualBtn}
+                      onPress={() => {
+                        onTransfer(transferTarget.trim());
+                        setShowTransferModal(false);
+                        setTransferTarget('');
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <TransferIcon size={16} color="#000000" />
+                      <Text style={styles.transferManualText}>
+                        Transfer to "{transferTarget.trim()}"
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </TouchableWithoutFeedback>
             </View>
@@ -550,22 +685,44 @@ export function StandardPhoneScreen({
 
             {/* 3x4 Dialpad Grid */}
             <View style={styles.keypadGrid}>
-              {DIALPAD_KEYS.map((k) => (
-                <TouchableOpacity
-                  key={k.digit}
-                  style={styles.keyBtn}
-                  onPress={() => handleDigitPress(k.digit)}
-                >
-                  <Text style={styles.keyNumber}>{k.digit}</Text>
-                  {k.isVm ? (
-                    <View style={{ marginTop: 2 }}>
-                      <VoicemailIcon size={12} color="#a1a1aa" />
+              {DIALPAD_KEYS.map((k) => {
+                const speedTarget = speedDial[k.digit]?.trim();
+                const isConfigured = Boolean(speedTarget);
+                return (
+                  <TouchableOpacity
+                    key={k.digit}
+                    style={styles.keyBtn}
+                    onPress={() => handleDigitPress(k.digit)}
+                    onLongPress={() => handleKeyLongPress(k.digit)}
+                    delayLongPress={450}
+                    activeOpacity={0.6}
+                    accessibilityLabel={
+                      isConfigured
+                        ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
+                        : `Digit ${k.digit}`
+                    }
+                  >
+                    <Text style={styles.keyNumber}>{k.digit}</Text>
+                    <View style={styles.keySubRow}>
+                      {k.digit === '1' ? (
+                        <VoicemailIcon
+                          size={14}
+                          color={isConfigured ? '#38bdf8' : '#a1a1aa'}
+                        />
+                      ) : k.sub ? (
+                        <Text
+                          style={[
+                            styles.keyLetters,
+                            isConfigured && styles.keyLettersActive,
+                          ]}
+                        >
+                          {k.sub}
+                        </Text>
+                      ) : null}
                     </View>
-                  ) : k.sub ? (
-                    <Text style={styles.keyLetters}>{k.sub}</Text>
-                  ) : null}
-                </TouchableOpacity>
-              ))}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             {/* Bottom Action Bar */}
@@ -799,6 +956,42 @@ export function StandardPhoneScreen({
                     </View>
                     <Switch value={editAuto} onValueChange={setEditAuto} thumbColor={editAuto ? '#10b981' : '#555'} />
                   </View>
+
+                  <View style={styles.settingsSectionDivider} />
+                  <Text style={styles.settingsSectionTitle}>Speed Dial (Hold to Call)</Text>
+                  <Text style={styles.settingsSectionSub}>
+                    Long-press dialpad keys to directly call these numbers:
+                  </Text>
+
+                  <Text style={styles.fieldLabel}>KEY 1 SPEED DIAL (DEFAULT VOICEMAIL)</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editSpeedDial1}
+                    onChangeText={setEditSpeedDial1}
+                    placeholder="e.g. *97 or 101"
+                    placeholderTextColor="#666"
+                    autoCapitalize="none"
+                  />
+
+                  <Text style={styles.fieldLabel}>KEY 2 SPEED DIAL (OPTIONAL)</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editSpeedDial2}
+                    onChangeText={setEditSpeedDial2}
+                    placeholder="e.g. 101"
+                    placeholderTextColor="#666"
+                    autoCapitalize="none"
+                  />
+
+                  <Text style={styles.fieldLabel}>KEY 3 SPEED DIAL (OPTIONAL)</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editSpeedDial3}
+                    onChangeText={setEditSpeedDial3}
+                    placeholder="e.g. 102"
+                    placeholderTextColor="#666"
+                    autoCapitalize="none"
+                  />
 
                   <View style={styles.settingsActions}>
                     {account ? (
@@ -1044,13 +1237,24 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 28,
     fontWeight: '500',
+    lineHeight: 34,
+    textAlign: 'center',
+  },
+  keySubRow: {
+    height: 14,
+    marginTop: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   keyLetters: {
     color: '#a1a1aa',
     fontSize: 9,
     fontWeight: '600',
     letterSpacing: 1,
-    marginTop: 2,
+    lineHeight: 12,
+  },
+  keyLettersActive: {
+    color: '#38bdf8',
   },
   dialActionsRow: {
     flexDirection: 'row',
@@ -1181,6 +1385,131 @@ const styles = StyleSheet.create({
     padding: 20,
     borderColor: '#27272a',
     borderWidth: 1,
+  },
+  transferDialogCard: {
+    width: '100%',
+    maxHeight: '75%',
+    backgroundColor: '#18181b',
+    borderRadius: 16,
+    padding: 20,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  transferHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  transferSubTitle: {
+    color: '#71717a',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  transferDismissBtn: {
+    padding: 6,
+  },
+  transferDismissText: {
+    color: '#71717a',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  transferSearchInput: {
+    backgroundColor: '#09090b',
+    color: '#ffffff',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
+    marginBottom: 10,
+  },
+  transferListScroll: {
+    maxHeight: 250,
+  },
+  transferListContent: {
+    paddingVertical: 2,
+  },
+  transferExtRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#141417',
+    marginBottom: 6,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  transferAvatarMini: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#27272a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transferAvatarText: {
+    color: '#38bdf8',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  transferExtInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  transferExtName: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  transferExtNumber: {
+    color: '#71717a',
+    fontSize: 12,
+    marginTop: 1,
+  },
+  transferActionBadge: {
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  transferActionText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  transferManualBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#38bdf8',
+    paddingVertical: 11,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  transferManualText: {
+    color: '#000000',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  settingsSectionDivider: {
+    height: 1,
+    backgroundColor: '#27272a',
+    marginVertical: 16,
+  },
+  settingsSectionTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  settingsSectionSub: {
+    color: '#71717a',
+    fontSize: 12,
+    marginBottom: 10,
   },
   dialogTitle: {
     color: '#ffffff',

@@ -29,12 +29,18 @@ export interface Contact {
   favorite?: boolean;
 }
 
+export type SpeedDialMap = Record<string, string>;
+
+export const DEFAULT_SPEED_DIAL: SpeedDialMap = {
+  '1': '*97',
+};
+
 const KEYS = {
   ACCOUNT: '@sokrat_account',
   CALLS: '@sokrat_calls_history',
   CONTACTS: '@sokrat_contacts',
+  SPEED_DIAL: '@sokrat_speed_dial',
 };
-
 export const StorageService = {
   async getAccount(): Promise<SavedAccount | null> {
     try {
@@ -112,6 +118,23 @@ export const StorageService = {
       await AsyncStorage.setItem(KEYS.CONTACTS, JSON.stringify(contacts));
     } catch (err) {
       console.warn('[storage] saveContacts failed:', err);
+    }
+  },
+
+  async getSpeedDial(): Promise<SpeedDialMap> {
+    try {
+      const data = await AsyncStorage.getItem(KEYS.SPEED_DIAL);
+      return data ? { ...DEFAULT_SPEED_DIAL, ...JSON.parse(data) } : { ...DEFAULT_SPEED_DIAL };
+    } catch {
+      return { ...DEFAULT_SPEED_DIAL };
+    }
+  },
+
+  async saveSpeedDial(speedDial: SpeedDialMap): Promise<void> {
+    try {
+      await AsyncStorage.setItem(KEYS.SPEED_DIAL, JSON.stringify(speedDial));
+    } catch (err) {
+      console.warn('[storage] saveSpeedDial failed:', err);
     }
   },
 };

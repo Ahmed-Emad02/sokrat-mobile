@@ -344,18 +344,37 @@ export default function App() {
 
   // --- Actions ---
   const handleOutboundCall = async (target: string) => {
-    if (uiState !== 'registered' || !sipRef.current?.isRegistered()) {
-      Alert.alert(
-        'Not Connected',
-        'Extension is currently connecting. Please ensure TLS / WSS Protocol is OFF on local LAN and status shows Connected.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
+    const destination = target.trim();
+    if (!destination) return;
+    console.log('[app] handleOutboundCall requested target=' + destination);
 
     try {
+      if ((uiState !== 'registered' || !sipRef.current?.isRegistered()) && account) {
+        console.log('[app] reconnecting SIP before outbound call...');
+        await sipRef.current?.connect(
+          account.extension,
+          account.password,
+          account.serverHost,
+          account.useTls
+        );
+        let waitAttempts = 0;
+        while (!sipRef.current?.isRegistered() && waitAttempts < 15) {
+          await new Promise<void>((resolve) => setTimeout(() => resolve(), 200));
+          waitAttempts++;
+        }
+      }
+
+      if (!sipRef.current?.isRegistered()) {
+        Alert.alert(
+          'Not Connected',
+          'Extension is currently connecting. Please ensure the PBX server is reachable and status shows Connected.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
       startCallManagers();
-      await sipRef.current?.call(target);
+      await sipRef.current?.call(destination);
       if (sipRef.current?.activeCall) {
         updateActiveCall({ ...sipRef.current.activeCall });
       }
