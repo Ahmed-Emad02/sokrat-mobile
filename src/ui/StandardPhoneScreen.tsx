@@ -1144,9 +1144,11 @@ export function StandardPhoneScreen({
 
       {/* Settings Modal (Click-Outside to Dismiss) */}
       <Modal visible={showSettingsModal} transparent animationType="fade" onRequestClose={() => setShowSettingsModal(false)}>
-        <TouchableWithoutFeedback onPress={() => setShowSettingsModal(false)}>
-          <View style={styles.modalBackdrop}>
-            <View style={styles.settingsCardWrapper}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback onPress={() => setShowSettingsModal(false)}>
+            <View style={StyleSheet.absoluteFill} />
+          </TouchableWithoutFeedback>
+          <View style={styles.settingsCardWrapper}>
               <ScrollView
                 style={styles.settingsScroll}
                 contentContainerStyle={styles.settingsCard}
@@ -1354,15 +1356,15 @@ export function StandardPhoneScreen({
                 </ScrollView>
               </View>
           </View>
-        </TouchableWithoutFeedback>
       </Modal>
 
       {/* Add Contact Modal (Click-Outside to Dismiss) */}
       <Modal visible={showAddContactModal} transparent animationType="fade" onRequestClose={() => setShowAddContactModal(false)}>
-        <TouchableWithoutFeedback onPress={() => setShowAddContactModal(false)}>
-          <View style={styles.modalBackdrop}>
-            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-              <View style={styles.dialogCard}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback onPress={() => setShowAddContactModal(false)}>
+            <View style={StyleSheet.absoluteFill} />
+          </TouchableWithoutFeedback>
+          <View style={styles.dialogCard}>
                 <Text style={styles.dialogTitle}>Add New Contact</Text>
 
                 <Text style={styles.fieldLabel}>NAME</Text>
@@ -1393,9 +1395,7 @@ export function StandardPhoneScreen({
                   </TouchableOpacity>
                 </View>
               </View>
-            </TouchableWithoutFeedback>
           </View>
-        </TouchableWithoutFeedback>
       </Modal>
       {/* Call Details & Quick Actions Sheet */}
       <Modal
@@ -1404,10 +1404,11 @@ export function StandardPhoneScreen({
         animationType="fade"
         onRequestClose={() => setShowCallDetailsModal(false)}
       >
-        <TouchableWithoutFeedback onPress={() => setShowCallDetailsModal(false)}>
-          <View style={styles.modalBackdrop}>
-            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-              <View style={styles.callDetailsCard}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback onPress={() => setShowCallDetailsModal(false)}>
+            <View style={StyleSheet.absoluteFill} />
+          </TouchableWithoutFeedback>
+          <View style={styles.callDetailsCard}>
                 <View style={styles.callDetailsHeaderRow}>
                   <Text style={styles.dialogTitle}>Call Details</Text>
                   <TouchableOpacity
@@ -1523,9 +1524,7 @@ export function StandardPhoneScreen({
                   </>
                 )}
               </View>
-            </TouchableWithoutFeedback>
           </View>
-        </TouchableWithoutFeedback>
       </Modal>
     </SafeAreaView>
   );
