@@ -481,6 +481,11 @@ export default function App() {
     setCallsHistory([]);
     await StorageService.clearCallHistory();
   };
+  const handleDeleteCallRecord = async (id: string) => {
+    const updated = await StorageService.deleteCallRecord(id);
+    setCallsHistory(updated);
+  };
+
   // 1. Storage Authentication Initializing (prevents flash of login screen)
   if (!isAuthLoaded) {
     return (
@@ -563,6 +568,7 @@ export default function App() {
         onSaveAccount={handleSaveAccount}
         onLogout={handleLogout}
         onClearHistory={handleClearHistory}
+        onDeleteCallRecord={handleDeleteCallRecord}
         onSaveContact={handleSaveContact}
         onDeleteContact={handleDeleteContact}
         onSaveContactsBatch={handleSaveContactsBatch}

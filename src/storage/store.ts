@@ -95,6 +95,18 @@ export const StorageService = {
       await AsyncStorage.removeItem(KEYS.CALLS);
     } catch {}
   },
+  async deleteCallRecord(id: string): Promise<CallRecord[]> {
+    try {
+      const current = await this.getCallHistory();
+      const updated = current.filter((c) => c.id !== id);
+      await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(updated));
+      return updated;
+    } catch (err) {
+      console.warn('[storage] deleteCallRecord failed:', err);
+      return [];
+    }
+  },
+
 
   async getContacts(): Promise<Contact[]> {
     try {

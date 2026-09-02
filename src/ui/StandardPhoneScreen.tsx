@@ -62,6 +62,7 @@ type Props = {
   onSaveContact: (contact: Contact) => void;
   onSaveContactsBatch?: (contacts: Contact[]) => void;
   onDeleteContact: (id: string) => void;
+  onDeleteCallRecord?: (id: string) => void;
   onToggleFavorite: (id: string) => void;
 };
 
@@ -102,6 +103,7 @@ export function StandardPhoneScreen({
   onClearHistory,
   onSaveContact,
   onDeleteContact,
+  onDeleteCallRecord,
   onToggleFavorite,
 }: Props) {
   // Navigation & UI States
@@ -111,6 +113,9 @@ export function StandardPhoneScreen({
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showAddContactModal, setShowAddContactModal] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
+
+  const [selectedCallRecord, setSelectedCallRecord] = useState<CallRecord | null>(null);
+  const [showCallDetailsModal, setShowCallDetailsModal] = useState(false);
 
   // Settings State Form
   const [editExt, setEditExt] = useState(account?.extension || '150');
@@ -213,6 +218,25 @@ export function StandardPhoneScreen({
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const formatExactDate = (ts: number): string => {
+    const d = new Date(ts);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = months[d.getMonth()];
+    const day = d.getDate();
+    let hours = d.getHours();
+    const minutes = d.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+    const minStr = minutes < 10 ? `0${minutes}` : `${minutes}`;
+    return `${month} ${day}, ${d.getFullYear()} at ${hours}:${minStr} ${ampm}`;
+  };
+
+  const handleOpenCallDetails = (record: CallRecord) => {
+    setSelectedCallRecord(record);
+    setShowCallDetailsModal(true);
   };
 
   const formatTimeAgo = (ts: number) => {
@@ -665,7 +689,12 @@ export function StandardPhoneScreen({
                     </View>
 
                     <Text style={styles.recentTime}>{formatTimeAgo(item.timestamp)}</Text>
-                    <TouchableOpacity style={styles.infoCircleBtn} onPress={() => onCall(item.number)}>
+                    <TouchableOpacity
+                      style={styles.infoCircleBtn}
+                      onPress={() => handleOpenCallDetails(item)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Call details for ${item.name || item.number}`}
+                    >
                       <InfoIcon size={20} color="#71717a" />
                     </TouchableOpacity>
                   </TouchableOpacity>
@@ -858,6 +887,136 @@ export function StandardPhoneScreen({
               </View>
             )}
           />
+      {/* Call Details & Quick Actions Sheet */}
+      <Modal
+        visible={showCallDetailsModal && Boolean(selectedCallRecord)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCallDetailsModal(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowCallDetailsModal(false)}>
+          <View style={styles.modalBackdrop}>
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+              <View style={styles.callDetailsCard}>
+                <View style={styles.callDetailsHeaderRow}>
+                  <Text style={styles.dialogTitle}>Call Details</Text>
+                  <TouchableOpacity
+                    onPress={() => setShowCallDetailsModal(false)}
+                    style={styles.transferDismissBtn}
+                  >
+                    <Text style={styles.transferDismissText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {selectedCallRecord && (
+                  <>
+                    {/* Caller Avatar & Name */}
+                    <View style={styles.callDetailsIdentity}>
+                      <View style={styles.callDetailsAvatar}>
+                        <UserIcon size={34} color="#38bdf8" />
+                      </View>
+                      <Text style={styles.callDetailsName} numberOfLines={1}>
+                        {selectedCallRecord.name || selectedCallRecord.number}
+                      </Text>
+                      <Text style={styles.callDetailsNumber}>
+                        {selectedCallRecord.name && selectedCallRecord.name !== selectedCallRecord.number
+                          ? `Ext ${selectedCallRecord.number} · VoIP`
+                          : 'VoIP Extension'}
+                      </Text>
+                    </View>
+
+                    {/* Quick Action Buttons Row */}
+                    <View style={styles.callDetailsActionsRow}>
+                      <TouchableOpacity
+                        style={styles.callDetailsActionPill}
+                        onPress={() => {
+                          const num = selectedCallRecord.number;
+                          setShowCallDetailsModal(false);
+                          onCall(num);
+                        }}
+                      >
+                        <PhoneIcon size={16} color="#000000" />
+                        <Text style={styles.callDetailsActionText}>Call</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.callDetailsActionSecondary}
+                        onPress={() => {
+                          const num = selectedCallRecord.number;
+                          const name =
+                            selectedCallRecord.name !== selectedCallRecord.number
+                              ? selectedCallRecord.name
+                              : '';
+                          setShowCallDetailsModal(false);
+                          setNewContactName(name);
+                          setNewContactNumber(num);
+                          setShowAddContactModal(true);
+                        }}
+                      >
+                        <UserPlusIcon size={16} color="#ffffff" />
+                        <Text style={styles.callDetailsSecondaryText}>Add Contact</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.callDetailsActionDanger}
+                        onPress={() => {
+                          if (onDeleteCallRecord) {
+                            onDeleteCallRecord(selectedCallRecord.id);
+                          }
+                          setShowCallDetailsModal(false);
+                        }}
+                      >
+                        <TrashIcon size={16} color="#ef4444" />
+                        <Text style={styles.callDetailsDangerText}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Detailed Metadata Card */}
+                    <View style={styles.callDetailsMetaCard}>
+                      <View style={styles.callDetailsMetaRow}>
+                        <Text style={styles.callDetailsMetaLabel}>Call Type</Text>
+                        <Text
+                          style={[
+                            styles.callDetailsMetaValue,
+                            selectedCallRecord.direction === 'missed' && { color: '#ef4444' },
+                          ]}
+                        >
+                          {selectedCallRecord.direction === 'inbound'
+                            ? 'Incoming (Answered)'
+                            : selectedCallRecord.direction === 'outbound'
+                            ? 'Outgoing Call'
+                            : 'Missed Call'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.callDetailsMetaDivider} />
+
+                      <View style={styles.callDetailsMetaRow}>
+                        <Text style={styles.callDetailsMetaLabel}>Date & Time</Text>
+                        <Text style={styles.callDetailsMetaValue}>
+                          {formatExactDate(selectedCallRecord.timestamp)}
+                        </Text>
+                      </View>
+
+                      {selectedCallRecord.duration != null && selectedCallRecord.duration > 0 && (
+                        <>
+                          <View style={styles.callDetailsMetaDivider} />
+                          <View style={styles.callDetailsMetaRow}>
+                            <Text style={styles.callDetailsMetaLabel}>Duration</Text>
+                            <Text style={styles.callDetailsMetaValue}>
+                              {formatCallTime(selectedCallRecord.duration)}
+                            </Text>
+                          </View>
+                        </>
+                      )}
+                    </View>
+                  </>
+                )}
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
         </View>
       )}
 
@@ -1499,6 +1658,130 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#27272a',
     marginVertical: 16,
+  },
+  callDetailsCard: {
+    width: '100%',
+    backgroundColor: '#18181b',
+    borderRadius: 20,
+    padding: 22,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  callDetailsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  callDetailsIdentity: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  callDetailsAvatar: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#27272a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+    borderColor: '#38bdf8',
+    borderWidth: 1.5,
+  },
+  callDetailsName: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  callDetailsNumber: {
+    color: '#71717a',
+    fontSize: 14,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  callDetailsActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 20,
+  },
+  callDetailsActionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#38bdf8',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+  },
+  callDetailsActionText: {
+    color: '#000000',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  callDetailsActionSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#27272a',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 24,
+    borderColor: '#3f3f46',
+    borderWidth: 1,
+  },
+  callDetailsSecondaryText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  callDetailsActionDanger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#271b1d',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 24,
+    borderColor: '#7f1d1d',
+    borderWidth: 1,
+  },
+  callDetailsDangerText: {
+    color: '#ef4444',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  callDetailsMetaCard: {
+    backgroundColor: '#121215',
+    borderRadius: 12,
+    padding: 14,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  callDetailsMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  callDetailsMetaDivider: {
+    height: 1,
+    backgroundColor: '#27272a',
+    marginVertical: 4,
+  },
+  callDetailsMetaLabel: {
+    color: '#71717a',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  callDetailsMetaValue: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   settingsSectionTitle: {
     color: '#ffffff',
