@@ -124,11 +124,9 @@ export function StandardPhoneScreen({
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
-  // Speed Dial Configuration
+  // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
-  const [editSpeedDial1, setEditSpeedDial1] = useState('*97');
-  const [editSpeedDial2, setEditSpeedDial2] = useState('');
-  const [editSpeedDial3, setEditSpeedDial3] = useState('');
+  const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
 
   // Live PBX Extensions (for 1-click transfer)
   const [serverExtensions, setServerExtensions] = useState<Array<{ extension: string; name: string }>>([
@@ -166,10 +164,9 @@ export function StandardPhoneScreen({
 
   useEffect(() => {
     StorageService.getSpeedDial().then((sd) => {
-      setSpeedDial(sd);
-      setEditSpeedDial1(sd['1'] || '*97');
-      setEditSpeedDial2(sd['2'] || '');
-      setEditSpeedDial3(sd['3'] || '');
+      const initial = { '1': '*97', ...sd };
+      setSpeedDial(initial);
+      setEditSpeedDial(initial);
     });
   }, []);
 
@@ -324,12 +321,16 @@ export function StandardPhoneScreen({
       dnd: editDnd,
       autoAnswer: editAuto,
     });
-    const newSpeedDial: SpeedDialMap = {
-      ...speedDial,
-      '1': editSpeedDial1.trim() || '*97',
-      '2': editSpeedDial2.trim(),
-      '3': editSpeedDial3.trim(),
-    };
+    const newSpeedDial: SpeedDialMap = {};
+    for (let d = 1; d <= 9; d++) {
+      const key = String(d);
+      const val = (editSpeedDial[key] || '').trim();
+      if (key === '1') {
+        newSpeedDial[key] = val || '*97';
+      } else if (val) {
+        newSpeedDial[key] = val;
+      }
+    }
     setSpeedDial(newSpeedDial);
     StorageService.saveSpeedDial(newSpeedDial);
     setShowSettingsModal(false);
@@ -997,41 +998,48 @@ export function StandardPhoneScreen({
                   </View>
 
                   <View style={styles.settingsSectionDivider} />
-                  <Text style={styles.settingsSectionTitle}>Speed Dial (Hold to Call)</Text>
+                  <Text style={styles.settingsSectionTitle}>Speed Dial (Keys 1 – 9)</Text>
                   <Text style={styles.settingsSectionSub}>
-                    Long-press dialpad keys to directly call these numbers:
+                    Hold down any key on the dialpad to directly call these numbers:
                   </Text>
 
-                  <Text style={styles.fieldLabel}>KEY 1 SPEED DIAL (DEFAULT VOICEMAIL)</Text>
-                  <TextInput
-                    style={styles.settingsInput}
-                    value={editSpeedDial1}
-                    onChangeText={setEditSpeedDial1}
-                    placeholder="e.g. *97 or 101"
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                  />
-
-                  <Text style={styles.fieldLabel}>KEY 2 SPEED DIAL (OPTIONAL)</Text>
-                  <TextInput
-                    style={styles.settingsInput}
-                    value={editSpeedDial2}
-                    onChangeText={setEditSpeedDial2}
-                    placeholder="e.g. 101"
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                  />
-
-                  <Text style={styles.fieldLabel}>KEY 3 SPEED DIAL (OPTIONAL)</Text>
-                  <TextInput
-                    style={styles.settingsInput}
-                    value={editSpeedDial3}
-                    onChangeText={setEditSpeedDial3}
-                    placeholder="e.g. 102"
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                  />
-
+                  {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => {
+                    const isVmKey = digit === '1';
+                    const currentValue = editSpeedDial[digit] || '';
+                    return (
+                      <View key={digit} style={styles.speedDialConfigRow}>
+                        <View style={[styles.speedDialBadge, isVmKey && styles.speedDialBadgeVm]}>
+                          <Text style={[styles.speedDialBadgeText, isVmKey && styles.speedDialBadgeTextVm]}>
+                            {digit}
+                          </Text>
+                        </View>
+                        <TextInput
+                          style={styles.speedDialInput}
+                          value={currentValue}
+                          onChangeText={(val) =>
+                            setEditSpeedDial((prev) => ({ ...prev, [digit]: val }))
+                          }
+                          placeholder={isVmKey ? '*97 (Voicemail)' : `Speed dial ${digit} (empty)`}
+                          placeholderTextColor="#666"
+                          autoCapitalize="none"
+                        />
+                        {currentValue.trim() && !isVmKey ? (
+                          <TouchableOpacity
+                            onPress={() =>
+                              setEditSpeedDial((prev) => {
+                                const next = { ...prev };
+                                delete next[digit];
+                                return next;
+                              })
+                            }
+                            style={styles.speedDialClearBtn}
+                          >
+                            <Text style={styles.speedDialClearText}>✕</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    );
+                  })}
                   <View style={styles.settingsActions}>
                     {account ? (
                       <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
@@ -1527,6 +1535,53 @@ const styles = StyleSheet.create({
     padding: 10,
     backgroundColor: '#064e3b',
     borderRadius: 20,
+  },
+  speedDialConfigRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  speedDialBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#27272a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: '#3f3f46',
+    borderWidth: 1,
+  },
+  speedDialBadgeVm: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#0c2838',
+  },
+  speedDialBadgeText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  speedDialBadgeTextVm: {
+    color: '#38bdf8',
+  },
+  speedDialInput: {
+    flex: 1,
+    backgroundColor: '#09090b',
+    color: '#ffffff',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    fontSize: 13,
+  },
+  speedDialClearBtn: {
+    padding: 6,
+  },
+  speedDialClearText: {
+    color: '#71717a',
+    fontSize: 14,
+    fontWeight: '600',
   },
   modalBackdrop: {
     flex: 1,
