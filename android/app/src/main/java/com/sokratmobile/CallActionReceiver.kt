@@ -6,14 +6,25 @@ import android.content.Intent
 
 class CallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        if (intent == null) return
+        if (intent?.action != "com.sokratmobile.ACTION_DECLINE_CALL") return
+        val callId = intent.getStringExtra("callId")
+        if (!IncomingCallStore.isValidCallId(callId)) return
 
-        val action = intent.action
-        val callId = intent.getStringExtra("callId") ?: ""
+        val canonicalCallId = callId!!
+        IncomingCallStore.setAction(context, canonicalCallId, "DECLINE")
+        IncomingCallNotificationHelper.dismissCallNotification(context, canonicalCallId)
+        CallNotificationModule.emitPersistedAction(context, canonicalCallId)
 
-        if (action == "com.sokratmobile.ACTION_DECLINE_CALL") {
-            IncomingCallNotificationHelper.dismissCallNotification(context)
-            CallNotificationModule.onCallDeclined(callId)
+        val activityIntent = Intent(context, MainActivity::class.java).apply {
+            action = "com.sokratmobile.ACTION_DECLINE_CALL"
+            putExtras(intent.extras ?: android.os.Bundle())
+            putExtra("callAction", "DECLINE")
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
         }
+        context.startActivity(activityIntent)
     }
 }

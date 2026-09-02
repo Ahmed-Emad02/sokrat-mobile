@@ -13,22 +13,52 @@ class MainActivity : ReactActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-      setShowWhenLocked(true)
-      setTurnScreenOn(true)
-    }
-    window.addFlags(
-      WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-      WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-      WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-    )
-    CallNotificationModule.onIntentReceived(intent)
+    currentActivity = java.lang.ref.WeakReference(this)
+    applyIncomingCallWindow(intent)
+    CallNotificationModule.onIntentReceived(applicationContext, intent)
   }
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
-    CallNotificationModule.onIntentReceived(intent)
+    applyIncomingCallWindow(intent)
+    CallNotificationModule.onIntentReceived(applicationContext, intent)
+  }
+
+  override fun onDestroy() {
+    if (currentActivity?.get() === this) currentActivity = null
+    super.onDestroy()
+  }
+
+  private fun applyIncomingCallWindow(intent: Intent?) {
+    val action = intent?.getStringExtra("callAction")
+    val incomingWindow = action == "SHOW" || action == "ANSWER"
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+      setShowWhenLocked(incomingWindow)
+      setTurnScreenOn(incomingWindow)
+    }
+    if (incomingWindow) {
+      window.addFlags(
+        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+      )
+    } else {
+      window.clearFlags(
+        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+      )
+    }
+  }
+
+  companion object {
+    private var currentActivity: java.lang.ref.WeakReference<MainActivity>? = null
+
+    fun clearIncomingCallWindow() {
+      val activity = currentActivity?.get() ?: return
+      activity.runOnUiThread { activity.applyIncomingCallWindow(null) }
+    }
   }
   /**
    * Returns the name of the main component registered from JavaScript. This is used to schedule

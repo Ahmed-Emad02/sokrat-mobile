@@ -28,37 +28,48 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     }
 
     @ReactMethod
-    fun dismissCallNotification() {
-        IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext)
+    fun dismissCallNotification(callId: String) {
+        if (!IncomingCallStore.isValidCallId(callId)) return
+        IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, callId)
+        IncomingCallStore.remove(reactApplicationContext, callId)
+        MainActivity.clearIncomingCallWindow()
     }
 
     @ReactMethod
-    fun getInitialCallAction(promise: Promise) {
-        val action = initialCallAction
-        if (action != null) {
-            val map = Arguments.createMap().apply {
-                putString("action", action.action)
-                putString("callId", action.callId)
-                putString("callerId", action.callerId)
-                putString("callerName", action.callerName)
-                putString("extension", action.extension)
-                putString("timestamp", action.timestamp)
-            }
-            initialCallAction = null
-            promise.resolve(map)
-        } else {
-            promise.resolve(null)
+    fun getPendingCalls(promise: Promise) {
+        val calls = Arguments.createArray()
+        IncomingCallStore.pending(reactApplicationContext).forEach { record ->
+            calls.pushMap(record.toWritableMap())
         }
+        promise.resolve(calls)
+    }
+
+    @ReactMethod
+    fun acknowledgeAction(callId: String, action: String) {
+        IncomingCallStore.acknowledgeAction(
+            reactApplicationContext,
+            callId,
+            action.uppercase()
+        )
+    }
+
+    @ReactMethod
+    fun recordAction(callId: String, action: String) {
+        IncomingCallStore.setAction(
+            reactApplicationContext,
+            callId,
+            action.uppercase()
+        )
     }
 
     @ReactMethod
     fun addListener(eventName: String) {
-        // Required for React Native built-in EventEmitter calls
+        // Required for React Native built-in EventEmitter calls.
     }
 
     @ReactMethod
     fun removeListeners(count: Int) {
-        // Required for React Native built-in EventEmitter calls
+        // Required for React Native built-in EventEmitter calls.
     }
     @ReactMethod
     fun getDeviceContacts(promise: Promise) {
@@ -113,60 +124,46 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     companion object {
         private var instance: CallNotificationModule? = null
 
-        data class CallActionData(
-            val action: String,
-            val callId: String,
-            val callerId: String,
-            val callerName: String,
-            val extension: String,
-            val timestamp: String
-        )
-
-        var initialCallAction: CallActionData? = null
-
-        fun onCallDeclined(callId: String) {
-            val map = Arguments.createMap().apply {
-                putString("action", "DECLINE")
-                putString("callId", callId)
-            }
-            emitEvent("onCallAction", map)
-        }
-
-        fun onIntentReceived(intent: Intent?) {
+        fun onIntentReceived(context: android.content.Context, intent: Intent?) {
             if (intent == null) return
+            val callAction = intent.getStringExtra("callAction") ?: return
+            val callId = intent.getStringExtra("callId")
+            if (!IncomingCallStore.isValidCallId(callId)) return
 
-            val callAction = intent.getStringExtra("callAction")
-            val callId = intent.getStringExtra("callId") ?: ""
-            val callerId = intent.getStringExtra("callerId") ?: ""
-            val callerName = intent.getStringExtra("callerName") ?: ""
-            val extension = intent.getStringExtra("extension") ?: ""
-            val timestamp = intent.getStringExtra("timestamp") ?: ""
-
-            if (!callAction.isNullOrEmpty()) {
-                val data = CallActionData(
-                    action = callAction,
-                    callId = callId,
-                    callerId = callerId,
-                    callerName = callerName,
-                    extension = extension,
-                    timestamp = timestamp
+            val canonicalCallId = callId!!
+            val existing = IncomingCallStore.pending(context)
+                .firstOrNull { it.callId == canonicalCallId }
+            if (existing == null) {
+                IncomingCallStore.upsertIncoming(
+                    context,
+                    canonicalCallId,
+                    intent.getStringExtra("callerId") ?: "Unknown",
+                    intent.getStringExtra("callerName") ?: "Incoming Call",
+                    intent.getStringExtra("extension") ?: "",
+                    intent.getStringExtra("timestamp")?.toLongOrNull()
+                        ?: System.currentTimeMillis()
                 )
-
-                if (instance != null) {
-                    val map = Arguments.createMap().apply {
-                        putString("action", callAction)
-                        putString("callId", callId)
-                        putString("callerId", callerId)
-                        putString("callerName", callerName)
-                        putString("extension", extension)
-                        putString("timestamp", timestamp)
-                    }
-                    emitEvent("onCallAction", map)
-                } else {
-                    initialCallAction = data
-                }
             }
+            IncomingCallStore.setAction(context, canonicalCallId, callAction)
+            emitPersistedAction(context, canonicalCallId)
         }
+
+        fun emitPersistedAction(context: android.content.Context, callId: String) {
+            val record = IncomingCallStore.pending(context)
+                .firstOrNull { it.callId == callId }
+                ?: return
+            emitEvent("onCallAction", record.toWritableMap())
+        }
+
+        private fun IncomingCallStore.Record.toWritableMap(): WritableMap =
+            Arguments.createMap().apply {
+                putString("action", action ?: "SHOW")
+                putString("callId", callId)
+                putString("callerId", callerId)
+                putString("callerName", callerName)
+                putString("extension", extension)
+                putString("timestamp", timestamp.toString())
+            }
 
         private fun emitEvent(eventName: String, params: WritableMap) {
             instance?.reactApplicationContext

@@ -15,40 +15,33 @@ import androidx.core.app.NotificationManagerCompat
 object IncomingCallNotificationHelper {
     const val CHANNEL_ID = "sokrat_incoming_calls"
     const val CHANNEL_NAME = "Incoming Calls"
-    const val NOTIFICATION_ID = 2001
+    private const val NOTIFICATION_ID_BASE = 2000
 
     fun createNotificationChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return
+        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
 
-            val existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
-            if (existingChannel != null) {
-                return
-            }
-
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .build()
-
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Sokrat VOICE incoming call alerts"
-                setSound(ringtoneUri, audioAttributes)
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 1000, 1000, 1000, 1000)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setShowBadge(true)
-                enableLights(true)
-            }
-
-            notificationManager.createNotificationChannel(channel)
+        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .build()
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Sokrat VOICE incoming call alerts"
+            setSound(ringtoneUri, audioAttributes)
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 1000, 1000, 1000, 1000, 1000)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setShowBadge(true)
+            enableLights(true)
         }
+        manager.createNotificationChannel(channel)
     }
 
     fun showCallNotification(
@@ -60,79 +53,55 @@ object IncomingCallNotificationHelper {
         timestamp: String
     ) {
         createNotificationChannel(context)
-
-        val title = if (callerName.isNotBlank()) callerName else callerId.ifBlank { "Incoming Call" }
+        val title = callerName.ifBlank { callerId.ifBlank { "Incoming Call" } }
         val subtitle = if (callerId.isNotBlank() && callerId != callerName) {
             "Incoming call from $callerId"
         } else {
             "Incoming Sokrat VOICE call"
         }
-
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
-        // 1. Full Screen Intent (wakes up lock screen / launches incoming call UI)
-        val fullScreenIntent = Intent(context, MainActivity::class.java).apply {
-            action = "com.sokratmobile.ACTION_INCOMING_CALL"
-            putExtra("callId", callId)
-            putExtra("callerId", callerId)
-            putExtra("callerName", callerName)
-            putExtra("extension", extension)
-            putExtra("timestamp", timestamp)
-            putExtra("callAction", "SHOW")
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
-            )
-        }
-        val fullScreenPendingIntent = PendingIntent.getActivity(
+        fun activityIntent(action: String, callAction: String) =
+            Intent(context, MainActivity::class.java).apply {
+                this.action = action
+                putCallExtras(this, callId, callerId, callerName, extension, timestamp)
+                putExtra("callAction", callAction)
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            }
+
+        val showIntent = activityIntent(
+            "com.sokratmobile.ACTION_INCOMING_CALL",
+            "SHOW"
+        )
+        val showPendingIntent = PendingIntent.getActivity(
             context,
-            callId.hashCode(),
-            fullScreenIntent,
+            requestCode(callId, 0),
+            showIntent,
             flags
         )
-
-        // 2. Answer Action Intent
-        val answerIntent = Intent(context, MainActivity::class.java).apply {
-            action = "com.sokratmobile.ACTION_ANSWER_CALL"
-            putExtra("callId", callId)
-            putExtra("callerId", callerId)
-            putExtra("callerName", callerName)
-            putExtra("extension", extension)
-            putExtra("timestamp", timestamp)
-            putExtra("callAction", "ANSWER")
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
-            )
-        }
         val answerPendingIntent = PendingIntent.getActivity(
             context,
-            callId.hashCode() + 1,
-            answerIntent,
+            requestCode(callId, 1),
+            activityIntent("com.sokratmobile.ACTION_ANSWER_CALL", "ANSWER"),
             flags
         )
-
-        // 3. Decline Action Intent (Broadcast to CallActionReceiver)
         val declineIntent = Intent(context, CallActionReceiver::class.java).apply {
             action = "com.sokratmobile.ACTION_DECLINE_CALL"
-            putExtra("callId", callId)
-            putExtra("callerId", callerId)
-            putExtra("callerName", callerName)
-            putExtra("extension", extension)
-            putExtra("timestamp", timestamp)
+            putCallExtras(this, callId, callerId, callerName, extension, timestamp)
         }
         val declinePendingIntent = PendingIntent.getBroadcast(
             context,
-            callId.hashCode() + 2,
+            requestCode(callId, 2),
             declineIntent,
             flags
         )
 
         val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(subtitle)
@@ -143,26 +112,49 @@ object IncomingCallNotificationHelper {
             .setVibrate(longArrayOf(0, 1000, 1000, 1000, 1000, 1000))
             .setAutoCancel(false)
             .setOngoing(true)
-            .setContentIntent(fullScreenPendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePendingIntent)
+            .setContentIntent(showPendingIntent)
+            .setFullScreenIntent(showPendingIntent, true)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Decline",
+                declinePendingIntent
+            )
             .addAction(android.R.drawable.ic_menu_call, "Answer", answerPendingIntent)
+            .build()
 
         try {
-            val notificationManager = NotificationManagerCompat.from(context)
-            notificationManager.notify(NOTIFICATION_ID, builder.build())
-        } catch (e: SecurityException) {
-            // Android 13+ POST_NOTIFICATIONS check
-            e.printStackTrace()
+            NotificationManagerCompat.from(context).notify(notificationId(callId), notification)
+        } catch (error: SecurityException) {
+            error.printStackTrace()
         }
     }
 
-    fun dismissCallNotification(context: Context) {
+    fun dismissCallNotification(context: Context, callId: String) {
         try {
-            val notificationManager = NotificationManagerCompat.from(context)
-            notificationManager.cancel(NOTIFICATION_ID)
-        } catch (e: Exception) {
-            e.printStackTrace()
+            NotificationManagerCompat.from(context).cancel(notificationId(callId))
+        } catch (error: Exception) {
+            error.printStackTrace()
         }
+    }
+
+    private fun notificationId(callId: String): Int =
+        NOTIFICATION_ID_BASE + (callId.hashCode() and 0x7fffffff) % 100_000
+
+    private fun requestCode(callId: String, actionOffset: Int): Int =
+        (callId.hashCode() and 0x7fffffff) + actionOffset
+
+    private fun putCallExtras(
+        intent: Intent,
+        callId: String,
+        callerId: String,
+        callerName: String,
+        extension: String,
+        timestamp: String
+    ) {
+        intent.putExtra("callId", callId)
+        intent.putExtra("callerId", callerId)
+        intent.putExtra("callerName", callerName)
+        intent.putExtra("extension", extension)
+        intent.putExtra("timestamp", timestamp)
     }
 }

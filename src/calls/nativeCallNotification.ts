@@ -4,12 +4,13 @@ const { CallNotificationModule } = NativeModules;
 
 export type CallActionPayload = {
   action: 'ANSWER' | 'SHOW' | 'DECLINE';
-  callId?: string;
-  callerId?: string;
-  callerName?: string;
-  extension?: string;
-  timestamp?: string;
+  callId: string;
+  callerId: string;
+  callerName: string;
+  extension: string;
+  timestamp: string;
 };
+
 export type DeviceContact = {
   id: string;
   name: string;
@@ -17,44 +18,51 @@ export type DeviceContact = {
   favorite?: boolean;
 };
 
-
 const emitter =
   Platform.OS === 'android' && CallNotificationModule
     ? new NativeEventEmitter(CallNotificationModule)
     : null;
 
-export function dismissNativeCallNotification() {
-  if (Platform.OS === 'android' && CallNotificationModule?.dismissCallNotification) {
-    try {
-      CallNotificationModule.dismissCallNotification();
-    } catch (e) {
-      console.warn('[nativeCallNotification] dismiss error:', e);
-    }
+export function dismissNativeCallNotification(callId: string) {
+  if (Platform.OS !== 'android' || !CallNotificationModule?.dismissCallNotification) return;
+  try {
+    CallNotificationModule.dismissCallNotification(callId);
+  } catch (error) {
+    console.warn('[native-call] dismiss failed:', error);
   }
 }
 
-export async function getInitialNativeCallAction(): Promise<CallActionPayload | null> {
-  if (Platform.OS === 'android' && CallNotificationModule?.getInitialCallAction) {
-    try {
-      return await CallNotificationModule.getInitialCallAction();
-    } catch (e) {
-      console.warn('[nativeCallNotification] getInitialCallAction error:', e);
-      return null;
-    }
+export async function getPendingNativeCalls(): Promise<CallActionPayload[]> {
+  if (Platform.OS !== 'android' || !CallNotificationModule?.getPendingCalls) return [];
+  try {
+    const calls = await CallNotificationModule.getPendingCalls();
+    return Array.isArray(calls) ? calls as CallActionPayload[] : [];
+  } catch (error) {
+    console.warn('[native-call] pending call load failed:', error);
+    return [];
   }
-  return null;
+}
+
+export function acknowledgeNativeCallAction(callId: string, action: CallActionPayload['action']) {
+  if (Platform.OS === 'android' && CallNotificationModule?.acknowledgeAction) {
+    CallNotificationModule.acknowledgeAction(callId, action);
+  }
+}
+
+export function recordNativeCallAction(callId: string, action: 'ANSWER' | 'DECLINE') {
+  if (Platform.OS === 'android' && CallNotificationModule?.recordAction) {
+    CallNotificationModule.recordAction(callId, action);
+  }
 }
 
 export function subscribeNativeCallAction(
   callback: (payload: CallActionPayload) => void,
 ): () => void {
   if (!emitter) return () => {};
-  const subscription = emitter.addListener('onCallAction', (event: any) => {
+  const subscription = emitter.addListener('onCallAction', (event: Object) => {
     callback(event as CallActionPayload);
   });
-  return () => {
-    subscription.remove();
-  };
+  return () => subscription.remove();
 }
 
 export async function requestContactsPermission(): Promise<boolean> {

@@ -8,6 +8,9 @@ import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import { CONFIG } from '../config';
 
+const CALL_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 try {
   JsSIP.debug.enable('JsSIP:*');
 } catch {}
@@ -38,7 +41,7 @@ export interface IncomingCallInfo {
   extension: string;
   timestamp: number;
   sipWss?: string;
-  callId?: string;
+  callId: string;
   nativePresented?: boolean;
 }
 
@@ -98,9 +101,6 @@ export class JsSipService {
     this.useTls = useTls;
     this.setState('connecting');
     this.reconnectAttempt = 0;
-    if (Platform.OS === 'android') {
-      PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).catch(() => {});
-    }
     const domain = this.serverHost;
     const protocol = this.useTls ? 'wss' : 'ws';
     const port = this.useTls ? 8089 : 8088;
@@ -181,29 +181,52 @@ export class JsSipService {
         this.setState('disconnected');
       }
     });
-    ua.on('newRTCSession', (data: { session: unknown; originator: string }) => {
-      this.handleNewRTCSession(data.session);
+    ua.on('newRTCSession', (data: { session: unknown; originator: string; request?: unknown }) => {
+      this.handleNewRTCSession(data.session, data.request);
     });
   }
 
-  private handleNewRTCSession(sessionObj: unknown) {
+  private handleNewRTCSession(sessionObj: unknown, requestObj?: unknown) {
     const session = sessionObj as {
       id: string;
       direction: 'incoming' | 'outgoing';
       remote_identity?: { uri?: { user?: string }; display_name?: string };
+      request?: { getHeader?: (name: string) => string | undefined };
+      _request?: { getHeader?: (name: string) => string | undefined; headers?: Record<string, Array<{ raw: string }>> };
       on: (event: string, fn: (arg?: unknown) => void) => void;
       answer: (options?: unknown) => void;
       terminate: (options?: unknown) => void;
       connection?: { getReceivers?: () => Array<{ track?: MediaStreamTrack }> };
     };
+    const req = (requestObj || session._request || session.request) as {
+      getHeader?: (name: string) => string | undefined;
+      headers?: Record<string, Array<{ raw: string }>>;
+    } | undefined;
 
+    const incomingCallId = session.direction === 'incoming'
+      ? (req?.getHeader?.('X-Sokrat-Call-ID') ||
+         req?.getHeader?.('x-sokrat-call-id') ||
+         req?.headers?.['X-Sokrat-Call-Id']?.[0]?.raw)?.trim()
+      : undefined;
+    if (session.direction === 'incoming' &&
+        (!incomingCallId || !CALL_ID_PATTERN.test(incomingCallId))) {
+      console.error(`[sip] rejected inbound INVITE with invalid callId=${incomingCallId || 'missing'}`);
+      try {
+        session.terminate({
+          status_code: 400,
+          reason_phrase: 'Missing or invalid X-Sokrat-Call-ID',
+        });
+      } catch {}
+      return;
+    }
     this.currentSession = session;
     const remoteId = session.remote_identity;
     const target = remoteId?.uri?.user || 'Unknown';
     const targetName = remoteId?.display_name || target;
+    const callId = incomingCallId || session.id || String(Date.now());
 
     const call: ActiveCall = {
-      id: session.id || String(Date.now()),
+      id: callId,
       target,
       targetName,
       direction: session.direction === 'incoming' ? 'inbound' : 'outbound',
@@ -252,18 +275,15 @@ export class JsSipService {
     });
 
     session.on('accepted', () => {
-      if (this.activeCall) {
-        this.activeCall.status = 'active';
-        this.activeCall.startTime = Date.now();
-        this.events.onCallEstablished(this.activeCall);
-      }
+      console.log(`[sip][callId=${call.id}] session accepted; waiting for confirmation`);
       this.attachEarlyMediaAudio(session);
     });
 
     session.on('confirmed', () => {
-      if (this.activeCall) {
+      if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'active';
         if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
+        console.log(`[sip][callId=${call.id}] session confirmed`);
         this.events.onCallEstablished(this.activeCall);
       }
       this.attachEarlyMediaAudio(session);
@@ -306,7 +326,9 @@ export class JsSipService {
         callerName: targetName,
         extension: this.extension,
         timestamp: Date.now(),
+        callId,
       };
+      console.log(`[sip][callId=${callId}] matched inbound INVITE`);
       this.events.onIncomingCall(info);
     }
   }
@@ -336,34 +358,47 @@ export class JsSipService {
    * Acquire local microphone audio stream with echo cancellation and auto gain control.
    */
   private async getLocalAudioStream(): Promise<MediaStream | null> {
-    try {
-      if (Platform.OS === 'android') {
-        const hasPerm = await PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
-        );
-        if (!hasPerm) {
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
-          );
-          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            console.warn('[sip] RECORD_AUDIO permission denied');
-          }
-        }
+    if (Platform.OS === 'android') {
+      const hasPermission = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      );
+      if (!hasPermission) {
+        console.warn('[sip] microphone permission is not granted');
+        return null;
       }
-      const stream = (await mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      })) as unknown as MediaStream;
-      const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
-      tracks.forEach((t) => {
-        t.enabled = true;
-      });
-      console.log('[sip] acquired local microphone audio stream, tracks:', tracks.length);
-      return stream;
-    } catch (err) {
-      console.warn('[sip] failed to acquire local audio stream:', err);
-      return null;
     }
+
+    const { promise, resolve } = Promise.withResolvers<MediaStream | null>();
+    let finished = false;
+    const timer = setTimeout(() => {
+      finished = true;
+      console.warn('[sip] microphone acquisition timed out after 3000ms');
+      resolve(null);
+    }, 3000);
+
+    mediaDevices.getUserMedia({ audio: true, video: false })
+      .then((value) => {
+        const stream = value as unknown as MediaStream;
+        if (finished) {
+          stream.getTracks?.().forEach((track) => track.stop());
+          return;
+        }
+        finished = true;
+        clearTimeout(timer);
+        const tracks = stream.getAudioTracks?.() || [];
+        tracks.forEach((track) => { track.enabled = true; });
+        console.log(`[sip] microphone acquired tracks=${tracks.length}`);
+        resolve(tracks.length > 0 ? stream : null);
+      })
+      .catch((error) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        console.warn('[sip] microphone acquisition failed:', error);
+        resolve(null);
+      });
+
+    return promise;
   }
 
   /**
@@ -375,6 +410,7 @@ export class JsSipService {
     }
 
     const localStream = await this.getLocalAudioStream();
+    if (!localStream) throw new Error('Microphone unavailable');
     this.localStream = localStream;
     const domain = this.serverHost || CONFIG.sipDomain;
     const targetUri = `sip:${target}@${domain}`;
@@ -402,32 +438,37 @@ export class JsSipService {
   /**
    * Answer incoming call session.
    */
-  async answer(): Promise<boolean> {
+  async answer(callId: string): Promise<boolean> {
     const session = this.currentSession as { answer?: (opt?: unknown) => void } | null;
-    if (!session || typeof session.answer !== 'function') return false;
+    if (!session ||
+        typeof session.answer !== 'function' ||
+        this.activeCall?.id !== callId ||
+        this.activeCall.direction !== 'inbound') {
+      return false;
+    }
 
-    let localStream: MediaStream | null = null;
-    try {
-      localStream = await this.getLocalAudioStream();
-      this.localStream = localStream;
-    } catch {}
-
+    const localStream = await this.getLocalAudioStream();
+    if (!localStream) {
+      console.error(`[sip][callId=${callId}] answer blocked: microphone unavailable`);
+      return false;
+    }
+    this.localStream = localStream;
     const options: Record<string, unknown> = {
       mediaConstraints: { audio: true, video: false },
+      mediaStream: localStream,
       pcConfig: {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       },
     };
 
-    if (localStream) {
-      options.mediaStream = localStream;
-    }
-
     try {
       session.answer(options);
+      console.log(`[sip][callId=${callId}] answer dispatched`);
       return true;
-    } catch (err) {
-      console.error('[sip] answer call failed:', err);
+    } catch (error) {
+      localStream.getTracks?.().forEach((track) => track.stop());
+      this.localStream = null;
+      console.error(`[sip][callId=${callId}] answer failed:`, error);
       return false;
     }
   }
@@ -437,7 +478,7 @@ export class JsSipService {
    */
   async hangup(): Promise<void> {
     if (this.activeCall?.status === 'ringing' && this.activeCall?.direction === 'inbound') {
-      await this.decline();
+      await this.decline(this.activeCall.id);
       return;
     }
     if (this.localStream) {
@@ -462,29 +503,33 @@ export class JsSipService {
   /**
    * Decline incoming call with explicit SIP 603 Decline.
    */
-  async decline(): Promise<void> {
+  async decline(callId?: string): Promise<boolean> {
+    if (!this.activeCall ||
+        (callId && this.activeCall.id !== callId) ||
+        this.activeCall.direction !== 'inbound') {
+      return false;
+    }
     if (this.localStream) {
       try {
-        const tracks = this.localStream.getTracks ? this.localStream.getTracks() : [];
-        for (const t of tracks) {
-          t.stop();
-        }
+        this.localStream.getTracks?.().forEach((track) => track.stop());
       } catch {}
       this.localStream = null;
     }
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
-    if (session && typeof session.terminate === 'function') {
-      try {
-        session.terminate({
-          status_code: 603,
-          reason_phrase: 'Decline',
-        });
-      } catch (err) {
-        console.warn('[sip] decline call error:', err);
-      }
+    if (!session || typeof session.terminate !== 'function') return false;
+    try {
+      session.terminate({
+        status_code: 603,
+        reason_phrase: 'Decline',
+      });
+      console.log(`[sip][callId=${this.activeCall.id}] decline dispatched`);
+    } catch (error) {
+      console.warn(`[sip][callId=${this.activeCall.id}] decline failed:`, error);
+      return false;
     }
     this.currentSession = null;
     this.activeCall = null;
+    return true;
   }
 
   toggleMute(): boolean {

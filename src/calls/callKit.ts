@@ -1,10 +1,8 @@
 /**
- * Sokrat VOICE native call screen integration.
+ * Sokrat VOICE iOS CallKit integration.
  *
- * react-native-callkeep drives CallKit (iOS) and the Android
- * TelecomManager / ConnectionService full-screen incoming call UI.
- * It must report an incoming call here within the OS cold-start budget
- * (iOS ~5s) or iOS terminates the process.
+ * Android incoming calls are owned exclusively by the Kotlin notification
+ * engine. RNCallKeep must never initialize Android Telecom.
  */
 import { Platform } from 'react-native';
 import RNCallKeep, { CONSTANTS, InitialEvents } from 'react-native-callkeep';
@@ -87,6 +85,7 @@ function installListeners() {
 }
 
 export function ensureCallKeepSetup(): Promise<void> {
+  if (Platform.OS !== 'ios') return Promise.resolve();
   installListeners();
   if (!setupPromise) {
     setupPromise = RNCallKeep.setup(options)
@@ -105,6 +104,7 @@ export function ensureCallKeepSetup(): Promise<void> {
 }
 
 export function setupCallKeep(h: CallKeepHandlers) {
+  if (Platform.OS !== 'ios') return;
   handlers = h;
   void ensureCallKeepSetup()
     .then(() => {
@@ -122,6 +122,7 @@ export async function reportIncomingCall(
   callerId: string,
   callerName: string,
 ): Promise<boolean> {
+  if (Platform.OS !== 'ios') return false;
   try {
     await ensureCallKeepSetup();
     RNCallKeep.displayIncomingCall(
@@ -131,11 +132,6 @@ export async function reportIncomingCall(
       'number',
       false,
     );
-    if (Platform.OS === 'android') {
-      try {
-        RNCallKeep.backToForeground();
-      } catch {}
-    }
     return true;
   } catch (err) {
     console.warn('[callkeep] display incoming call failed:', err);
@@ -155,13 +151,15 @@ export function generateUUID(): string {
 }
 
 export function reportConnectedOutgoing(uuid: string) {
-  RNCallKeep.reportConnectedOutgoingCallWithUUID(uuid);
+  if (Platform.OS === 'ios') RNCallKeep.reportConnectedOutgoingCallWithUUID(uuid);
 }
 
 export function reportEnded(uuid: string) {
-  RNCallKeep.reportEndCallWithUUID(uuid, CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
+  if (Platform.OS === 'ios') {
+    RNCallKeep.reportEndCallWithUUID(uuid, CONSTANTS.END_CALL_REASONS.REMOTE_ENDED);
+  }
 }
 
 export function answerIncoming(uuid: string) {
-  RNCallKeep.answerIncomingCall(uuid);
+  if (Platform.OS === 'ios') RNCallKeep.answerIncomingCall(uuid);
 }
