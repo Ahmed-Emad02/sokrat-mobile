@@ -8,6 +8,7 @@ import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert } from 'reac
 import { COLORS } from './src/theme';
 import {
   JsSipService,
+  getSharedJsSipService,
   SipState,
   ActiveCall,
   IncomingCallInfo,
@@ -144,8 +145,7 @@ export default function App() {
         console.warn('[app] permission preflight failed:', error);
       });
     }
-
-    const sip = new JsSipService({
+    const sip = getSharedJsSipService({
       onStateChange: (state) => setUiState(state),
       onIncomingCall: (info) => {
         const callId = info.callId;

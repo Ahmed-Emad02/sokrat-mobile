@@ -152,6 +152,31 @@ if (Platform.OS === 'android') {
       await persistPendingCall(payload);
       console.log(`[push][callId=${payload.callId}] headless payload persisted`);
       deliverIncomingCall(payload);
+
+      // If App.tsx is not mounted (cold wake / killed state), bootstrap SIP directly in Headless JS
+      if (!onIncoming) {
+        try {
+          const { StorageService } = require('../storage/store');
+          const { getSharedJsSipService } = require('../sip/JsSipService');
+          const storedAccount = await StorageService.getAccount();
+          if (storedAccount) {
+            console.log(
+              `[push][callId=${payload.callId}] headless bootstrapping SIP for ext=${storedAccount.extension}`
+            );
+            const headlessSip = getSharedJsSipService();
+            if (!headlessSip.isConnectedOrConnecting()) {
+              await headlessSip.connect(
+                storedAccount.extension,
+                storedAccount.password,
+                storedAccount.serverHost,
+                storedAccount.useTls,
+              );
+            }
+          }
+        } catch (bootstrapErr) {
+          console.error('[push] headless SIP bootstrap error:', bootstrapErr);
+        }
+      }
     });
   } catch (error) {
     console.warn('[push] FCM background handler init failed:', error);

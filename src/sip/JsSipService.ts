@@ -175,7 +175,12 @@ export class JsSipService {
     }
   }
 
-  private readonly events: SipEvents;
+  private events: SipEvents;
+
+  setEvents(events: SipEvents): void {
+    this.events = events;
+    this.events.onStateChange(this.state);
+  }
   private localStream: MediaStream | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -903,4 +908,22 @@ export class JsSipService {
 
     return updatedLines.join('\r\n');
   }
+}
+
+let sharedJsSipInstance: JsSipService | null = null;
+
+export function getSharedJsSipService(events?: SipEvents): JsSipService {
+  if (!sharedJsSipInstance) {
+    sharedJsSipInstance = new JsSipService(
+      events || {
+        onStateChange: () => {},
+        onIncomingCall: () => {},
+        onCallEstablished: () => {},
+        onCallEnded: () => {},
+      },
+    );
+  } else if (events) {
+    sharedJsSipInstance.setEvents(events);
+  }
+  return sharedJsSipInstance;
 }
