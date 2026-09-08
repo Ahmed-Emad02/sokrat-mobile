@@ -326,18 +326,22 @@ export class JsSipService {
          req?.getHeader?.('x-sokrat-call-id') ||
          req?.headers?.['X-Sokrat-Call-Id']?.[0]?.raw)?.trim()
       : undefined;
-    const callId =
-      incomingCallId && CALL_ID_PATTERN.test(incomingCallId)
-        ? incomingCallId
-        : (session.id || String(Date.now()));
-    if (session.direction === 'incoming' && (!incomingCallId || !CALL_ID_PATTERN.test(incomingCallId))) {
-      console.warn(`[sip] inbound INVITE missing valid X-Sokrat-Call-ID header; using fallback callId=${callId}`);
+    if (session.direction === 'incoming' &&
+        (!incomingCallId || !CALL_ID_PATTERN.test(incomingCallId))) {
+      console.error(`[sip] rejected inbound INVITE with invalid callId=${incomingCallId || 'missing'}`);
+      try {
+        session.terminate({
+          status_code: 400,
+          reason_phrase: 'Missing or invalid X-Sokrat-Call-ID',
+        });
+      } catch {}
+      return;
     }
     this.currentSession = session;
     const remoteId = session.remote_identity;
     const target = remoteId?.uri?.user || 'Unknown';
     const targetName = remoteId?.display_name || target;
-    // callId resolved above
+    const callId = incomingCallId || session.id || String(Date.now());
 
     const call: ActiveCall = {
       id: callId,
