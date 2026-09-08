@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Alert,
   Animated,
@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
-  GestureResponderEvent,
+  PanResponder,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
@@ -41,8 +41,9 @@ import {
   RedialIcon,
   UserPlusIcon,
   ChevronDownIcon,
+  SlidersIcon,
 } from './Icons';
-import { fetchDeviceContacts } from '../calls/nativeCallNotification';
+import { fetchDeviceContacts, getNativeSpeakerVolume, SpeakerVolumeState } from '../calls/nativeCallNotification';
 
 function VolumeSlider({
   label,
@@ -57,15 +58,32 @@ function VolumeSlider({
   icon: React.ReactNode;
   description: string;
 }) {
-  const [trackWidth, setTrackWidth] = useState(0);
+  const [trackWidth, setTrackWidth] = useState(250);
+  const startValueRef = useRef(value);
 
-  const handleTouch = (evt: GestureResponderEvent) => {
-    if (trackWidth <= 0) return;
-    const x = evt.nativeEvent.locationX;
-    const pct = Math.round(Math.max(0, Math.min(100, (x / trackWidth) * 100)));
-    onChange(pct);
-  };
-
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponderCapture: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (evt) => {
+          const width = trackWidth > 0 ? trackWidth : 250;
+          const pct = Math.round(Math.max(0, Math.min(100, (evt.nativeEvent.locationX / width) * 100)));
+          startValueRef.current = pct;
+          onChange(pct);
+        },
+        onPanResponderMove: (_evt, gestureState) => {
+          const width = trackWidth > 0 ? trackWidth : 250;
+          const deltaPct = (gestureState.dx / width) * 100;
+          const newPct = Math.round(Math.max(0, Math.min(100, startValueRef.current + deltaPct)));
+          onChange(newPct);
+        },
+      }),
+    [onChange, trackWidth]
+  );
   const stepDown = () => {
     onChange(Math.max(0, value - 5));
   };
@@ -101,20 +119,21 @@ function VolumeSlider({
 
         <View
           style={styles.volTrackTouchArea}
-          onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
-          onStartShouldSetResponder={() => true}
-          onMoveShouldSetResponder={() => true}
-          onResponderGrant={handleTouch}
-          onResponderMove={handleTouch}
+          onLayout={(e) => {
+            const w = e.nativeEvent.layout.width;
+            if (w > 0) setTrackWidth(w);
+          }}
+          {...panResponder.panHandlers}
         >
-          <View style={styles.volTrackBg}>
-            <View style={[styles.volTrackFill, { width: `${value}%` }]} />
+          <View style={styles.volTrackBg} pointerEvents="none">
+            <View style={[styles.volTrackFill, { width: `${value}%` }]} pointerEvents="none" />
           </View>
           <View
             style={[
               styles.volThumb,
               { left: `${Math.max(0, Math.min(94, value - 3))}%` },
             ]}
+            pointerEvents="none"
           />
         </View>
 
@@ -151,6 +170,72 @@ function VolumeSlider({
           );
         })}
       </View>
+    </View>
+  );
+}
+
+function UnifiedAudioControls({
+  speakerVolume,
+  micVolume,
+  speakerStep,
+  isSpeakerOn,
+  onChangeSpeaker,
+  onChangeMic,
+  onToggleSpeaker,
+}: {
+  speakerVolume: number;
+  micVolume: number;
+  speakerStep: { current: number; max: number };
+  isSpeakerOn?: boolean;
+  onChangeSpeaker: (val: number) => void;
+  onChangeMic: (val: number) => void;
+  onToggleSpeaker?: () => void;
+}) {
+  const micDb = Math.round(((micVolume - 50) / 50) * (micVolume >= 50 ? 6 : 12));
+  const micDbLabel = micDb === 0 ? '0 dB • Calibrated' : `${micDb > 0 ? '+' : ''}${micDb} dB`;
+
+  return (
+    <View style={styles.unifiedAudioContainer}>
+      <VolumeSlider
+        label="Speaker Output Volume"
+        value={speakerVolume}
+        onChange={onChangeSpeaker}
+        icon={<SpeakerIcon size={18} color="#38bdf8" />}
+        description={`Output stream volume (${speakerStep.current}/${speakerStep.max} steps). Controls in-call earpiece and loudspeaker.`}
+      />
+
+      <VolumeSlider
+        label="Microphone Sensitivity"
+        value={micVolume}
+        onChange={onChangeMic}
+        icon={<MicIcon size={18} color="#38bdf8" />}
+        description={`Microphone capture gain (${micDbLabel}). Applied directly to live calls.`}
+      />
+
+      {onToggleSpeaker && (
+        <View style={styles.inCallAudioRouteRow}>
+          <TouchableOpacity
+            style={[styles.inCallAudioRouteBtn, !isSpeakerOn && styles.inCallAudioRouteBtnActive]}
+            onPress={() => {
+              if (isSpeakerOn) onToggleSpeaker();
+            }}
+          >
+            <Text style={[styles.inCallAudioRouteText, !isSpeakerOn && styles.inCallAudioRouteTextActive]}>
+              Ear / Handset
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.inCallAudioRouteBtn, isSpeakerOn && styles.inCallAudioRouteBtnActive]}
+            onPress={() => {
+              if (!isSpeakerOn) onToggleSpeaker();
+            }}
+          >
+            <Text style={[styles.inCallAudioRouteText, isSpeakerOn && styles.inCallAudioRouteTextActive]}>
+              Loudspeaker
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -244,6 +329,18 @@ export function StandardPhoneScreen({
   const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'opus');
   const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 85);
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
+  const [showInCallVolumeModal, setShowInCallVolumeModal] = useState(false);
+  const [inCallSpeakerStep, setInCallSpeakerStep] = useState<{ current: number; max: number }>({ current: 12, max: 15 });
+
+  useEffect(() => {
+    if (activeCall || showInCallVolumeModal) {
+      void getNativeSpeakerVolume().then((res) => {
+        if (res) {
+          setInCallSpeakerStep({ current: res.currentStep, max: res.maxStep });
+        }
+      });
+    }
+  }, [activeCall, showInCallVolumeModal]);
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
@@ -253,6 +350,23 @@ export function StandardPhoneScreen({
 
   // Recents History Filter (All vs Missed)
   const [historyFilter, setHistoryFilter] = useState<'all' | 'missed'>('all');
+  const handleSpeakerChange = (val: number) => {
+    setEditSpeakerVol(val);
+    const p = onUpdateVolume?.('speaker', val);
+    if (p && typeof p === 'object' && 'then' in p) {
+      void (p as Promise<SpeakerVolumeState | null>).then((res) => {
+        if (res) {
+          setInCallSpeakerStep({ current: res.currentStep, max: res.maxStep });
+          setEditSpeakerVol(res.percent);
+        }
+      });
+    }
+  };
+
+  const handleMicChange = (val: number) => {
+    setEditMicVol(val);
+    void onUpdateVolume?.('mic', val);
+  };
 
   const displayedCalls = callsHistory.filter((item) => {
     if (historyFilter === 'missed') {
@@ -352,7 +466,8 @@ export function StandardPhoneScreen({
       setEditMicVol(account.micVolume ?? 85);
       setEditSpeakerVol(account.speakerVolume ?? 85);
     }
-  }, [account]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.extension, account?.serverHost, account?.password]);
 
   useEffect(() => {
     void fetchExtensions();
@@ -541,6 +656,54 @@ export function StandardPhoneScreen({
     onLogout();
     setShowSettingsModal(false);
   };
+  const renderVolumeModal = () => (
+    <Modal
+      visible={showInCallVolumeModal}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setShowInCallVolumeModal(false)}
+    >
+      <TouchableWithoutFeedback onPress={() => setShowInCallVolumeModal(false)}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+            <View style={styles.volumeDialogCard}>
+              <View style={styles.transferHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.dialogTitle}>Audio & Volume Controls</Text>
+                  <Text style={styles.transferSubTitle}>
+                    {activeCall
+                      ? 'Adjust speaker loudness and microphone sensitivity mid-call:'
+                      : 'Adjust default in-call speaker loudness and microphone sensitivity:'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setShowInCallVolumeModal(false)}
+                  style={styles.transferDismissBtn}
+                >
+                  <Text style={styles.transferDismissText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <UnifiedAudioControls
+                speakerVolume={editSpeakerVol}
+                micVolume={editMicVol}
+                speakerStep={inCallSpeakerStep}
+                isSpeakerOn={isSpeakerOn}
+                onChangeSpeaker={handleSpeakerChange}
+                onChangeMic={handleMicChange}
+                onToggleSpeaker={onToggleSpeaker}
+              />
+              <TouchableOpacity
+                style={styles.volumeDoneBtn}
+                onPress={() => setShowInCallVolumeModal(false)}
+              >
+                <Text style={styles.volumeDoneBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
 
   // --- Active In-Call View ---
   if (activeCall) {
@@ -616,6 +779,16 @@ export function StandardPhoneScreen({
               <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowTransferModal(true)}>
                 <TransferIcon size={26} color="#ffffff" />
                 <Text style={styles.inCallBtnLabel}>Transfer</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.inCallBtn, showInCallVolumeModal && styles.inCallBtnActive]}
+                onPress={() => setShowInCallVolumeModal(true)}
+              >
+                <SlidersIcon size={26} color={showInCallVolumeModal ? '#38bdf8' : '#ffffff'} />
+                <Text style={[styles.inCallBtnLabel, showInCallVolumeModal && styles.inCallBtnLabelActive]}>
+                  Volume
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -722,6 +895,9 @@ export function StandardPhoneScreen({
             </View>
           </TouchableWithoutFeedback>
         </Modal>
+
+        {/* In-Call Audio & Volume Adjustment Sheet */}
+        {renderVolumeModal()}
       </SafeAreaView>
     );
   }
@@ -1399,39 +1575,20 @@ export function StandardPhoneScreen({
                     })}
                   </View>
 
-                  <View style={styles.settingsSectionDivider} />
-                  <Text style={styles.settingsSectionTitle}>Audio & Volume Levels</Text>
-                  <Text style={styles.settingsSectionSub}>
-                    Fine-tune microphone capture sensitivity and in-call speaker loudness:
-                  </Text>
-
-                  <VolumeSlider
-                    label="Microphone Volume"
-                    value={editMicVol}
-                    onChange={(val) => {
-                      setEditMicVol(val);
-                      onUpdateVolume?.('mic', val);
-                    }}
-                    icon={<MicIcon size={18} color="#38bdf8" />}
-                    description="Controls microphone capture gain and input sensitivity during calls."
-                  />
-
-                  <VolumeSlider
-                    label="Speaker Volume"
-                    value={editSpeakerVol}
-                    onChange={(val) => {
-                      setEditSpeakerVol(val);
-                      onUpdateVolume?.('speaker', val);
-                    }}
-                    icon={<SpeakerIcon size={18} color="#38bdf8" />}
-                    description="Controls in-call earpiece and loudspeaker audio output level."
+                  <UnifiedAudioControls
+                    speakerVolume={editSpeakerVol}
+                    micVolume={editMicVol}
+                    speakerStep={inCallSpeakerStep}
+                    isSpeakerOn={isSpeakerOn}
+                    onChangeSpeaker={handleSpeakerChange}
+                    onChangeMic={handleMicChange}
+                    onToggleSpeaker={onToggleSpeaker}
                   />
                   <View style={styles.settingsSectionDivider} />
                   <Text style={styles.settingsSectionTitle}>Speed Dial (Keys 1 – 9)</Text>
                   <Text style={styles.settingsSectionSub}>
                     Hold down any key on the dialpad to directly call these numbers:
                   </Text>
-
                   {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => {
                     const isVmKey = digit === '1';
                     const currentValue = editSpeedDial[digit] || '';
@@ -1652,6 +1809,7 @@ export function StandardPhoneScreen({
               </View>
           </View>
       </Modal>
+      {renderVolumeModal()}
     </SafeAreaView>
   );
 }
@@ -2795,5 +2953,58 @@ const styles = StyleSheet.create({
     color: '#38bdf8',
     fontSize: 13,
     fontWeight: '700',
+  },
+  volumeDialogCard: {
+    width: '100%',
+    maxHeight: '85%',
+    backgroundColor: '#18181b',
+    borderRadius: 16,
+    padding: 20,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  inCallAudioRouteRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 10,
+  },
+  inCallAudioRouteBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#27272a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#3f3f46',
+  },
+  inCallAudioRouteBtnActive: {
+    backgroundColor: '#0369a1',
+    borderColor: '#38bdf8',
+  },
+  inCallAudioRouteText: {
+    color: '#a1a1aa',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  inCallAudioRouteTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  volumeDoneBtn: {
+    backgroundColor: '#38bdf8',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  volumeDoneBtnText: {
+    color: '#000000',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  unifiedAudioContainer: {
+    width: '100%',
   },
 });

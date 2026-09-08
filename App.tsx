@@ -61,6 +61,11 @@ export default function App() {
 
   // App State
   const [account, setAccount] = useState<SavedAccount | null>(null);
+  const accountRef = useRef<SavedAccount | null>(null);
+  useEffect(() => {
+    accountRef.current = account;
+  }, [account]);
+  const saveVolumeTimerRef = useRef<number | null>(null);
   const [isAuthLoaded, setIsAuthLoaded] = useState(false);
   const [uiState, setUiState] = useState<SipState>('disconnected');
   const [callsHistory, setCallsHistory] = useState<CallRecord[]>([]);
@@ -192,6 +197,11 @@ export default function App() {
         dismissNativeCallNotification(call.id);
         void clearPendingIncomingCall(call.id);
         startCallManagers();
+        const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
+        void setNativeSpeakerVolume(targetSpeakerVol);
+        sipRef.current?.setSpeakerVolume(targetSpeakerVol);
+        const targetMicVol = accountRef.current?.micVolume ?? 85;
+        sipRef.current?.setMicVolume(targetMicVol);
       },
       onCallEnded: (callId) => {
         const resolvedCallId = callId || activeCallUUIDRef.current;
@@ -250,7 +260,7 @@ export default function App() {
         extension: storedAccount?.extension || '150',
         password: storedAccount?.password || 'sss333',
         serverHost: storedAccount?.serverHost || '192.168.100.128',
-        useTls: false,
+        useTls: storedAccount?.useTls ?? false,
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
         preferredCodec: storedAccount?.preferredCodec || 'opus',
@@ -575,6 +585,10 @@ export default function App() {
           const next = !isSpeakerOn;
           setIsSpeakerOn(next);
           setSpeakerphone(next);
+          const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
+          setTimeout(() => {
+            void setNativeSpeakerVolume(targetSpeakerVol);
+          }, 200);
         }}
         onSendDtmf={(d: string) => sipRef.current?.sendDTMF(d)}
         onTransfer={(t: string) => sipRef.current?.blindTransfer(t)}
@@ -586,12 +600,40 @@ export default function App() {
         onDeleteContact={handleDeleteContact}
         onSaveContactsBatch={handleSaveContactsBatch}
         onToggleFavorite={handleToggleFavorite}
-        onUpdateVolume={(type, val) => {
+        onUpdateVolume={async (type, val) => {
           if (type === 'mic') {
             sipRef.current?.setMicVolume(val);
+            if (accountRef.current) {
+              accountRef.current = {
+                ...accountRef.current,
+                micVolume: val,
+              };
+              clearTimeout(saveVolumeTimerRef.current ?? undefined);
+              saveVolumeTimerRef.current = setTimeout(() => {
+                if (accountRef.current) {
+                  setAccount(accountRef.current);
+                  void StorageService.saveAccount(accountRef.current);
+                }
+              }, 400) as unknown as number;
+            }
+            return null;
           } else {
             sipRef.current?.setSpeakerVolume(val);
-            void setNativeSpeakerVolume(val);
+            const res = await setNativeSpeakerVolume(val);
+            if (accountRef.current) {
+              accountRef.current = {
+                ...accountRef.current,
+                speakerVolume: res ? res.percent : val,
+              };
+              clearTimeout(saveVolumeTimerRef.current ?? undefined);
+              saveVolumeTimerRef.current = setTimeout(() => {
+                if (accountRef.current) {
+                  setAccount(accountRef.current);
+                  void StorageService.saveAccount(accountRef.current);
+                }
+              }, 400) as unknown as number;
+            }
+            return res;
           }
         }}
       />

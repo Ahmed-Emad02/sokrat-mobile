@@ -147,6 +147,7 @@ object IncomingCallNotificationHelper {
             .setVibrate(longArrayOf(0, 1000, 1000, 1000, 1000, 1000))
             .setAutoCancel(false)
             .setOngoing(true)
+            .setTimeoutAfter(IncomingCallStore.MAX_AGE_MS)
             .setContentIntent(showPendingIntent)
             .setFullScreenIntent(showPendingIntent, true)
             .addAction(
@@ -176,13 +177,14 @@ object IncomingCallNotificationHelper {
     fun dismissCallNotification(context: Context, callId: String) {
         releaseScreenWakeLock()
         try {
-            NotificationManagerCompat.from(context).cancel(notificationId(callId))
+            val nm = NotificationManagerCompat.from(context)
+            nm.cancel(notificationId(callId))
         } catch (error: Exception) {
             error.printStackTrace()
         }
     }
-
     private fun notificationId(callId: String): Int =
+
         NOTIFICATION_ID_BASE + (callId.hashCode() and 0x7fffffff) % 100_000
 
     private fun requestCode(callId: String, actionOffset: Int): Int =

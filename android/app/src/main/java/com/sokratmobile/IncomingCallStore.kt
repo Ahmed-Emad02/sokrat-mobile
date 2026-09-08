@@ -8,7 +8,7 @@ import java.util.UUID
 object IncomingCallStore {
     private const val PREFS = "sokrat_incoming_calls"
     private const val KEY_RECORDS = "records"
-    private const val MAX_AGE_MS = 90_000L
+    const val MAX_AGE_MS = 90_000L
 
     data class Record(
         val callId: String,

@@ -14,10 +14,20 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     currentActivity = java.lang.ref.WeakReference(this)
+    volumeControlStream = android.media.AudioManager.STREAM_MUSIC
     applyIncomingCallWindow(intent)
     CallNotificationModule.onIntentReceived(applicationContext, intent)
   }
 
+  override fun onResume() {
+    super.onResume()
+    val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+    if (audioManager?.mode == android.media.AudioManager.MODE_IN_COMMUNICATION) {
+      volumeControlStream = android.media.AudioManager.STREAM_VOICE_CALL
+    } else {
+      volumeControlStream = android.media.AudioManager.STREAM_MUSIC
+    }
+  }
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)

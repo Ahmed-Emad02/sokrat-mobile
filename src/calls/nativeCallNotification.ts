@@ -1,6 +1,6 @@
 import { NativeModules, NativeEventEmitter, Platform, PermissionsAndroid } from 'react-native';
 
-const { CallNotificationModule } = NativeModules;
+const getModule = () => NativeModules.CallNotificationModule;
 
 export type CallActionPayload = {
   action: 'ANSWER' | 'SHOW' | 'DECLINE';
@@ -18,23 +18,30 @@ export type DeviceContact = {
   favorite?: boolean;
 };
 
-const emitter =
-  Platform.OS === 'android' && CallNotificationModule
-    ? new NativeEventEmitter(CallNotificationModule)
-    : null;
+let cachedEmitter: NativeEventEmitter | null = null;
+function getEmitter(): NativeEventEmitter | null {
+  if (Platform.OS !== 'android') return null;
+  const mod = getModule();
+  if (!cachedEmitter && mod) {
+    cachedEmitter = new NativeEventEmitter(mod);
+  }
+  return cachedEmitter;
+}
 
 export function dismissNativeCallNotification(callId: string) {
-  if (Platform.OS !== 'android' || !CallNotificationModule?.dismissCallNotification) return;
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.dismissCallNotification) return;
   try {
-    CallNotificationModule.dismissCallNotification(callId);
+    mod.dismissCallNotification(callId);
   } catch (error) {
     console.warn('[native-call] dismiss failed:', error);
   }
 }
 export function clearNativeCallWindow() {
-  if (Platform.OS !== 'android' || !CallNotificationModule?.clearCallWindow) return;
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.clearCallWindow) return;
   try {
-    CallNotificationModule.clearCallWindow();
+    mod.clearCallWindow();
   } catch (error) {
     console.warn('[native-call] clearCallWindow failed:', error);
   }
@@ -42,10 +49,11 @@ export function clearNativeCallWindow() {
 
 
 export async function getPendingNativeCalls(): Promise<CallActionPayload[]> {
-  if (Platform.OS !== 'android' || !CallNotificationModule?.getPendingCalls) return [];
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.getPendingCalls) return [];
   try {
-    const calls = await CallNotificationModule.getPendingCalls();
-    return Array.isArray(calls) ? calls as CallActionPayload[] : [];
+    const calls = await mod.getPendingCalls();
+    return Array.isArray(calls) ? (calls as CallActionPayload[]) : [];
   } catch (error) {
     console.warn('[native-call] pending call load failed:', error);
     return [];
@@ -53,22 +61,25 @@ export async function getPendingNativeCalls(): Promise<CallActionPayload[]> {
 }
 
 export function acknowledgeNativeCallAction(callId: string, action: CallActionPayload['action']) {
-  if (Platform.OS === 'android' && CallNotificationModule?.acknowledgeAction) {
-    CallNotificationModule.acknowledgeAction(callId, action);
+  const mod = getModule();
+  if (Platform.OS === 'android' && mod?.acknowledgeAction) {
+    mod.acknowledgeAction(callId, action);
   }
 }
 
 export function recordNativeCallAction(callId: string, action: 'ANSWER' | 'DECLINE') {
-  if (Platform.OS === 'android' && CallNotificationModule?.recordAction) {
-    CallNotificationModule.recordAction(callId, action);
+  const mod = getModule();
+  if (Platform.OS === 'android' && mod?.recordAction) {
+    mod.recordAction(callId, action);
   }
 }
 
 export function subscribeNativeCallAction(
   callback: (payload: CallActionPayload) => void,
 ): () => void {
-  if (!emitter) return () => {};
-  const subscription = emitter.addListener('onCallAction', (event: Object) => {
+  const emitterInstance = getEmitter();
+  if (!emitterInstance) return () => {};
+  const subscription = emitterInstance.addListener('onCallAction', (event: Object) => {
     callback(event as CallActionPayload);
   });
   return () => subscription.remove();
@@ -92,11 +103,12 @@ export async function requestContactsPermission(): Promise<boolean> {
 }
 
 export async function fetchDeviceContacts(): Promise<DeviceContact[]> {
-  if (Platform.OS === 'android' && CallNotificationModule?.getDeviceContacts) {
+  const mod = getModule();
+  if (Platform.OS === 'android' && mod?.getDeviceContacts) {
     try {
       const hasPermission = await requestContactsPermission();
       if (!hasPermission) return [];
-      const contacts: DeviceContact[] = await CallNotificationModule.getDeviceContacts();
+      const contacts: DeviceContact[] = await mod.getDeviceContacts();
       return contacts || [];
     } catch (err) {
       console.warn('[contacts] fetchDeviceContacts failed:', err);
@@ -106,20 +118,40 @@ export async function fetchDeviceContacts(): Promise<DeviceContact[]> {
   return [];
 }
 
-export async function setNativeSpeakerVolume(percent: number): Promise<void> {
-  if (Platform.OS !== 'android' || !CallNotificationModule?.setSpeakerVolume) return;
+export interface SpeakerVolumeState {
+  currentStep: number;
+  maxStep: number;
+  percent: number;
+}
+
+export async function setNativeSpeakerVolume(percent: number): Promise<SpeakerVolumeState | null> {
+  const mod = getModule();
+  console.log('[native-call] setNativeSpeakerVolume percent=' + percent + ' mod=' + (mod ? 'FOUND' : 'NULL'));
+  if (Platform.OS !== 'android' || !mod?.setSpeakerVolume) {
+    console.warn('[native-call] CallNotificationModule.setSpeakerVolume not available');
+    return null;
+  }
   try {
-    await CallNotificationModule.setSpeakerVolume(percent);
+    const result = (await mod.setSpeakerVolume(percent)) as SpeakerVolumeState;
+    console.log('[native-call] setSpeakerVolume success:', result);
+    return result || null;
   } catch (error) {
     console.warn('[native-call] setSpeakerVolume failed:', error);
+    return null;
   }
 }
 
-export async function getNativeSpeakerVolume(): Promise<number> {
-  if (Platform.OS !== 'android' || !CallNotificationModule?.getSpeakerVolume) return 80;
+export async function getNativeSpeakerVolume(): Promise<SpeakerVolumeState> {
+  const defaultState: SpeakerVolumeState = { currentStep: 12, maxStep: 15, percent: 80 };
+  const mod = getModule();
+  console.log('[native-call] getNativeSpeakerVolume mod=' + (mod ? 'FOUND' : 'NULL'));
+  if (Platform.OS !== 'android' || !mod?.getSpeakerVolume) return defaultState;
   try {
-    return await CallNotificationModule.getSpeakerVolume();
-  } catch {
-    return 80;
+    const result = (await mod.getSpeakerVolume()) as SpeakerVolumeState;
+    console.log('[native-call] getNativeSpeakerVolume result:', result);
+    return result || defaultState;
+  } catch (err) {
+    console.warn('[native-call] getNativeSpeakerVolume error:', err);
+    return defaultState;
   }
 }

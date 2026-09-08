@@ -5,7 +5,7 @@
 import '../shims';
 import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
-import { mediaDevices, MediaStream, MediaStreamTrack } from 'react-native-webrtc';
+import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG } from '../config';
 import { startCallManagers } from '../calls/incall';
 import { CodecPreference } from '../storage/store';
@@ -61,6 +61,9 @@ export class JsSipService {
   private preferredCodec: CodecPreference = 'auto';
   private micVolume = 85;
   private speakerVolume = 85;
+  private micGainDb = 0;
+  private liveGainTimer: number | null = null;
+  private pendingGainDb: number | null = null;
 
   setPreferredCodec(codec: CodecPreference): void {
     this.preferredCodec = codec;
@@ -69,22 +72,73 @@ export class JsSipService {
 
   setMicVolume(percent: number): void {
     this.micVolume = Math.max(0, Math.min(100, percent));
-    const gain = this.micVolume / 50.0;
-    if (this.localStream) {
-      try {
-        const tracks = this.localStream.getAudioTracks ? this.localStream.getAudioTracks() : [];
-        tracks.forEach((t: unknown) => {
-          this.applyTrackVolume(t, gain);
-        });
-      } catch (err) {
-        console.warn('[sip] failed to set mic volume on track:', err);
-      }
+    // Map 0..100% to -12 dB .. +6 dB with 50% = 0 dB (calibrated unity gain)
+    const db = Math.round(((this.micVolume - 50) / 50) * (this.micVolume >= 50 ? 6 : 12));
+    this.micGainDb = db;
+    if (this.activeCall) {
+      void this.setLiveMicGain(db, this.activeCall.id);
     }
+  }
+
+  setMicGainDb(gainDb: number): void {
+    this.micGainDb = Math.max(-12, Math.min(6, gainDb));
+    // Map back to 0..100% for slider display
+    if (this.micGainDb >= 0) {
+      this.micVolume = Math.round(50 + (this.micGainDb / 6) * 50);
+    } else {
+      this.micVolume = Math.round(50 + (this.micGainDb / 12) * 50);
+    }
+    if (this.activeCall) {
+      void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
+    }
+  }
+
+  getMicGainDb(): number {
+    return this.micGainDb;
+  }
+
+  getSpeakerVolumePercent(): number {
+    return this.speakerVolume;
+  }
+
+  async setLiveMicGain(gainDb: number, callId?: string): Promise<boolean> {
+    const targetCallId = callId || this.activeCall?.id;
+    this.micGainDb = Math.max(-12, Math.min(6, gainDb));
+    if (!targetCallId) {
+      return false;
+    }
+
+    this.pendingGainDb = this.micGainDb;
+    clearTimeout(this.liveGainTimer ?? undefined);
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    this.liveGainTimer = setTimeout(async () => {
+        const gain = this.pendingGainDb ?? this.micGainDb;
+        this.liveGainTimer = null;
+        try {
+          const gateway = this.serverHost ? `http://${this.serverHost}:8095` : CONFIG.pushGateway;
+          const res = await fetch(`${gateway}/api/call/volume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              extension: this.extension,
+              callId: targetCallId,
+              micGainDb: gain,
+            }),
+          });
+          const json = (await res.json()) as { success?: boolean };
+          console.log(`[sip] live mic gain ${gain}dB dispatched for callId=${targetCallId}: success=${json.success}`);
+          resolve(!!json.success);
+        } catch (err) {
+          console.warn('[sip] failed to dispatch live mic gain to gateway:', err);
+          resolve(false);
+        }
+      }, 150) as unknown as number;
+    return promise;
   }
 
   setSpeakerVolume(percent: number): void {
     this.speakerVolume = Math.max(0, Math.min(100, percent));
-    const gain = this.speakerVolume / 50.0;
+    const gain = this.speakerVolume / 100.0;
     if (this.activeCall?.remoteStream) {
       try {
         const tracks = this.activeCall.remoteStream.getAudioTracks ? this.activeCall.remoteStream.getAudioTracks() : [];
@@ -95,8 +149,22 @@ export class JsSipService {
         console.warn('[sip] failed to set speaker volume on track:', err);
       }
     }
-  }
 
+    try {
+      const session = this.currentSession;
+      if (session && typeof session === 'object' && 'connection' in session) {
+        const conn = (session as { connection?: unknown }).connection;
+        if (conn && typeof conn === 'object' && 'getReceivers' in conn && typeof conn.getReceivers === 'function') {
+          const receivers = conn.getReceivers() as Array<{ track?: MediaStreamTrack }>;
+          for (const r of receivers) {
+            if (r.track && r.track.kind === 'audio') {
+              this.applyTrackVolume(r.track, gain);
+            }
+          }
+        }
+      }
+    } catch {}
+  }
   private applyTrackVolume(track: unknown, gain: number): void {
     if (track && typeof track === 'object') {
       if ('_setVolume' in track && typeof track._setVolume === 'function') {
@@ -290,31 +358,79 @@ export class JsSipService {
     this.activeCall = call;
 
     // Attach peerconnection remote audio track listeners
+    // Attach peerconnection remote audio track listeners and codec preferences
     session.on('peerconnection', (data: unknown) => {
       const pc = (data as { peerconnection?: unknown })?.peerconnection as {
         addEventListener?: (event: string, fn: (evt: unknown) => void) => void;
+        getTransceivers?: () => Array<{
+          receiver?: { track?: MediaStreamTrack };
+          sender?: { track?: MediaStreamTrack };
+          setCodecPreferences?: (codecs: unknown[]) => void;
+        }>;
       } | undefined;
 
-      if (pc && typeof pc.addEventListener === 'function') {
-        pc.addEventListener('track', (eventObj: unknown) => {
-          const event = eventObj as { track?: MediaStreamTrack; streams?: MediaStream[] };
-          console.log('[sip] remote audio track received:', event?.track);
-          if (event?.track) {
-            event.track.enabled = true;
+      if (pc) {
+        try {
+          if (typeof pc.getTransceivers === 'function' && typeof RTCRtpReceiver?.getCapabilities === 'function') {
+            const audioCaps = RTCRtpReceiver.getCapabilities('audio');
+            if (audioCaps?.codecs) {
+              const preferred = this.preferredCodec === 'auto' ? 'opus' : this.preferredCodec.toLowerCase();
+              const sorted = [...audioCaps.codecs].sort((a: { mimeType?: string }, b: { mimeType?: string }) => {
+                const aName = (a.mimeType || '').toLowerCase();
+                const bName = (b.mimeType || '').toLowerCase();
+                if (aName.includes(preferred)) return -1;
+                if (bName.includes(preferred)) return 1;
+                return 0;
+              });
+              for (const transceiver of pc.getTransceivers()) {
+                if (transceiver.receiver?.track?.kind === 'audio' || transceiver.sender?.track?.kind === 'audio') {
+                  transceiver.setCodecPreferences?.(sorted);
+                }
+              }
+              console.log(`[sip] prioritized ${preferred} codec via transceiver preferences`);
+            }
           }
-          if (event?.streams && event.streams[0] && this.activeCall) {
-            this.setSpeakerVolume(this.speakerVolume);
-            this.activeCall.remoteStream = event.streams[0];
-          }
-        });
-        pc.addEventListener('addstream', (eventObj: unknown) => {
-          const event = eventObj as { stream?: MediaStream };
-          console.log('[sip] remote stream added:', event?.stream);
-          if (event?.stream && this.activeCall) {
-            this.activeCall.remoteStream = event.stream;
-          }
-            this.setSpeakerVolume(this.speakerVolume);
-        });
+        } catch (e) {
+          console.warn('[sip] transceiver codec preferences notice:', e);
+        }
+
+        if (typeof pc.addEventListener === 'function') {
+          pc.addEventListener('track', (eventObj: unknown) => {
+            const event = eventObj as { track?: MediaStreamTrack; streams?: MediaStream[] };
+            console.log('[sip] remote audio track received:', event?.track);
+            if (event?.track) {
+              event.track.enabled = true;
+            }
+            if (this.activeCall) {
+              const stream =
+                event?.streams && event.streams[0]
+                  ? event.streams[0]
+                  : event?.track
+                  ? new MediaStream([event.track])
+                  : null;
+              if (stream) {
+                this.activeCall.remoteStream = stream;
+                this.setSpeakerVolume(this.speakerVolume);
+              }
+            }
+          });
+          pc.addEventListener('addstream', (eventObj: unknown) => {
+            const event = eventObj as { stream?: MediaStream };
+            console.log('[sip] remote stream added:', event?.stream);
+            if (event?.stream && this.activeCall) {
+              this.activeCall.remoteStream = event.stream;
+              this.setSpeakerVolume(this.speakerVolume);
+            }
+          });
+        }
+      }
+    });
+
+    // Ensure local SDP prioritizes preferred codec and enables inband FEC
+    session.on('sdp', (dataObj: unknown) => {
+      const data = dataObj as { originator?: string; type?: string; sdp?: string } | undefined;
+      if (data?.originator === 'local' && data.sdp) {
+        data.sdp = this.prioritizeCodecInSdp(data.sdp, this.preferredCodec);
       }
     });
 
@@ -338,6 +454,8 @@ export class JsSipService {
         if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
         console.log(`[sip][callId=${call.id}] session confirmed`);
         this.events.onCallEstablished(this.activeCall);
+        void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
+        this.setSpeakerVolume(this.speakerVolume);
       }
       this.attachEarlyMediaAudio(session);
     });
@@ -399,6 +517,7 @@ export class JsSipService {
           const stream = new MediaStream(tracks);
           if (this.activeCall) {
             this.activeCall.remoteStream = stream;
+            this.setSpeakerVolume(this.speakerVolume);
           }
         }
       }
@@ -441,7 +560,9 @@ export class JsSipService {
         const tracks = stream.getAudioTracks?.() || [];
         tracks.forEach((track: MediaStreamTrack) => { track.enabled = true; });
         console.log(`[sip] microphone acquired tracks=${tracks.length}`);
-        resolve(tracks.length > 0 ? stream : null);
+        const finalStream = tracks.length > 0 ? stream : null;
+        this.localStream = finalStream;
+        resolve(finalStream);
         this.setMicVolume(this.micVolume);
       })
       .catch((error) => {
@@ -521,6 +642,8 @@ export class JsSipService {
       if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
       console.log(`[sip][callId=${callId}] answer dispatched -> active call established`);
       this.events.onCallEstablished(this.activeCall);
+      void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
+      this.setSpeakerVolume(this.speakerVolume);
       return true;
     } catch (error) {
       localStream.getTracks?.().forEach((track) => track.stop());

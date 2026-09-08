@@ -12,10 +12,13 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.facebook.react.module.annotations.ReactModule
+import kotlin.math.roundToInt
 
+@ReactModule(name = CallNotificationModule.NAME)
 class CallNotificationModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
 
-    override fun getName(): String = "CallNotificationModule"
+    override fun getName(): String = NAME
 
     override fun initialize() {
         super.initialize()
@@ -26,10 +29,8 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         instance = null
         super.invalidate()
     }
-
     @ReactMethod
     fun dismissCallNotification(callId: String) {
-        if (!IncomingCallStore.isValidCallId(callId)) return
         IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, callId)
         IncomingCallStore.remove(reactApplicationContext, callId)
     }
@@ -129,18 +130,38 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     fun setSpeakerVolume(percent: Double, promise: Promise) {
         try {
             val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-            
+            val isInCall = audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION
+
             // 1. In-call voice stream (earpiece / handset)
             val maxVoice = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
-            val targetVoice = ((percent / 100.0) * maxVoice.toDouble()).toInt().coerceIn(0, maxVoice)
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, targetVoice, 0)
+            val targetVoice = ((percent / 100.0) * maxVoice.toDouble()).roundToInt().coerceIn(1, maxVoice)
 
             // 2. Media / loudspeaker stream
             val maxMusic = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-            val targetMusic = ((percent / 100.0) * maxMusic.toDouble()).toInt().coerceIn(0, maxMusic)
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetMusic, 0)
+            val targetMusic = ((percent / 100.0) * maxMusic.toDouble()).roundToInt().coerceIn(0, maxMusic)
 
-            promise.resolve(targetVoice)
+            // Always set STREAM_VOICE_CALL with UI
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, targetVoice, android.media.AudioManager.FLAG_SHOW_UI)
+
+            // Always set STREAM_MUSIC (with audio beep out-of-call)
+            val musicFlags = if (isInCall) 0 else (android.media.AudioManager.FLAG_SHOW_UI or android.media.AudioManager.FLAG_PLAY_SOUND)
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetMusic, musicFlags)
+
+            // Link hardware volume buttons to the active stream
+            reactApplicationContext.currentActivity?.let { act ->
+                act.runOnUiThread {
+                    act.volumeControlStream = if (isInCall) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+                }
+            }
+
+            val curStep = if (isInCall) targetVoice else targetMusic
+            val maxStep = if (isInCall) maxVoice else maxMusic
+            val map = Arguments.createMap().apply {
+                putInt("currentStep", curStep)
+                putInt("maxStep", maxStep)
+                putInt("percent", if (maxStep > 0) ((curStep.toDouble() / maxStep.toDouble()) * 100.0).roundToInt() else percent.toInt())
+            }
+            promise.resolve(map)
         } catch (e: Exception) {
             promise.reject("VOLUME_ERROR", e.message, e)
         }
@@ -150,21 +171,28 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     fun getSpeakerVolume(promise: Promise) {
         try {
             val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-            val streamType = if (audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION) {
-                android.media.AudioManager.STREAM_VOICE_CALL
-            } else {
-                android.media.AudioManager.STREAM_MUSIC
-            }
+            val isInCall = audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION
+            val streamType = if (isInCall) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
             val maxVol = audioManager.getStreamMaxVolume(streamType)
             val current = audioManager.getStreamVolume(streamType)
-            val pct = if (maxVol > 0) ((current.toDouble() / maxVol.toDouble()) * 100.0).toInt() else 80
-            promise.resolve(pct)
+            val pct = if (maxVol > 0) ((current.toDouble() / maxVol.toDouble()) * 100.0).roundToInt() else 80
+            val map = Arguments.createMap().apply {
+                putInt("currentStep", current)
+                putInt("maxStep", maxVol)
+                putInt("percent", pct)
+            }
+            promise.resolve(map)
         } catch (e: Exception) {
-            promise.resolve(80)
+            val fallback = Arguments.createMap().apply {
+                putInt("currentStep", 12)
+                putInt("maxStep", 15)
+                putInt("percent", 80)
+            }
+            promise.resolve(fallback)
         }
     }
-
     companion object {
+        const val NAME = "CallNotificationModule"
         private var instance: CallNotificationModule? = null
 
         fun onIntentReceived(context: android.content.Context, intent: Intent?) {
