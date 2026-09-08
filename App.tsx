@@ -200,7 +200,7 @@ export default function App() {
         const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
         void setNativeSpeakerVolume(targetSpeakerVol);
         sipRef.current?.setSpeakerVolume(targetSpeakerVol);
-        const targetMicVol = accountRef.current?.micVolume ?? 85;
+        const targetMicVol = accountRef.current?.micVolume ?? 50;
         sipRef.current?.setMicVolume(targetMicVol);
       },
       onCallEnded: (callId) => {
@@ -264,7 +264,7 @@ export default function App() {
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
         preferredCodec: storedAccount?.preferredCodec || 'opus',
-        micVolume: storedAccount?.micVolume ?? 50,
+        micVolume: Math.min(storedAccount?.micVolume ?? 50, 50),
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
       sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
@@ -466,7 +466,7 @@ export default function App() {
     setAccount(newAcc);
     await StorageService.saveAccount(newAcc);
     sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
-    sipRef.current?.setMicVolume(newAcc.micVolume ?? 85);
+    sipRef.current?.setMicVolume(newAcc.micVolume ?? 50);
     sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
     void setNativeSpeakerVolume(newAcc.speakerVolume ?? 85);
     CONFIG.sipDomain = newAcc.serverHost;
