@@ -307,6 +307,15 @@ export default function App() {
         callId,
         nativePresented: Platform.OS === 'android',
       });
+      setTimeout(() => {
+        if (incomingRef.current?.callId === callId && !activeCallRef.current) {
+          console.log(`[app][callId=${callId}] incoming call overlay timed out`);
+          updateIncoming(null);
+          updateCallUUID(null);
+          dismissNativeCallNotification(callId);
+          clearNativeCallWindow();
+        }
+      }, 45_000);
 
       void StorageService.getAccount().then((storedAccount) => {
         if (!storedAccount) {
@@ -358,6 +367,15 @@ export default function App() {
       } else {
         acknowledgeNativeCallAction(callId, 'SHOW');
       }
+      setTimeout(() => {
+        if (incomingRef.current?.callId === callId && !activeCallRef.current) {
+          console.log(`[app][callId=${callId}] native incoming overlay timed out`);
+          updateIncoming(null);
+          updateCallUUID(null);
+          dismissNativeCallNotification(callId);
+          clearNativeCallWindow();
+        }
+      }, 45_000);
     };
 
     void getPendingNativeCalls().then((calls) => {
