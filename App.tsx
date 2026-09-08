@@ -264,11 +264,11 @@ export default function App() {
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
         preferredCodec: storedAccount?.preferredCodec || 'opus',
-        micVolume: storedAccount?.micVolume ?? 85,
+        micVolume: storedAccount?.micVolume ?? 50,
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
       sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
-      sip.setMicVolume(activeAccount.micVolume ?? 85);
+      sip.setMicVolume(activeAccount.micVolume ?? 50);
       sip.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
       void setNativeSpeakerVolume(activeAccount.speakerVolume ?? 85);
       setAccount(activeAccount);

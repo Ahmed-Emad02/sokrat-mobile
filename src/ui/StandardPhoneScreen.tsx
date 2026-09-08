@@ -327,7 +327,7 @@ export function StandardPhoneScreen({
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
   const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'opus');
-  const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 85);
+  const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 50);
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
   const [showInCallVolumeModal, setShowInCallVolumeModal] = useState(false);
   const [inCallSpeakerStep, setInCallSpeakerStep] = useState<{ current: number; max: number }>({ current: 12, max: 15 });
