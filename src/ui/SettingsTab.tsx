@@ -78,7 +78,7 @@ export function SettingsTab({
           style={styles.input}
           value={hostInput}
           onChangeText={setHostInput}
-          placeholder="e.g. 192.168.100.128"
+          placeholder="e.g. pbx.yourcompany.com"
           placeholderTextColor={COLORS.textMuted}
           autoCapitalize="none"
           autoCorrect={false}

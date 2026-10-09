@@ -2,7 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const ejs = require('ejs');
 
-const ejsPath = 'C:/Users/0xSiTe/Desktop/sokrat-voice/views/index.ejs';
+const voiceEjs = path.resolve(__dirname, '../sokrat-voice-main/views/index.ejs');
+const localEjs = path.resolve(__dirname, 'views/index.ejs');
+const ejsPath = fs.existsSync(voiceEjs) ? voiceEjs : (fs.existsSync(localEjs) ? localEjs : voiceEjs);
 const template = fs.readFileSync(ejsPath, 'utf8');
 
 // Render using official EJS compiler with all variables
@@ -14,7 +16,7 @@ const data = {
         { extension: '101', name: '101 (Support)', tech: 'pjsip' },
         { extension: '102', name: '102 (Sales)', tech: 'pjsip' }
     ],
-    host: '192.168.100.128',
+    host: '',
     version: '2.0.0',
     currentVersion: 'v2.0.0'
 };

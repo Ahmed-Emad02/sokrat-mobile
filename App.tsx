@@ -20,7 +20,7 @@ import {
   clearPendingIncomingCall,
   unregisterCurrentDevice,
 } from './src/push/pushHandler';
-import { CONFIG } from './src/config';
+import { CONFIG, getSipWss, getPushGateway } from './src/config';
 import {
   setupCallKeep,
   reportIncomingCall,
@@ -256,10 +256,14 @@ export default function App() {
     sipRef.current = sip;
 
     StorageService.getAccount().then((storedAccount) => {
+      if (!storedAccount || !storedAccount.serverHost || !storedAccount.password) {
+        setIsAuthLoaded(true);
+        return;
+      }
       const activeAccount: SavedAccount = {
         extension: storedAccount?.extension || '150',
-        password: storedAccount?.password || 'sss333',
-        serverHost: storedAccount?.serverHost || '192.168.100.128',
+        password: storedAccount?.password || '',
+        serverHost: storedAccount?.serverHost || '',
         useTls: storedAccount?.useTls ?? false,
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
@@ -275,10 +279,8 @@ export default function App() {
       setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
       CONFIG.sipDomain = activeAccount.serverHost;
-      CONFIG.sipWss =
-        `${activeAccount.useTls ? 'wss' : 'ws'}://${activeAccount.serverHost}:` +
-        `${activeAccount.useTls ? 8089 : 8088}/ws`;
-      CONFIG.pushGateway = `http://${activeAccount.serverHost}:8095`;
+      CONFIG.sipWss = getSipWss(activeAccount.serverHost, activeAccount.useTls);
+      CONFIG.pushGateway = getPushGateway(activeAccount.serverHost);
       bindExtension(activeAccount.extension);
       void sip.connect(
         activeAccount.extension,
@@ -470,8 +472,8 @@ export default function App() {
     sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
     void setNativeSpeakerVolume(newAcc.speakerVolume ?? 85);
     CONFIG.sipDomain = newAcc.serverHost;
-    CONFIG.sipWss = `${newAcc.useTls ? 'wss' : 'ws'}://${newAcc.serverHost}:${newAcc.useTls ? 8089 : 8088}/ws`;
-    CONFIG.pushGateway = `http://${newAcc.serverHost}:8095`;
+    CONFIG.sipWss = getSipWss(newAcc.serverHost, newAcc.useTls);
+    CONFIG.pushGateway = getPushGateway(newAcc.serverHost);
     bindExtension(newAcc.extension);
     sipRef.current?.connect(newAcc.extension, newAcc.password, newAcc.serverHost, newAcc.useTls);
   };
@@ -561,7 +563,7 @@ export default function App() {
             const newAcc: SavedAccount = {
               extension: ext,
               password,
-              serverHost: serverHost || '192.168.100.128',
+              serverHost: serverHost || '',
               useTls: false,
               dnd: false,
               autoAnswer: false,

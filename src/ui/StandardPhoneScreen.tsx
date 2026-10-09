@@ -321,8 +321,8 @@ export function StandardPhoneScreen({
 
   // Settings State Form
   const [editExt, setEditExt] = useState(account?.extension || '150');
-  const [editPass, setEditPass] = useState(account?.password || 'sss333');
-  const [editHost, setEditHost] = useState(account?.serverHost || '192.168.100.128');
+  const [editPass, setEditPass] = useState(account?.password || '');
+  const [editHost, setEditHost] = useState(account?.serverHost || '');
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
@@ -440,7 +440,8 @@ export function StandardPhoneScreen({
 
   const fetchExtensions = async () => {
     try {
-      const host = account?.serverHost || '192.168.100.128';
+      const host = account?.serverHost;
+      if (!host) return;
       let res = await fetch(`http://${host}:8095/api/push/extensions`).catch(() => null);
       if (!res || !res.ok) {
         res = await fetch(`http://${host}:8080/api/federation/v1/extensions`).catch(() => null);
@@ -1469,7 +1470,7 @@ export function StandardPhoneScreen({
                     style={styles.settingsInput}
                     value={editPass}
                     onChangeText={setEditPass}
-                    placeholder="SIP Secret (e.g. sss333)"
+                    placeholder="SIP Secret"
                     placeholderTextColor="#666"
                     secureTextEntry
                   />
@@ -1479,7 +1480,7 @@ export function StandardPhoneScreen({
                     style={styles.settingsInput}
                     value={editHost}
                     onChangeText={setEditHost}
-                    placeholder="192.168.100.128"
+                    placeholder="e.g. pbx.yourcompany.com"
                     placeholderTextColor="#666"
                     autoCapitalize="none"
                     autoCorrect={false}

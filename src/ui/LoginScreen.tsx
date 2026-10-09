@@ -22,13 +22,17 @@ type Props = {
 
 export function LoginScreen({ onLogin, state }: Props) {
   const [extension, setExtension] = useState('150');
-  const [password, setPassword] = useState('sss333');
-  const [serverHost, setServerHost] = useState(CONFIG.sipDomain || '192.168.100.128');
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [password, setPassword] = useState('');
+  const [serverHost, setServerHost] = useState(CONFIG.sipDomain || '');
+  const [showAdvanced, setShowAdvanced] = useState(!CONFIG.sipDomain);
 
   const submit = () => {
+    if (!serverHost.trim()) {
+      setShowAdvanced(true);
+      return;
+    }
     if (!extension.trim() || !password.trim()) return;
-    onLogin(extension.trim(), password.trim(), (serverHost || '192.168.100.128').trim());
+    onLogin(extension.trim(), password.trim(), serverHost.trim());
   };
 
   return (
@@ -72,7 +76,7 @@ export function LoginScreen({ onLogin, state }: Props) {
           >
             <SettingsIcon size={14} color="#38bdf8" />
             <Text style={styles.advancedToggleText}>
-              {showAdvanced ? 'Hide Server Settings' : `Server: ${serverHost}`}
+              {showAdvanced ? 'Hide Server Settings' : (serverHost ? `Server: ${serverHost}` : 'Configure Server')}
             </Text>
           </TouchableOpacity>
 
@@ -83,7 +87,7 @@ export function LoginScreen({ onLogin, state }: Props) {
                 style={styles.input}
                 value={serverHost}
                 onChangeText={setServerHost}
-                placeholder="192.168.100.128"
+                placeholder="e.g. pbx.yourcompany.com"
                 placeholderTextColor="#71717a"
                 autoCapitalize="none"
                 autoCorrect={false}
