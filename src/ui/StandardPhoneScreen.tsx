@@ -415,43 +415,45 @@ const AnimatedDialpadKey = React.memo(function AnimatedDialpadKey({
   };
 
   return (
-    <Animated.View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', margin: 4, transform: [{ scale }] }}>
-      <TouchableOpacity
-        style={styles.keyBtn}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        onPress={() => onPress(k.digit)}
-        onLongPress={() => onLongPress(k.digit)}
-        delayPressIn={0}
-        delayLongPress={400}
-        activeOpacity={0.65}
-        accessibilityRole="button"
-        accessibilityLabel={
-          isConfigured
-            ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
-            : `Digit ${k.digit}`
-        }
-      >
-        <Text style={styles.keyNumber}>{k.digit}</Text>
-        <View style={styles.keySubRow}>
-          {k.digit === '1' ? (
-            <VoicemailIcon
-              size={14}
-              color={isConfigured ? '#38bdf8' : '#a1a1aa'}
-            />
-          ) : k.sub ? (
-            <Text
-              style={[
-                styles.keyLetters,
-                isConfigured && styles.keyLettersActive,
-              ]}
-            >
-              {k.sub}
-            </Text>
-          ) : null}
-        </View>
-      </TouchableOpacity>
-    </Animated.View>
+    <View style={styles.keyCol}>
+      <Animated.View style={[styles.keyAnimatedWrap, { transform: [{ scale }] }]}>
+        <TouchableOpacity
+          style={styles.keyBtn}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          onPress={() => onPress(k.digit)}
+          onLongPress={() => onLongPress(k.digit)}
+          delayPressIn={0}
+          delayLongPress={400}
+          activeOpacity={0.65}
+          accessibilityRole="button"
+          accessibilityLabel={
+            isConfigured
+              ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
+              : `Digit ${k.digit}`
+          }
+        >
+          <Text style={styles.keyNumber}>{k.digit}</Text>
+          <View style={styles.keySubRow}>
+            {k.digit === '1' ? (
+              <VoicemailIcon
+                size={14}
+                color={isConfigured ? '#38bdf8' : '#a1a1aa'}
+              />
+            ) : k.sub ? (
+              <Text
+                style={[
+                  styles.keyLetters,
+                  isConfigured && styles.keyLettersActive,
+                ]}
+              >
+                {k.sub}
+              </Text>
+            ) : null}
+          </View>
+        </TouchableOpacity>
+      </Animated.View>
+    </View>
   );
 });
 
@@ -2348,12 +2350,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    rowGap: 14,
+    rowGap: 12,
     paddingHorizontal: 8,
   },
-  keyBtn: {
+  keyCol: {
     width: '30%',
-    aspectRatio: 1.3,
+    aspectRatio: 1.35,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keyAnimatedWrap: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keyBtn: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 20,
+    backgroundColor: '#18181b',
+    borderColor: '#27272a',
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2385,13 +2403,15 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
+    height: 60,
   },
   dialActionsRowExpanded: {
-    marginTop: 12,
+    marginTop: 10,
   },
   dialAuxBtn: {
     width: 48,
     height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2404,8 +2424,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#38bdf8',
     paddingHorizontal: 28,
-    height: 48,
-    borderRadius: 24,
+    height: 50,
+    borderRadius: 25,
     gap: 8,
   },
   mainCallPillDisabled: {
@@ -2414,7 +2434,8 @@ const styles = StyleSheet.create({
   callPillText: {
     color: '#000000',
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 15,
+    lineHeight: 20,
     includeFontPadding: false,
     textAlignVertical: 'center',
   },
