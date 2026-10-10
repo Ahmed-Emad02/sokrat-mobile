@@ -80,9 +80,11 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
     if (isAnswering) return;
     setIsAnswering(true);
     stopRingtone();
+    setTimeout(() => {
+      setIsAnswering(false);
+    }, 6000);
     onAnswer();
   };
-
   const handleDeclinePress = () => {
     stopRingtone();
     onDecline();

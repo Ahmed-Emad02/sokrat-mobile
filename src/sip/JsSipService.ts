@@ -365,17 +365,13 @@ export class JsSipService {
 
     this.activeCall = call;
 
-    // Auto-advance ICE candidate gathering so JsSIP sends INVITE immediately without hanging
-    let sessionIceTimer: number | null = null;
+    // Immediately complete ICE gathering so JsSIP generates and dispatches SDP answers instantly
     session.on('icecandidate', (data: unknown) => {
       const d = data as { ready?: () => void };
       if (typeof d?.ready === 'function') {
-        clearTimeout(sessionIceTimer as number);
-        sessionIceTimer = setTimeout(() => {
-          try {
-            d.ready?.();
-          } catch {}
-        }, 150) as unknown as number;
+        try {
+          d.ready();
+        } catch {}
       }
     });
 
@@ -577,9 +573,9 @@ export class JsSipService {
     let finished = false;
     const timer = setTimeout(() => {
       finished = true;
-      console.warn('[sip] microphone acquisition timed out after 3000ms');
+      console.warn('[sip] microphone acquisition timed out after 6000ms');
       resolve(null);
-    }, 3000);
+    }, 6000);
     mediaDevices
       .getUserMedia({ audio: true, video: false })
       .then((value) => {
@@ -640,11 +636,13 @@ export class JsSipService {
       },
     };
 
+    const iceServers = isLocalOrTailnet ? [] : [{ urls: 'stun:stun.l.google.com:19302' }];
+
     const options: Record<string, unknown> = {
       eventHandlers,
       mediaConstraints: { audio: true, video: false },
       pcConfig: {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers,
         iceCandidatePoolSize: 0,
       },
       sessionTimersExpires: 120,
@@ -652,7 +650,6 @@ export class JsSipService {
     if (localStream) {
       options.mediaStream = localStream;
     }
-
     try {
       this.ua.call(targetUri, options);
     } catch (err) {
@@ -689,14 +686,25 @@ export class JsSipService {
       return false;
     }
     this.localStream = localStream;
+    const domain = this.serverHost || CONFIG.sipDomain;
+    const cleanDomain = String(domain || '').split(':')[0].trim().toLowerCase();
+    const isLocalOrTailnet =
+      cleanDomain === 'localhost' ||
+      cleanDomain === '127.0.0.1' ||
+      cleanDomain.startsWith('10.') ||
+      cleanDomain.startsWith('192.168.') ||
+      cleanDomain.startsWith('100.');
+
+    const iceServers = isLocalOrTailnet ? [] : [{ urls: 'stun:stun.l.google.com:19302' }];
+
     const options: Record<string, unknown> = {
       mediaConstraints: { audio: true, video: false },
       mediaStream: localStream,
       pcConfig: {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers,
+        iceCandidatePoolSize: 0,
       },
     };
-
     try {
       session.answer(options);
       activeCall.status = 'active';
