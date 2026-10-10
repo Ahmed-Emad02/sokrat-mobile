@@ -35,9 +35,24 @@ export function startCallManagers() {
   InCallManager.setForceSpeakerphoneOn(false);
   InCallManager.setKeepScreenOn(true);
 }
-
 export function stopCallManagers() {
   InCallManager.stop();
+}
+
+export function startRingtone() {
+  try {
+    InCallManager.startRingtone('_DEFAULT_', [0, 1000, 1000, 1000], 'playback', 30);
+  } catch (err) {
+    console.warn('[incall] startRingtone error:', err);
+  }
+}
+
+export function stopRingtone() {
+  try {
+    InCallManager.stopRingtone();
+  } catch (err) {
+    console.warn('[incall] stopRingtone error:', err);
+  }
 }
 
 export function setMicrophoneMute(muted: boolean) {

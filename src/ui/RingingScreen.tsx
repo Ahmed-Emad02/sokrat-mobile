@@ -7,7 +7,7 @@ import { StyleSheet, Text, View, TouchableOpacity, Animated } from 'react-native
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { PhoneAnswerIcon, PhoneDeclineIcon, PhoneIcon } from './Icons';
-
+import { startRingtone, stopRingtone } from '../calls/incall';
 type Props = {
   callerId: string;
   callerName: string;
@@ -58,7 +58,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
     const r1 = createRipple(ripple1, 0);
     const r2 = createRipple(ripple2, 800);
     const r3 = createRipple(ripple3, 1600);
-
+    startRingtone();
     r1.start();
     r2.start();
     r3.start();
@@ -66,6 +66,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
     textBreath.start();
 
     return () => {
+      stopRingtone();
       r1.stop();
       r2.stop();
       r3.stop();
@@ -78,7 +79,13 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
   const handleAnswerPress = () => {
     if (isAnswering) return;
     setIsAnswering(true);
+    stopRingtone();
     onAnswer();
+  };
+
+  const handleDeclinePress = () => {
+    stopRingtone();
+    onDecline();
   };
 
   const displayName = callerName.trim() || callerId.trim() || 'Unknown Caller';
@@ -187,7 +194,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
         <View style={styles.actionCol}>
           <TouchableOpacity
             style={[styles.actionBtn, styles.declineBtn]}
-            onPress={onDecline}
+            onPress={handleDeclinePress}
             delayPressIn={0}
             hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
             activeOpacity={0.7}

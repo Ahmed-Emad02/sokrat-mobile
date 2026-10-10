@@ -45,6 +45,8 @@ import {
 import {
   startCallManagers,
   stopCallManagers,
+  startRingtone,
+  stopRingtone,
   setSpeakerphone,
   setMicrophoneMute,
   chooseAudioRoute,
@@ -178,6 +180,7 @@ export default function App() {
 
   const answerSipCall = async (callId: string): Promise<boolean> => {
     pendingAnswerUUIDRef.current = callId;
+    stopRingtone();
     recordNativeCallAction(callId, 'ANSWER');
     startCallManagers();
     const answered = await sipRef.current?.answer(callId);
@@ -336,6 +339,7 @@ export default function App() {
         }
       },
       onCallEnded: (callId, cause, details) => {
+        stopRingtone();
         dismissOngoingCallNotification();
         if (cause && cause !== 'NORMAL_CLEARING' && cause !== 'Canceled by User' && cause !== 'Terminated') {
           const reason = formatCallFailureReason(cause, details);
