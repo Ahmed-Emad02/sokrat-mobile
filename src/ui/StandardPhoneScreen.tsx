@@ -34,6 +34,9 @@ import {
   PhoneIcon,
   ContactsIcon,
   StarIcon,
+  BluetoothIcon,
+  HeadphoneIcon,
+  EarpieceIcon,
   SettingsIcon,
   MenuDotsIcon,
   KeypadIcon,
@@ -55,6 +58,7 @@ import {
   ChevronDownIcon,
   SlidersIcon,
 } from './Icons';
+import { AudioDeviceState, AudioRouteType } from '../calls/incall';
 import { fetchDeviceContacts, getNativeSpeakerVolume, SpeakerVolumeState } from '../calls/nativeCallNotification';
 
 function VolumeSlider({
@@ -193,6 +197,8 @@ function UnifiedAudioControls({
   onChangeSpeaker,
   onChangeMic,
   onToggleSpeaker,
+  audioDeviceState,
+  onChooseAudioRoute,
 }: {
   speakerVolume: number;
   micVolume: number;
@@ -201,6 +207,8 @@ function UnifiedAudioControls({
   onChangeSpeaker: (val: number) => void;
   onChangeMic: (val: number) => void;
   onToggleSpeaker?: () => void;
+  audioDeviceState?: AudioDeviceState;
+  onChooseAudioRoute?: (route: AudioRouteType) => Promise<AudioDeviceState>;
 }) {
   const micDb = Math.round(((micVolume - 50) / 50) * (micVolume >= 50 ? 6 : 12));
   const micDbLabel = micDb === 0 ? '0 dB • Calibrated' : `${micDb > 0 ? '+' : ''}${micDb} dB`;
@@ -223,34 +231,61 @@ function UnifiedAudioControls({
         description={`Microphone capture gain (${micDbLabel}). Applied directly to live calls.`}
       />
 
-      {onToggleSpeaker && (
-        <View style={styles.inCallAudioRouteRow}>
+      <View style={styles.inCallAudioRouteRow}>
+        {audioDeviceState?.hasBluetooth && (
           <TouchableOpacity
-            style={[styles.inCallAudioRouteBtn, !isSpeakerOn && styles.inCallAudioRouteBtnActive]}
-            onPress={() => {
-              if (isSpeakerOn) onToggleSpeaker();
-            }}
+            style={[
+              styles.inCallAudioRouteBtn,
+              audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.inCallAudioRouteBtnActive,
+            ]}
+            onPress={() => onChooseAudioRoute?.('BLUETOOTH')}
           >
-            <Text style={[styles.inCallAudioRouteText, !isSpeakerOn && styles.inCallAudioRouteTextActive]}>
-              Ear / Handset
+            <BluetoothIcon size={14} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? '#38bdf8' : '#a1a1aa'} />
+            <Text style={[styles.inCallAudioRouteText, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.inCallAudioRouteTextActive]}>
+              Bluetooth
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.inCallAudioRouteBtn, isSpeakerOn && styles.inCallAudioRouteBtnActive]}
-            onPress={() => {
-              if (!isSpeakerOn) onToggleSpeaker();
-            }}
-          >
-            <Text style={[styles.inCallAudioRouteText, isSpeakerOn && styles.inCallAudioRouteTextActive]}>
-              Loudspeaker
-            </Text>
-          </TouchableOpacity>
-        </View>
-      )}
+        )}
+        <TouchableOpacity
+          style={[
+            styles.inCallAudioRouteBtn,
+            (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.inCallAudioRouteBtnActive,
+          ]}
+          onPress={() => {
+            if (onChooseAudioRoute) {
+              void onChooseAudioRoute('EARPIECE');
+            } else if (isSpeakerOn && onToggleSpeaker) {
+              onToggleSpeaker();
+            }
+          }}
+        >
+          <EarpieceIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? '#38bdf8' : '#a1a1aa'} />
+          <Text style={[styles.inCallAudioRouteText, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.inCallAudioRouteTextActive]}>
+            Handset
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.inCallAudioRouteBtn,
+            (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.inCallAudioRouteBtnActive,
+          ]}
+          onPress={() => {
+            if (onChooseAudioRoute) {
+              void onChooseAudioRoute('SPEAKER_PHONE');
+            } else if (!isSpeakerOn && onToggleSpeaker) {
+              onToggleSpeaker();
+            }
+          }}
+        >
+          <SpeakerIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? '#38bdf8' : '#a1a1aa'} />
+          <Text style={[styles.inCallAudioRouteText, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.inCallAudioRouteTextActive]}>
+            Speaker
+          </Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
-
 
 type Props = {
   account: SavedAccount | null;
@@ -275,6 +310,8 @@ type Props = {
   onDeleteCallRecord?: (id: string) => void;
   onToggleFavorite: (id: string) => void;
   onUpdateVolume?: (type: 'mic' | 'speaker', value: number) => void;
+  audioDeviceState?: AudioDeviceState;
+  onChooseAudioRoute?: (route: AudioRouteType) => Promise<AudioDeviceState>;
 };
 
 type BottomTab = 'phone' | 'contacts' | 'favourites';
@@ -469,6 +506,8 @@ export function StandardPhoneScreen({
   onToggleMute,
   onToggleHold,
   onToggleSpeaker,
+  audioDeviceState,
+  onChooseAudioRoute,
   onSendDtmf,
   onTransfer,
   onSaveAccount,
@@ -535,6 +574,7 @@ export function StandardPhoneScreen({
   };
   // Recents History Filter (All vs Missed)
   const [historyFilter, setHistoryFilter] = useState<'all' | 'missed'>('all');
+  const [showAudioRouteModal, setShowAudioRouteModal] = useState(false);
   const tabPagerRef = useRef<any>(null);
   const tabIndicatorAnim = useRef(new Animated.Value(0)).current;
 
@@ -925,6 +965,109 @@ export function StandardPhoneScreen({
     </Modal>
   );
 
+  const renderAudioRouteModal = () => (
+    <Modal
+      visible={showAudioRouteModal}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setShowAudioRouteModal(false)}
+    >
+      <TouchableWithoutFeedback onPress={() => setShowAudioRouteModal(false)}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+            <View style={styles.audioRouteCard}>
+              <View style={styles.audioRouteHeader}>
+                <Text style={styles.audioRouteTitle}>Audio Output & Input</Text>
+                <TouchableOpacity onPress={() => setShowAudioRouteModal(false)} style={styles.transferDismissBtn}>
+                  <CloseIcon size={18} color="#94a3b8" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.audioRouteSub}>
+                Select active device for microphone and speaker:
+              </Text>
+              {audioDeviceState?.hasBluetooth && (
+                <TouchableOpacity
+                  style={[
+                    styles.audioRouteOption,
+                    audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.audioRouteOptionActive,
+                  ]}
+                  onPress={async () => {
+                    await onChooseAudioRoute?.('BLUETOOTH');
+                    setShowAudioRouteModal(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.audioRouteIconWrap}>
+                    <BluetoothIcon size={22} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? '#38bdf8' : '#ffffff'} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.audioRouteOptionText, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.audioRouteOptionTextActive]}>
+                      Bluetooth Headset
+                    </Text>
+                    <Text style={styles.audioRouteOptionSub}>Wireless connected audio</Text>
+                  </View>
+                  {audioDeviceState.selectedDevice === 'BLUETOOTH' && <View style={styles.audioRouteActiveDot} />}
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[
+                  styles.audioRouteOption,
+                  (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.audioRouteOptionActive,
+                ]}
+                onPress={async () => {
+                  if (onChooseAudioRoute) {
+                    await onChooseAudioRoute('EARPIECE');
+                  } else if (isSpeakerOn && onToggleSpeaker) {
+                    onToggleSpeaker();
+                  }
+                  setShowAudioRouteModal(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.audioRouteIconWrap}>
+                  <EarpieceIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? '#38bdf8' : '#ffffff'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.audioRouteOptionText, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.audioRouteOptionTextActive]}>
+                    Phone Earpiece
+                  </Text>
+                  <Text style={styles.audioRouteOptionSub}>Handset speaker & microphone</Text>
+                </View>
+                {(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && <View style={styles.audioRouteActiveDot} />}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.audioRouteOption,
+                  (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.audioRouteOptionActive,
+                ]}
+                onPress={async () => {
+                  if (onChooseAudioRoute) {
+                    await onChooseAudioRoute('SPEAKER_PHONE');
+                  } else if (!isSpeakerOn && onToggleSpeaker) {
+                    onToggleSpeaker();
+                  }
+                  setShowAudioRouteModal(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.audioRouteIconWrap}>
+                  <SpeakerIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? '#38bdf8' : '#ffffff'} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.audioRouteOptionText, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.audioRouteOptionTextActive]}>
+                    Loudspeaker
+                  </Text>
+                  <Text style={styles.audioRouteOptionSub}>Hands-free speakerphone</Text>
+                </View>
+                {(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && <View style={styles.audioRouteActiveDot} />}
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+
   // --- Active In-Call View ---
   if (activeCall) {
     const isCallingState = activeCall.status === 'calling';
@@ -1014,20 +1157,44 @@ export function StandardPhoneScreen({
                 <Text style={styles.inCallBtnLabel}>Keypad</Text>
               </View>
 
-              {/* Speaker Button */}
+              {/* Speaker / Bluetooth Audio Output Button */}
               <View style={styles.inCallBtnCol}>
                 <TouchableOpacity
-                  style={[styles.inCallBtn, isSpeakerOn && styles.inCallBtnSpeakerActive]}
-                  onPress={onToggleSpeaker}
+                  style={[
+                    styles.inCallBtn,
+                    (audioDeviceState?.selectedDevice === 'BLUETOOTH' || audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn) && styles.inCallBtnSpeakerActive,
+                  ]}
+                  onPress={() => {
+                    if (audioDeviceState?.hasBluetooth || (audioDeviceState?.availableDevices?.length ?? 0) > 2) {
+                      setShowAudioRouteModal(true);
+                    } else if (onToggleSpeaker) {
+                      onToggleSpeaker();
+                    }
+                  }}
                   delayPressIn={0}
                   activeOpacity={0.7}
                   accessibilityRole="button"
-                  accessibilityLabel={isSpeakerOn ? 'Switch to earpiece' : 'Switch to loudspeaker'}
+                  accessibilityLabel="Audio output device"
                 >
-                  <SpeakerIcon size={26} color={isSpeakerOn ? '#38bdf8' : '#ffffff'} />
+                  {audioDeviceState?.selectedDevice === 'BLUETOOTH' ? (
+                    <BluetoothIcon size={26} color="#38bdf8" />
+                  ) : audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn ? (
+                    <SpeakerIcon size={26} color="#38bdf8" />
+                  ) : (
+                    <SpeakerIcon size={26} color="#ffffff" />
+                  )}
                 </TouchableOpacity>
-                <Text style={[styles.inCallBtnLabel, isSpeakerOn && { color: '#38bdf8' }]}>
-                  {isSpeakerOn ? 'Speaker' : 'Earpiece'}
+                <Text
+                  style={[
+                    styles.inCallBtnLabel,
+                    (audioDeviceState?.selectedDevice === 'BLUETOOTH' || audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn) && { color: '#38bdf8' },
+                  ]}
+                >
+                  {audioDeviceState?.selectedDevice === 'BLUETOOTH'
+                    ? 'Bluetooth'
+                    : audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn
+                    ? 'Speaker'
+                    : 'Earpiece'}
                 </Text>
               </View>
             </View>
@@ -1197,6 +1364,7 @@ export function StandardPhoneScreen({
 
         {/* In-Call Audio & Volume Adjustment Sheet */}
         {renderVolumeModal()}
+        {renderAudioRouteModal()}
       </SafeAreaView>
     );
   }
@@ -2470,6 +2638,75 @@ const styles = StyleSheet.create({
   navLabelActive: {
     color: '#38bdf8',
     fontWeight: '700',
+  },
+  audioRouteCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#18181b',
+    borderRadius: 24,
+    padding: 22,
+    borderColor: '#27272a',
+    borderWidth: 1,
+    gap: 12,
+  },
+  audioRouteHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  audioRouteTitle: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  audioRouteSub: {
+    color: '#a1a1aa',
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  audioRouteOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: '#111113',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  audioRouteOptionActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+  },
+  audioRouteIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#18181b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  audioRouteOptionText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  audioRouteOptionTextActive: {
+    color: '#38bdf8',
+    fontWeight: '700',
+  },
+  audioRouteOptionSub: {
+    color: '#71717a',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  audioRouteActiveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#38bdf8',
   },
   contactsContent: {
     flex: 1,

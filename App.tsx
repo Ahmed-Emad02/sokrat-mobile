@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
-import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus } from 'react-native';
+import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus, Permission } from 'react-native';
 import { COLORS } from './src/theme';
 import {
   JsSipService,
@@ -46,6 +46,10 @@ import {
   stopCallManagers,
   setSpeakerphone,
   setMicrophoneMute,
+  chooseAudioRoute,
+  subscribeAudioDeviceChanges,
+  AudioDeviceState,
+  AudioRouteType,
 } from './src/calls/incall';
 import {
   StorageService,
@@ -141,6 +145,18 @@ export default function App() {
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
+  const [audioDeviceState, setAudioDeviceState] = useState<AudioDeviceState>({
+    availableDevices: ['EARPIECE', 'SPEAKER_PHONE'],
+    selectedDevice: 'EARPIECE',
+    hasBluetooth: false,
+  });
+
+  useEffect(() => {
+    return subscribeAudioDeviceChanges((s) => {
+      setAudioDeviceState(s);
+      setIsSpeakerOn(s.selectedDevice === 'SPEAKER_PHONE');
+    });
+  }, []);
 
   const updateIncoming = (value: IncomingCallInfo | null) => {
     incomingRef.current = value;
@@ -197,10 +213,14 @@ export default function App() {
   };
   useEffect(() => {
     if (Platform.OS === 'android') {
-      PermissionsAndroid.requestMultiple([
+      const perms: Permission[] = [
         PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
         PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-      ]).then((result) => {
+      ];
+      if (Platform.Version >= 31 && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
+        perms.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
+      }
+      PermissionsAndroid.requestMultiple(perms).then((result) => {
         if (result[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] !==
             PermissionsAndroid.RESULTS.GRANTED) {
           console.warn('[app] microphone permission denied; calls cannot be answered');
@@ -711,6 +731,8 @@ export default function App() {
             void setNativeSpeakerVolume(targetSpeakerVol);
           }, 200);
         }}
+        audioDeviceState={audioDeviceState}
+        onChooseAudioRoute={chooseAudioRoute}
         onSendDtmf={(d: string) => sipRef.current?.sendDTMF(d)}
         onTransfer={(t: string) => sipRef.current?.blindTransfer(t)}
         onSaveAccount={handleSaveAccount}
