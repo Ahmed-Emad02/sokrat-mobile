@@ -66,7 +66,7 @@ export class JsSipService {
   private ua: JsSIP.UA | null = null;
   private currentSession: unknown = null;
   private preferredCodec: CodecPreference = 'auto';
-  private micVolume = 85;
+  private micVolume = 50;
   private speakerVolume = 85;
   private micGainDb = 0;
   private liveGainTimer: number | null = null;
@@ -130,6 +130,7 @@ export class JsSipService {
               extension: this.extension,
               callId: targetCallId,
               micGainDb: gain,
+              gainDb: gain,
             }),
           });
           const json = (await res.json()) as { success?: boolean };
