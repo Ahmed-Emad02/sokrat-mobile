@@ -34,11 +34,9 @@ object IncomingCallStore {
 
     fun isValidCallId(callId: String?): Boolean {
         if (callId.isNullOrBlank()) return false
-        return try {
-            UUID.fromString(callId)
-            true
-        } catch (_: IllegalArgumentException) {
-            false
+        val trimmed = callId.trim()
+        return trimmed.length in 3..128 && trimmed.all {
+            it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' || it == '@'
         }
     }
 

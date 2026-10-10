@@ -293,6 +293,7 @@ export class JsSipService {
       if (this.state === 'registered') {
         this.setState('disconnected');
       }
+      this.scheduleReconnect();
     });
 
     ua.on('registrationFailed', (data: { response?: { status_code?: number }; cause?: string }) => {
@@ -305,6 +306,7 @@ export class JsSipService {
         if (this.state !== 'registered') {
           this.setState('disconnected');
         }
+        this.scheduleReconnect();
       }
     });
 
@@ -313,6 +315,7 @@ export class JsSipService {
       if (this.state === 'registered') {
         this.setState('disconnected');
       }
+      this.scheduleReconnect();
     });
     ua.on('newRTCSession', (data: { session: unknown; originator: string; request?: unknown }) => {
       this.handleNewRTCSession(data.session, data.request);
@@ -855,40 +858,64 @@ export class JsSipService {
   }
 
   private scheduleReconnect() {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.state === 'failed' || !this.extension || !this.password) return;
+    clearTimeout(this.reconnectTimer);
+    if (!this.extension || !this.password || !this.serverHost) return;
+    if (this.activeCall) return;
+    if (this.state === 'failed' && this.reconnectAttempt > 5) return;
 
     this.reconnectAttempt++;
-    const backoff = Math.min(30, Math.pow(2, Math.min(4, this.reconnectAttempt)));
+    const backoff = Math.min(20, Math.round(1.5 * Math.pow(1.8, Math.min(5, this.reconnectAttempt - 1))));
     this.reconnectTimer = setTimeout(() => {
+      if (this.activeCall) return;
       if (!this.ua || !this.ua.isRegistered()) {
-        this.connect(this.extension, this.password, this.serverHost, this.useTls).catch(() => {});
+        this.connect(this.extension, this.password, this.serverHost, this.useTls).catch((err) => {
+          console.warn('[sip] reconnect attempt failed:', err);
+        });
       }
     }, backoff * 1000);
+  }
+
+  async reconnectIfDisconnected(): Promise<void> {
+    if (!this.extension || !this.password || !this.serverHost) return;
+    if (this.activeCall) return;
+    const isUp = this.ua != null && this.ua.isConnected() && this.ua.isRegistered();
+    if (!isUp) {
+      this.reconnectAttempt = 0;
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      await this.connect(this.extension, this.password, this.serverHost, this.useTls).catch(() => {});
+    }
   }
 
   private startKeepAlive() {
     this.stopKeepAlive();
     this.keepAliveTimer = setInterval(() => {
-      try {
-        const socket = (this.ua as unknown as { _transport?: { _ws?: { send?: (data: string) => void } } })?._transport?._ws;
-        socket?.send?.('\r\n\r\n');
-      } catch {}
+      if (!this.extension || !this.password || !this.ua) return;
+      if (this.activeCall) return;
+
+      if (!this.ua.isConnected()) {
+        this.scheduleReconnect();
+        return;
+      }
+
+      if (!this.ua.isRegistered() && this.state !== 'connecting') {
+        try {
+          this.ua.register();
+        } catch {
+          this.scheduleReconnect();
+        }
+      }
     }, 20000);
   }
 
   private stopKeepAlive() {
-    if (this.keepAliveTimer) {
-      clearInterval(this.keepAliveTimer);
-      this.keepAliveTimer = null;
-    }
+    clearInterval(this.keepAliveTimer);
+    this.keepAliveTimer = null;
   }
 
   disconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.stopKeepAlive();
     if (this.ua) {
       try {
@@ -902,13 +929,14 @@ export class JsSipService {
   }
 
   isRegistered(): boolean {
-    return this.state === 'registered';
+    return (this.ua?.isRegistered() && this.state === 'registered') ?? false;
   }
 
   isConnectedOrConnecting(): boolean {
-    return this.state === 'registered' || this.state === 'connecting';
+    if (this.state === 'connecting') return true;
+    if (this.state !== 'registered') return false;
+    return (this.ua?.isConnected() && this.ua?.isRegistered()) ?? false;
   }
-
   /**
    * Reorder audio payload types in local SDP so the user's preferred codec
    * is placed at highest priority, and ensure inband FEC is enabled for Opus.

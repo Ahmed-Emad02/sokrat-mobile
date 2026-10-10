@@ -34,11 +34,37 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         super.invalidate()
     }
     @ReactMethod
+    fun showIncomingCallNotification(
+        callId: String,
+        callerId: String,
+        callerName: String,
+        extension: String,
+        timestamp: String
+    ) {
+        val canonicalCallId = if (IncomingCallStore.isValidCallId(callId)) callId else java.util.UUID.randomUUID().toString()
+        IncomingCallStore.upsertIncoming(
+            reactApplicationContext,
+            canonicalCallId,
+            callerId,
+            callerName,
+            extension,
+            timestamp.toLongOrNull() ?: System.currentTimeMillis()
+        )
+        IncomingCallNotificationHelper.showCallNotification(
+            reactApplicationContext,
+            canonicalCallId,
+            callerId,
+            callerName,
+            extension,
+            timestamp
+        )
+    }
+
+    @ReactMethod
     fun dismissCallNotification(callId: String) {
         IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, callId)
         IncomingCallStore.remove(reactApplicationContext, callId)
     }
-
     @ReactMethod
     fun showOngoingCallNotification(callId: String, title: String, subtitle: String, startTimeMs: Double) {
         IncomingCallNotificationHelper.showOngoingCallNotification(
@@ -237,10 +263,12 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         fun onIntentReceived(context: android.content.Context, intent: Intent?) {
             if (intent == null) return
             val callAction = intent.getStringExtra("callAction") ?: return
-            val callId = intent.getStringExtra("callId")
-            if (!IncomingCallStore.isValidCallId(callId)) return
-
-            val canonicalCallId = callId!!
+            val rawCallId = intent.getStringExtra("callId")
+            val canonicalCallId = if (IncomingCallStore.isValidCallId(rawCallId)) {
+                rawCallId!!
+            } else {
+                IncomingCallStore.pending(context).firstOrNull()?.callId ?: return
+            }
             val existing = IncomingCallStore.pending(context)
                 .firstOrNull { it.callId == canonicalCallId }
             if (existing == null) {

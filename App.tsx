@@ -30,6 +30,7 @@ import {
   answerIncoming,
 } from './src/calls/callKit';
 import {
+  showIncomingCallNotification,
   acknowledgeNativeCallAction,
   clearNativeCallWindow,
   dismissNativeCallNotification,
@@ -135,6 +136,9 @@ export default function App() {
         }
       } else if (nextAppState === 'active') {
         dismissOngoingCallNotification();
+        if (accountRef.current) {
+          void sipRef.current?.reconnectIfDisconnected();
+        }
       }
     };
 
@@ -263,6 +267,16 @@ export default function App() {
         updateCallUUID(callId);
         updateIncoming(correlatedInfo);
         console.log(`[app][callId=${callId}] SIP INVITE matched`);
+
+        if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+          showIncomingCallNotification(
+            callId,
+            correlatedInfo.callerId,
+            correlatedInfo.callerName,
+            correlatedInfo.extension,
+            correlatedInfo.timestamp
+          );
+        }
 
         if (Platform.OS === 'ios' && !correlatedInfo.nativePresented) {
           void reportIncomingCall(

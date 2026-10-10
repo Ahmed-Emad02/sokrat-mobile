@@ -245,7 +245,8 @@ object IncomingCallNotificationHelper {
 
         val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_call)
+            .setColor(0xFF0284C7.toInt())
             .setContentTitle(title)
             .setContentText(subtitle)
             .setPriority(NotificationCompat.PRIORITY_MAX)

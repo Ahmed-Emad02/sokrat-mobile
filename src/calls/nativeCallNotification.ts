@@ -27,6 +27,21 @@ function getEmitter(): NativeEventEmitter | null {
   }
   return cachedEmitter;
 }
+export function showIncomingCallNotification(
+  callId: string,
+  callerId: string,
+  callerName: string,
+  extension: string,
+  timestamp?: number
+) {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.showIncomingCallNotification) return;
+  try {
+    mod.showIncomingCallNotification(callId, callerId, callerName, extension, String(timestamp || Date.now()));
+  } catch (error) {
+    console.warn('[native-call] showIncomingCallNotification failed:', error);
+  }
+}
 
 export function dismissNativeCallNotification(callId: string) {
   const mod = getModule();
