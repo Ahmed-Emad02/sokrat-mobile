@@ -72,6 +72,26 @@ export function dismissOngoingCallNotification() {
   }
 }
 
+export async function requestIgnoreBatteryOptimizations(): Promise<boolean> {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.requestIgnoreBatteryOptimizations) return true;
+  try {
+    return await mod.requestIgnoreBatteryOptimizations();
+  } catch {
+    return true;
+  }
+}
+
+export async function isIgnoringBatteryOptimizations(): Promise<boolean> {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.isIgnoringBatteryOptimizations) return true;
+  try {
+    return await mod.isIgnoringBatteryOptimizations();
+  } catch {
+    return true;
+  }
+}
+
 
 export async function getPendingNativeCalls(): Promise<CallActionPayload[]> {
   const mod = getModule();

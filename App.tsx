@@ -35,6 +35,7 @@ import {
   dismissNativeCallNotification,
   showOngoingCallNotification,
   dismissOngoingCallNotification,
+  requestIgnoreBatteryOptimizations,
   getPendingNativeCalls,
   recordNativeCallAction,
   subscribeNativeCallAction,
@@ -225,6 +226,7 @@ export default function App() {
             PermissionsAndroid.RESULTS.GRANTED) {
           console.warn('[app] microphone permission denied; calls cannot be answered');
         }
+        void requestIgnoreBatteryOptimizations();
       }).catch((error) => {
         console.warn('[app] permission preflight failed:', error);
       });

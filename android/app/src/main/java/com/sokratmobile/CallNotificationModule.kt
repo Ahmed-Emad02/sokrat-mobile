@@ -1,6 +1,10 @@
 package com.sokratmobile
 
 import android.content.Intent
+import android.content.Context
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import android.Manifest
 import android.content.pm.PackageManager
 import android.provider.ContactsContract
@@ -49,6 +53,35 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     @ReactMethod
     fun dismissOngoingCallNotification() {
         IncomingCallNotificationHelper.dismissOngoingCallNotification(reactApplicationContext)
+    }
+
+    @ReactMethod
+    fun requestIgnoreBatteryOptimizations(promise: Promise) {
+        val context = reactApplicationContext.currentActivity ?: reactApplicationContext
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val packageName = context.packageName
+        if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                promise.resolve(false)
+            } catch (err: Exception) {
+                promise.resolve(false)
+            }
+        } else {
+            promise.resolve(true)
+        }
+    }
+
+    @ReactMethod
+    fun isIgnoringBatteryOptimizations(promise: Promise) {
+        val context = reactApplicationContext
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isIgnoring = pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+        promise.resolve(isIgnoring)
     }
 
     @ReactMethod
