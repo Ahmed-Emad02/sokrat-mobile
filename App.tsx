@@ -283,6 +283,14 @@ export default function App() {
         dismissNativeCallNotification(call.id);
         void clearPendingIncomingCall(call.id);
         startCallManagers();
+        if (AppState.currentState === 'background' || AppState.currentState === 'inactive') {
+          showOngoingCallNotification(
+            call.id,
+            call.targetName || call.target,
+            `Call in progress • Ext ${call.target}`,
+            call.startTime || Date.now()
+          );
+        }
         const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
         void setNativeSpeakerVolume(targetSpeakerVol);
         sipRef.current?.setSpeakerVolume(targetSpeakerVol);
@@ -356,6 +364,17 @@ export default function App() {
       onCallHoldChange: (isHeld) => {
         if (activeCallRef.current) {
           updateActiveCall({ ...activeCallRef.current, isHeld });
+          if (AppState.currentState === 'background' || AppState.currentState === 'inactive') {
+            const currentCall = activeCallRef.current;
+            showOngoingCallNotification(
+              currentCall.id,
+              currentCall.targetName || currentCall.target,
+              isHeld
+                ? `Call on hold • Ext ${currentCall.target}`
+                : `Call in progress • Ext ${currentCall.target}`,
+              currentCall.startTime || Date.now()
+            );
+          }
         }
       },
       onCallMuteChange: (isMuted) => {

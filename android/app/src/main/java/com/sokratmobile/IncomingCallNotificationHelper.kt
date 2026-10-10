@@ -90,15 +90,15 @@ object IncomingCallNotificationHelper {
         val channel = NotificationChannel(
             ONGOING_CHANNEL_ID,
             ONGOING_CHANNEL_NAME,
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
             description = "Sokrat VOICE active call indicator"
             setShowBadge(false)
             enableLights(false)
             enableVibration(false)
+            setSound(null, null)
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
-        manager.createNotificationChannel(channel)
     }
 
     fun showOngoingCallNotification(
@@ -148,7 +148,7 @@ object IncomingCallNotificationHelper {
             .setOngoing(true)
             .setAutoCancel(false)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setUsesChronometer(true)
             .setWhen(effectiveWhen)
             .setShowWhen(true)
