@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS } from '../theme';
+import { SlashIcon, ZapIcon } from './Icons';
 import { SipState } from '../sip/JsSipService';
 
 type Props = {
@@ -78,7 +79,7 @@ export function Header({
           style={[styles.toggleBtn, isDnd && styles.toggleBtnDndActive]}
           onPress={onToggleDnd}
         >
-          <Text style={styles.toggleIcon}>🚫</Text>
+          <SlashIcon size={14} color={isDnd ? COLORS.danger : COLORS.textMuted} />
           <Text style={[styles.toggleLabel, isDnd && styles.toggleLabelActive]}>
             DND {isDnd ? 'ON' : 'OFF'}
           </Text>
@@ -88,7 +89,7 @@ export function Header({
           style={[styles.toggleBtn, isAutoAnswer && styles.toggleBtnAutoActive]}
           onPress={onToggleAutoAnswer}
         >
-          <Text style={styles.toggleIcon}>⚡</Text>
+          <ZapIcon size={14} color={isAutoAnswer ? COLORS.warn : COLORS.textMuted} />
           <Text style={[styles.toggleLabel, isAutoAnswer && styles.toggleLabelActive]}>
             Auto-Answer {isAutoAnswer ? 'ON' : 'OFF'}
           </Text>

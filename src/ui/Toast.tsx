@@ -7,6 +7,13 @@ import {
   View,
 } from 'react-native';
 import { COLORS } from '../theme';
+import {
+  AlertTriangleIcon,
+  ZapIcon,
+  CheckIcon,
+  InfoIcon,
+  CloseIcon,
+} from './Icons';
 
 export type ToastType = 'error' | 'warning' | 'success' | 'info';
 
@@ -36,12 +43,14 @@ const BORDER_BY_TYPE: Record<ToastType, string> = {
   info: COLORS.info,
 };
 
-const ICON_BY_TYPE: Record<ToastType, string> = {
-  error: '⚠️',
-  warning: '⚡',
-  success: '✓',
-  info: 'ℹ️',
-};
+function renderToastIcon(type: ToastType) {
+  switch (type) {
+    case 'error': return <AlertTriangleIcon size={22} color={COLORS.danger} />;
+    case 'warning': return <ZapIcon size={22} color={COLORS.warn} />;
+    case 'success': return <CheckIcon size={22} color={COLORS.accent} />;
+    default: return <InfoIcon size={22} color={COLORS.info} />;
+  }
+}
 
 export function ToastContainer() {
   const [current, setCurrent] = useState<ToastMessage | null>(null);
@@ -115,14 +124,14 @@ export function ToastContainer() {
         onPress={hideToast}
         style={styles.inner}
       >
-        <Text style={styles.icon}>{ICON_BY_TYPE[current.type] || 'ℹ️'}</Text>
+        <View style={styles.iconWrap}>{renderToastIcon(current.type)}</View>
         <View style={styles.textContainer}>
           <Text style={styles.title}>{current.title}</Text>
           {current.message ? (
             <Text style={styles.message}>{current.message}</Text>
           ) : null}
         </View>
-        <Text style={styles.close}>✕</Text>
+        <View style={styles.closeWrap}><CloseIcon size={14} color="#94a3b8" /></View>
       </TouchableOpacity>
     </Animated.View>
   );
@@ -151,8 +160,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     gap: 10,
   },
-  icon: {
-    fontSize: 20,
+  iconWrap: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   textContainer: {
     flex: 1,
@@ -168,10 +178,9 @@ const styles = StyleSheet.create({
     marginTop: 2,
     lineHeight: 16,
   },
-  close: {
-    color: '#94a3b8',
-    fontSize: 13,
-    fontWeight: 'bold',
+  closeWrap: {
+    justifyContent: 'center',
+    alignItems: 'center',
     padding: 4,
   },
 });

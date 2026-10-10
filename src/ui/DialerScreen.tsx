@@ -7,6 +7,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
+import { MicIcon, MicOffIcon, SpeakerIcon, CloseIcon, BackspaceIcon, PhoneIcon } from './Icons';
 import { SipState } from '../sip/sipService';
 
 type Props = {
@@ -106,7 +107,9 @@ export function DialerScreen({
               style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
               onPress={onToggleMute}
             >
-              <Text style={styles.controlBtnIcon}>{isMuted ? '🔇' : '🎙️'}</Text>
+              <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                {isMuted ? <MicOffIcon size={22} color="#f87171" /> : <MicIcon size={22} color="#ffffff" />}
+              </View>
               <Text style={styles.controlBtnText}>{isMuted ? 'Unmute' : 'Mute'}</Text>
             </TouchableOpacity>
 
@@ -114,13 +117,15 @@ export function DialerScreen({
               style={[styles.controlBtn, isSpeaker && styles.controlBtnActive]}
               onPress={onToggleSpeaker}
             >
-              <Text style={styles.controlBtnIcon}>{isSpeaker ? '🔊' : '🔈'}</Text>
+              <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                <SpeakerIcon size={22} color={isSpeaker ? '#38bdf8' : '#ffffff'} />
+              </View>
               <Text style={styles.controlBtnText}>{isSpeaker ? 'Speaker' : 'Earpiece'}</Text>
             </TouchableOpacity>
           </View>
 
           <TouchableOpacity style={styles.hangupBtn} onPress={onHangup}>
-            <Text style={styles.hangupIcon}>✕</Text>
+            <CloseIcon size={24} color="#ffffff" />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -149,7 +154,7 @@ export function DialerScreen({
         </Text>
         {digits.length > 0 && (
           <TouchableOpacity style={styles.backspaceBtn} onPress={handleBackspace}>
-            <Text style={styles.backspaceIcon}>⌫</Text>
+            <BackspaceIcon size={22} color='#a1a1aa' />
           </TouchableOpacity>
         )}
       </View>
@@ -175,7 +180,7 @@ export function DialerScreen({
           onPress={handleCall}
           disabled={!digits}
         >
-          <Text style={styles.callBtnIcon}>📞</Text>
+          <PhoneIcon size={26} color='#ffffff' />
         </TouchableOpacity>
       </View>
     </SafeAreaView>

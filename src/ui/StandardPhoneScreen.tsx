@@ -2,8 +2,11 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Alert,
   Animated,
+  Dimensions,
   FlatList,
+  LayoutAnimation,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -11,14 +14,21 @@ import {
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  UIManager,
   View,
   PanResponder,
 } from 'react-native';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, CodecPreference } from '../storage/store';
 import { SipState, ActiveCall } from '../sip/JsSipService';
 import {
+  CloseIcon,
   PhoneIcon,
   ContactsIcon,
   StarIcon,
@@ -283,6 +293,79 @@ const DIALPAD_KEYS = [
   { digit: '#', sub: '(W)' },
 ];
 
+function AnimatedDialpadKey({
+  k,
+  isConfigured,
+  speedTarget,
+  onPress,
+  onLongPress,
+}: {
+  k: { digit: string; sub?: string };
+  isConfigured: boolean;
+  speedTarget?: string;
+  onPress: () => void;
+  onLongPress: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  const handlePressIn = () => {
+    Animated.spring(scale, {
+      toValue: 0.88,
+      speed: 60,
+      bounciness: 4,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scale, {
+      toValue: 1.0,
+      speed: 35,
+      bounciness: 8,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  return (
+    <Animated.View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', margin: 4, transform: [{ scale }] }}>
+      <TouchableOpacity
+        style={styles.keyBtn}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={450}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel={
+          isConfigured
+            ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
+            : `Digit ${k.digit}`
+        }
+      >
+        <Text style={styles.keyNumber}>{k.digit}</Text>
+        <View style={styles.keySubRow}>
+          {k.digit === '1' ? (
+            <VoicemailIcon
+              size={14}
+              color={isConfigured ? '#38bdf8' : '#a1a1aa'}
+            />
+          ) : k.sub ? (
+            <Text
+              style={[
+                styles.keyLetters,
+                isConfigured && styles.keyLettersActive,
+              ]}
+            >
+              {k.sub}
+            </Text>
+          ) : null}
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
 export function StandardPhoneScreen({
   account,
   state,
@@ -350,6 +433,35 @@ export function StandardPhoneScreen({
 
   // Recents History Filter (All vs Missed)
   const [historyFilter, setHistoryFilter] = useState<'all' | 'missed'>('all');
+  const tabPagerRef = useRef<any>(null);
+  const tabIndicatorAnim = useRef(new Animated.Value(0)).current;
+
+  const handleTabPress = (tab: BottomTab) => {
+    setActiveTab(tab);
+    const idx = tab === 'phone' ? 0 : tab === 'contacts' ? 1 : 2;
+    Animated.spring(tabIndicatorAnim, {
+      toValue: idx,
+      speed: 25,
+      bounciness: 4,
+      useNativeDriver: true,
+    }).start();
+    tabPagerRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: true });
+  };
+
+  const handleScrollEnd = (e: { nativeEvent: { contentOffset: { x: number } } }) => {
+    const offsetX = e.nativeEvent.contentOffset.x;
+    const idx = Math.round(offsetX / SCREEN_WIDTH);
+    const tabOrder: BottomTab[] = ['phone', 'contacts', 'favourites'];
+    if (tabOrder[idx] && tabOrder[idx] !== activeTab) {
+      setActiveTab(tabOrder[idx]);
+      Animated.spring(tabIndicatorAnim, {
+        toValue: idx,
+        speed: 25,
+        bounciness: 4,
+        useNativeDriver: true,
+      }).start();
+    }
+  };
   const handleSpeakerChange = (val: number) => {
     setEditSpeakerVol(val);
     const p = onUpdateVolume?.('speaker', val);
@@ -681,7 +793,7 @@ export function StandardPhoneScreen({
                   onPress={() => setShowInCallVolumeModal(false)}
                   style={styles.transferDismissBtn}
                 >
-                  <Text style={styles.transferDismissText}>✕</Text>
+                  <CloseIcon size={18} color="#94a3b8" />
                 </TouchableOpacity>
               </View>
               <UnifiedAudioControls
@@ -797,7 +909,7 @@ export function StandardPhoneScreen({
 
         <View style={styles.hangupRow}>
           <TouchableOpacity style={styles.hangupBtn} onPress={onHangup}>
-            <Text style={styles.hangupBtnText}>✕</Text>
+            <CloseIcon size={28} color="#ffffff" />
           </TouchableOpacity>
         </View>
 
@@ -823,7 +935,7 @@ export function StandardPhoneScreen({
                       onPress={() => setShowTransferModal(false)}
                       style={styles.transferDismissBtn}
                     >
-                      <Text style={styles.transferDismissText}>✕</Text>
+                      <CloseIcon size={18} color="#94a3b8" />
                     </TouchableOpacity>
                   </View>
 
@@ -1018,8 +1130,19 @@ export function StandardPhoneScreen({
         </>
       )}
 
-      {/* Main Tab Views */}
-      {activeTab === 'phone' && (
+      {/* Main Tab Views (Fluid Horizontal Swipeable Pager) */}
+      <ScrollView
+        ref={tabPagerRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        bounces={false}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ width: SCREEN_WIDTH * 3 }}
+        onMomentumScrollEnd={handleScrollEnd}
+      >
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
         <View style={styles.phoneTabContent}>
           {/* Top: All / Missed Calls Filter Segmented Switch */}
           <View style={styles.historyFilterRow}>
@@ -1321,7 +1444,10 @@ export function StandardPhoneScreen({
               {/* Pull Down / Pull Up Dialpad Toggle Button */}
               <TouchableOpacity
                 style={styles.dialAuxBtn}
-                onPress={() => setIsDialpadVisible(!isDialpadVisible)}
+                onPress={() => {
+                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  setIsDialpadVisible(!isDialpadVisible);
+                }}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 activeOpacity={0.6}
                 accessibilityRole="button"
@@ -1336,9 +1462,9 @@ export function StandardPhoneScreen({
             </View>
           </View>
         </View>
-      )}
+        </View>
 
-      {activeTab === 'contacts' && (
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
         <View style={styles.contactsContent}>
           <View style={styles.contactsHeaderRow}>
             <TextInput
@@ -1381,9 +1507,9 @@ export function StandardPhoneScreen({
             )}
           />
         </View>
-      )}
+        </View>
 
-      {activeTab === 'favourites' && (
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
         <View style={styles.contactsContent}>
           <FlatList
             data={contacts.filter((c) => c.favorite)}
@@ -1408,15 +1534,34 @@ export function StandardPhoneScreen({
               </View>
             )}
           />
-
         </View>
-      )}
+        </View>
+      </ScrollView>
 
       {/* Bottom Navigation Bar */}
       <View style={styles.bottomNav}>
+        <Animated.View
+          style={[
+            styles.tabIndicatorPill,
+            {
+              transform: [
+                {
+                  translateX: tabIndicatorAnim.interpolate({
+                    inputRange: [0, 1, 2],
+                    outputRange: [
+                      (SCREEN_WIDTH / 3) * 0 + (SCREEN_WIDTH / 3 - 48) / 2,
+                      (SCREEN_WIDTH / 3) * 1 + (SCREEN_WIDTH / 3 - 48) / 2,
+                      (SCREEN_WIDTH / 3) * 2 + (SCREEN_WIDTH / 3 - 48) / 2,
+                    ],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
         <TouchableOpacity
           style={styles.navItem}
-          onPress={() => setActiveTab('phone')}
+          onPress={() => handleTabPress('phone')}
         >
           <PhoneIcon size={20} color={activeTab === 'phone' ? '#38bdf8' : '#71717a'} />
           <Text style={[styles.navLabel, activeTab === 'phone' && styles.navLabelActive]}>Phone</Text>
@@ -1424,7 +1569,7 @@ export function StandardPhoneScreen({
 
         <TouchableOpacity
           style={styles.navItem}
-          onPress={() => setActiveTab('contacts')}
+          onPress={() => handleTabPress('contacts')}
         >
           <ContactsIcon size={20} color={activeTab === 'contacts' ? '#38bdf8' : '#71717a'} />
           <Text style={[styles.navLabel, activeTab === 'contacts' && styles.navLabelActive]}>Contacts</Text>
@@ -1432,7 +1577,7 @@ export function StandardPhoneScreen({
 
         <TouchableOpacity
           style={styles.navItem}
-          onPress={() => setActiveTab('favourites')}
+          onPress={() => handleTabPress('favourites')}
         >
           <StarIcon size={20} color={activeTab === 'favourites' ? '#38bdf8' : '#71717a'} fill={activeTab === 'favourites' ? '#38bdf8' : 'none'} />
           <Text style={[styles.navLabel, activeTab === 'favourites' && styles.navLabelActive]}>Favourites</Text>
@@ -1699,7 +1844,7 @@ export function StandardPhoneScreen({
                     onPress={() => setShowCallDetailsModal(false)}
                     style={styles.transferDismissBtn}
                   >
-                    <Text style={styles.transferDismissText}>✕</Text>
+                    <CloseIcon size={18} color="#94a3b8" />
                   </TouchableOpacity>
                 </View>
 
@@ -2139,6 +2284,15 @@ const styles = StyleSheet.create({
     borderTopColor: '#18181b',
     borderTopWidth: 1,
     backgroundColor: '#000000',
+    position: 'relative',
+  },
+  tabIndicatorPill: {
+    position: 'absolute',
+    top: 0,
+    width: 48,
+    height: 3,
+    backgroundColor: '#38bdf8',
+    borderRadius: 2,
   },
   navItem: {
     alignItems: 'center',

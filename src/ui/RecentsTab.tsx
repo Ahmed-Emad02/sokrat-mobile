@@ -8,6 +8,12 @@ import {
 } from 'react-native';
 import { COLORS } from '../theme';
 import { CallRecord } from '../storage/store';
+import {
+  PhoneIcon,
+  CallIncomingIcon,
+  CallOutgoingIcon,
+  CallMissedIcon,
+} from './Icons';
 
 type Props = {
   calls: CallRecord[];
@@ -32,14 +38,14 @@ export function RecentsTab({ calls, onCallNumber, onClearHistory }: Props) {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const getDirectionIcon = (dir: CallRecord['direction']) => {
+  const renderDirectionIcon = (dir: CallRecord['direction']) => {
     switch (dir) {
       case 'inbound':
-        return { icon: '↙', color: COLORS.accent };
+        return <CallIncomingIcon size={16} color={COLORS.accent} />;
       case 'outbound':
-        return { icon: '↗', color: COLORS.info };
+        return <CallOutgoingIcon size={16} color={COLORS.info} />;
       case 'missed':
-        return { icon: '✕', color: COLORS.danger };
+        return <CallMissedIcon size={16} color={COLORS.danger} />;
     }
   };
 
@@ -56,7 +62,7 @@ export function RecentsTab({ calls, onCallNumber, onClearHistory }: Props) {
 
       {calls.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>📞</Text>
+          <PhoneIcon size={44} color={COLORS.textMuted} />
           <Text style={styles.emptyTitle}>No call logs yet</Text>
           <Text style={styles.emptySub}>Your recent calls will show up here</Text>
         </View>
@@ -66,14 +72,19 @@ export function RecentsTab({ calls, onCallNumber, onClearHistory }: Props) {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => {
-            const { icon, color } = getDirectionIcon(item.direction);
+            const circleBorderColor =
+              item.direction === 'inbound'
+                ? COLORS.accent
+                : item.direction === 'outbound'
+                ? COLORS.info
+                : COLORS.danger;
             return (
               <TouchableOpacity
                 style={styles.callItem}
                 onPress={() => onCallNumber(item.number)}
               >
-                <View style={[styles.iconCircle, { borderColor: color }]}>
-                  <Text style={[styles.dirIcon, { color }]}>{icon}</Text>
+                <View style={[styles.iconCircle, { borderColor: circleBorderColor }]}>
+                  {renderDirectionIcon(item.direction)}
                 </View>
 
                 <View style={styles.infoCol}>
@@ -94,7 +105,7 @@ export function RecentsTab({ calls, onCallNumber, onClearHistory }: Props) {
                   style={styles.callActionBtn}
                   onPress={() => onCallNumber(item.number)}
                 >
-                  <Text style={styles.callActionIcon}>📞</Text>
+                  <PhoneIcon size={16} color='#ffffff' />
                 </TouchableOpacity>
               </TouchableOpacity>
             );

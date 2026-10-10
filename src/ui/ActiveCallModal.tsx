@@ -10,6 +10,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { ActiveCall } from '../sip/JsSipService';
+import {
+  MicIcon,
+  MicOffIcon,
+  KeypadIcon,
+  SpeakerIcon,
+  PauseIcon,
+  PlayIcon,
+  TransferIcon,
+  PlusIcon,
+  CloseIcon,
+} from './Icons';
 
 type Props = {
   call: ActiveCall | null;
@@ -133,7 +144,9 @@ export function ActiveCallModal({
                 style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
                 onPress={onToggleMute}
               >
-                <Text style={styles.controlIcon}>{isMuted ? '🔇' : '🎙️'}</Text>
+                <View style={styles.controlIconWrap}>
+                  {isMuted ? <MicOffIcon size={24} color="#f87171" /> : <MicIcon size={24} color="#ffffff" />}
+                </View>
                 <Text style={styles.controlLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
               </TouchableOpacity>
 
@@ -142,7 +155,9 @@ export function ActiveCallModal({
                 style={styles.controlBtn}
                 onPress={() => setShowDtmf(true)}
               >
-                <Text style={styles.controlIcon}>🔢</Text>
+                <View style={styles.controlIconWrap}>
+                  <KeypadIcon size={24} color="#ffffff" />
+                </View>
                 <Text style={styles.controlLabel}>Keypad</Text>
               </TouchableOpacity>
 
@@ -151,7 +166,9 @@ export function ActiveCallModal({
                 style={[styles.controlBtn, isSpeaker && styles.controlBtnActive]}
                 onPress={onToggleSpeaker}
               >
-                <Text style={styles.controlIcon}>{isSpeaker ? '🔊' : '🔈'}</Text>
+                <View style={styles.controlIconWrap}>
+                  <SpeakerIcon size={24} color={isSpeaker ? '#38bdf8' : '#ffffff'} />
+                </View>
                 <Text style={styles.controlLabel}>{isSpeaker ? 'Speaker' : 'Earpiece'}</Text>
               </TouchableOpacity>
             </View>
@@ -162,7 +179,9 @@ export function ActiveCallModal({
                 style={[styles.controlBtn, isHeld && styles.controlBtnHoldActive]}
                 onPress={onToggleHold}
               >
-                <Text style={styles.controlIcon}>{isHeld ? '▶️' : '⏸️'}</Text>
+                <View style={styles.controlIconWrap}>
+                  {isHeld ? <PlayIcon size={24} color="#10b981" /> : <PauseIcon size={24} color="#ffffff" />}
+                </View>
                 <Text style={styles.controlLabel}>{isHeld ? 'Resume' : 'Hold'}</Text>
               </TouchableOpacity>
 
@@ -171,7 +190,9 @@ export function ActiveCallModal({
                 style={styles.controlBtn}
                 onPress={() => setShowTransfer(true)}
               >
-                <Text style={styles.controlIcon}>↪️</Text>
+                <View style={styles.controlIconWrap}>
+                  <TransferIcon size={24} color="#ffffff" />
+                </View>
                 <Text style={styles.controlLabel}>Transfer</Text>
               </TouchableOpacity>
 
@@ -180,7 +201,9 @@ export function ActiveCallModal({
                 style={[styles.controlBtn, { opacity: 0.4 }]}
                 disabled={true}
               >
-                <Text style={styles.controlIcon}>➕</Text>
+                <View style={styles.controlIconWrap}>
+                  <PlusIcon size={24} color="#a1a1aa" />
+                </View>
                 <Text style={styles.controlLabel}>Add Call</Text>
               </TouchableOpacity>
             </View>
@@ -190,10 +213,9 @@ export function ActiveCallModal({
         {/* Big Red Hangup Button */}
         <View style={styles.bottomSection}>
           <TouchableOpacity style={styles.hangupBtn} onPress={onHangup}>
-            <Text style={styles.hangupIcon}>✕</Text>
+            <CloseIcon size={28} color="#ffffff" />
           </TouchableOpacity>
         </View>
-
         {/* Transfer Modal */}
         <Modal
           visible={showTransfer}
@@ -323,8 +345,11 @@ const styles = StyleSheet.create({
     borderColor: COLORS.warn,
     backgroundColor: '#78350f',
   },
-  controlIcon: {
-    fontSize: 24,
+  controlIconWrap: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   controlLabel: {
     color: COLORS.textDim,

@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import { COLORS } from '../theme';
+import { BackspaceIcon, PhoneIcon } from './Icons';
 
 type Props = {
   onCall: (target: string) => void;
@@ -70,7 +71,7 @@ export function DialerTab({ onCall, isRegistered }: Props) {
         />
         {digits.length > 0 && (
           <TouchableOpacity style={styles.backspaceBtn} onPress={handleBackspace}>
-            <Text style={styles.backspaceIcon}>⌫</Text>
+            <BackspaceIcon size={22} color="#a1a1aa" />
           </TouchableOpacity>
         )}
       </View>
@@ -109,7 +110,7 @@ export function DialerTab({ onCall, isRegistered }: Props) {
           onPress={handleCall}
           disabled={!digits || !isRegistered}
         >
-          <Text style={styles.callBtnIcon}>📞</Text>
+          <PhoneIcon size={26} color="#ffffff" />
         </TouchableOpacity>
       </View>
     </View>

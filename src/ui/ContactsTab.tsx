@@ -10,6 +10,12 @@ import {
 } from 'react-native';
 import { COLORS } from '../theme';
 import { Contact } from '../storage/store';
+import {
+  ContactsIcon,
+  StarIcon,
+  PhoneIcon,
+  TrashIcon,
+} from './Icons';
 
 type Props = {
   contacts: Contact[];
@@ -74,7 +80,7 @@ export function ContactsTab({
 
       {filtered.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>👥</Text>
+          <ContactsIcon size={44} color={COLORS.textMuted} />
           <Text style={styles.emptyTitle}>No contacts found</Text>
           <Text style={styles.emptySub}>Tap "+ Add" to save a new contact</Text>
         </View>
@@ -89,9 +95,11 @@ export function ContactsTab({
                 style={styles.favBtn}
                 onPress={() => onToggleFavorite(item.id)}
               >
-                <Text style={[styles.favIcon, item.favorite && styles.favActive]}>
-                  {item.favorite ? '★' : '☆'}
-                </Text>
+                <StarIcon
+                  size={18}
+                  color={item.favorite ? '#f59e0b' : '#71717a'}
+                  fill={item.favorite ? '#f59e0b' : 'none'}
+                />
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -107,14 +115,14 @@ export function ContactsTab({
                   style={styles.callBtn}
                   onPress={() => onCallContact(item.extension)}
                 >
-                  <Text style={styles.callIcon}>📞</Text>
+                  <PhoneIcon size={16} color="#ffffff" />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={styles.delBtn}
                   onPress={() => onDeleteContact(item.id)}
                 >
-                  <Text style={styles.delIcon}>🗑️</Text>
+                  <TrashIcon size={16} color="#ef4444" />
                 </TouchableOpacity>
               </View>
             </View>

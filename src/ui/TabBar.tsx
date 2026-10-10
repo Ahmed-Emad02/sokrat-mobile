@@ -1,6 +1,12 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { COLORS } from '../theme';
+import {
+  KeypadIcon,
+  HistoryIcon,
+  ContactsIcon,
+  SettingsIcon,
+} from './Icons';
 
 export type TabId = 'keypad' | 'recents' | 'contacts' | 'settings';
 
@@ -11,11 +17,20 @@ type Props = {
 };
 
 export function TabBar({ activeTab, onSelectTab, unreadMissedCount = 0 }: Props) {
-  const tabs: Array<{ id: TabId; label: string; icon: string }> = [
-    { id: 'keypad', label: 'Keypad', icon: '🔢' },
-    { id: 'recents', label: 'Recents', icon: '🕒' },
-    { id: 'contacts', label: 'Contacts', icon: '👥' },
-    { id: 'settings', label: 'Settings', icon: '⚙️' },
+  const renderTabIcon = (id: TabId, color: string) => {
+    switch (id) {
+      case 'keypad': return <KeypadIcon size={20} color={color} />;
+      case 'recents': return <HistoryIcon size={20} color={color} />;
+      case 'contacts': return <ContactsIcon size={20} color={color} />;
+      case 'settings': return <SettingsIcon size={20} color={color} />;
+    }
+  };
+
+  const tabs: Array<{ id: TabId; label: string }> = [
+    { id: 'keypad', label: 'Keypad' },
+    { id: 'recents', label: 'Recents' },
+    { id: 'contacts', label: 'Contacts' },
+    { id: 'settings', label: 'Settings' },
   ];
 
   return (
@@ -29,9 +44,9 @@ export function TabBar({ activeTab, onSelectTab, unreadMissedCount = 0 }: Props)
             onPress={() => onSelectTab(t.id)}
           >
             <View>
-              <Text style={[styles.tabIcon, isActive && styles.tabIconActive]}>
-                {t.icon}
-              </Text>
+              <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                {renderTabIcon(t.id, isActive ? COLORS.accent : COLORS.textMuted)}
+              </View>
               {t.id === 'recents' && unreadMissedCount > 0 && (
                 <View style={styles.badgeCircle}>
                   <Text style={styles.badgeText}>{unreadMissedCount}</Text>
