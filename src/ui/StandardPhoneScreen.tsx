@@ -30,6 +30,7 @@ import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, CodecP
 import { SipState, ActiveCall } from '../sip/JsSipService';
 import {
   CloseIcon,
+  PhoneDeclineIcon,
   PhoneIcon,
   ContactsIcon,
   StarIcon,
@@ -924,96 +925,175 @@ export function StandardPhoneScreen({
 
   // --- Active In-Call View ---
   if (activeCall) {
+    const isCallingState = activeCall.status === 'calling';
+    const isHeldState = activeCall.isHeld;
+    const isConnectedState = activeCall.status === 'active' && !isHeldState;
+
     return (
       <SafeAreaView style={styles.inCallContainer}>
+        {/* Top Status & Hero Info */}
         <View style={styles.inCallTop}>
-          <Text style={styles.inCallLabel}>
-            {activeCall.isHeld ? 'CALL ON HOLD' : activeCall.status === 'active' ? 'CONNECTED' : 'CALLING…'}
-          </Text>
+          <View style={styles.inCallBadgePill}>
+            <View
+              style={[
+                styles.inCallBadgeDot,
+                isCallingState && styles.inCallBadgeDotCalling,
+                isHeldState && styles.inCallBadgeDotHeld,
+              ]}
+            />
+            <Text style={styles.inCallBadgeText}>
+              {isHeldState ? 'CALL ON HOLD' : isConnectedState ? 'CONNECTED • HD AUDIO' : 'CALLING…'}
+            </Text>
+          </View>
+
           <Text style={styles.inCallTimer}>{formatCallTime(callTimerSecs)}</Text>
+
           <View style={styles.inCallAvatar}>
             <Text style={styles.inCallAvatarText}>
               {activeCall.targetName.charAt(0) || activeCall.target.charAt(0) || '?'}
             </Text>
           </View>
-          <Text style={styles.inCallName}>{activeCall.targetName}</Text>
-          <Text style={styles.inCallNumber}>{activeCall.target}</Text>
+
+          <Text style={styles.inCallName} numberOfLines={1}>
+            {activeCall.targetName || activeCall.target}
+          </Text>
+          <View style={styles.inCallNumberBadge}>
+            <PhoneIcon size={12} color="#38bdf8" />
+            <Text style={styles.inCallNumber}>Ext {activeCall.target}</Text>
+          </View>
         </View>
 
+        {/* DTMF Dialpad or 6-Button Glass Control Grid */}
         {showInCallDtmf ? (
           <View style={styles.dtmfGridContainer}>
             <View style={styles.dtmfGrid}>
               {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((k) => (
-                <TouchableOpacity key={k} style={styles.dtmfKey} onPress={() => onSendDtmf(k)}>
+                <TouchableOpacity key={k} style={styles.dtmfKey} onPress={() => onSendDtmf(k)} delayPressIn={0}>
                   <Text style={styles.dtmfKeyText}>{k}</Text>
                 </TouchableOpacity>
               ))}
             </View>
-            <TouchableOpacity style={styles.dtmfCloseBtn} onPress={() => setShowInCallDtmf(false)}>
+            <TouchableOpacity style={styles.dtmfCloseBtn} onPress={() => setShowInCallDtmf(false)} delayPressIn={0}>
               <Text style={styles.dtmfCloseText}>Hide Keypad</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={styles.inCallControls}>
+          <View style={styles.inCallControlsCard}>
             <View style={styles.inCallRow}>
-              <TouchableOpacity
-                style={[styles.inCallBtn, activeCall.isMuted && styles.inCallBtnActive]}
-                onPress={onToggleMute}
-              >
-                {activeCall.isMuted ? <MicOffIcon size={26} color="#38bdf8" /> : <MicIcon size={26} color="#ffffff" />}
-                <Text style={[styles.inCallBtnLabel, activeCall.isMuted && styles.inCallBtnLabelActive]}>
+              {/* Mute Button */}
+              <View style={styles.inCallBtnCol}>
+                <TouchableOpacity
+                  style={[styles.inCallBtn, activeCall.isMuted && styles.inCallBtnMutedActive]}
+                  onPress={onToggleMute}
+                  delayPressIn={0}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={activeCall.isMuted ? 'Unmute microphone' : 'Mute microphone'}
+                >
+                  {activeCall.isMuted ? <MicOffIcon size={26} color="#ef4444" /> : <MicIcon size={26} color="#ffffff" />}
+                </TouchableOpacity>
+                <Text style={[styles.inCallBtnLabel, activeCall.isMuted && { color: '#ef4444' }]}>
                   {activeCall.isMuted ? 'Unmute' : 'Mute'}
                 </Text>
-              </TouchableOpacity>
+              </View>
 
-              <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowInCallDtmf(true)}>
-                <KeypadIcon size={26} color="#ffffff" />
+              {/* Keypad DTMF Button */}
+              <View style={styles.inCallBtnCol}>
+                <TouchableOpacity
+                  style={styles.inCallBtn}
+                  onPress={() => setShowInCallDtmf(true)}
+                  delayPressIn={0}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Show dialpad"
+                >
+                  <KeypadIcon size={26} color="#ffffff" />
+                </TouchableOpacity>
                 <Text style={styles.inCallBtnLabel}>Keypad</Text>
-              </TouchableOpacity>
+              </View>
 
-              <TouchableOpacity
-                style={[styles.inCallBtn, isSpeakerOn && styles.inCallBtnActive]}
-                onPress={onToggleSpeaker}
-              >
-                <SpeakerIcon size={26} color={isSpeakerOn ? '#38bdf8' : '#ffffff'} />
-                <Text style={[styles.inCallBtnLabel, isSpeakerOn && styles.inCallBtnLabelActive]}>
-                  {isSpeakerOn ? 'Speaker On' : 'Speaker'}
+              {/* Speaker Button */}
+              <View style={styles.inCallBtnCol}>
+                <TouchableOpacity
+                  style={[styles.inCallBtn, isSpeakerOn && styles.inCallBtnSpeakerActive]}
+                  onPress={onToggleSpeaker}
+                  delayPressIn={0}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={isSpeakerOn ? 'Switch to earpiece' : 'Switch to loudspeaker'}
+                >
+                  <SpeakerIcon size={26} color={isSpeakerOn ? '#38bdf8' : '#ffffff'} />
+                </TouchableOpacity>
+                <Text style={[styles.inCallBtnLabel, isSpeakerOn && { color: '#38bdf8' }]}>
+                  {isSpeakerOn ? 'Speaker' : 'Earpiece'}
                 </Text>
-              </TouchableOpacity>
+              </View>
             </View>
 
             <View style={styles.inCallRow}>
-              <TouchableOpacity
-                style={[styles.inCallBtn, activeCall.isHeld && styles.inCallBtnActive]}
-                onPress={onToggleHold}
-              >
-                {activeCall.isHeld ? <PlayIcon size={26} color="#38bdf8" /> : <PauseIcon size={26} color="#ffffff" />}
-                <Text style={[styles.inCallBtnLabel, activeCall.isHeld && styles.inCallBtnLabelActive]}>
+              {/* Hold / Resume Button */}
+              <View style={styles.inCallBtnCol}>
+                <TouchableOpacity
+                  style={[styles.inCallBtn, activeCall.isHeld && styles.inCallBtnHoldActive]}
+                  onPress={onToggleHold}
+                  delayPressIn={0}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={activeCall.isHeld ? 'Resume call' : 'Hold call'}
+                >
+                  {activeCall.isHeld ? <PlayIcon size={26} color="#f59e0b" /> : <PauseIcon size={26} color="#ffffff" />}
+                </TouchableOpacity>
+                <Text style={[styles.inCallBtnLabel, activeCall.isHeld && { color: '#f59e0b' }]}>
                   {activeCall.isHeld ? 'Resume' : 'Hold'}
                 </Text>
-              </TouchableOpacity>
+              </View>
 
-              <TouchableOpacity style={styles.inCallBtn} onPress={() => setShowTransferModal(true)}>
-                <TransferIcon size={26} color="#ffffff" />
+              {/* Transfer Button */}
+              <View style={styles.inCallBtnCol}>
+                <TouchableOpacity
+                  style={styles.inCallBtn}
+                  onPress={() => setShowTransferModal(true)}
+                  delayPressIn={0}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Transfer call"
+                >
+                  <TransferIcon size={26} color="#ffffff" />
+                </TouchableOpacity>
                 <Text style={styles.inCallBtnLabel}>Transfer</Text>
-              </TouchableOpacity>
+              </View>
 
-              <TouchableOpacity
-                style={[styles.inCallBtn, showInCallVolumeModal && styles.inCallBtnActive]}
-                onPress={() => setShowInCallVolumeModal(true)}
-              >
-                <SlidersIcon size={26} color={showInCallVolumeModal ? '#38bdf8' : '#ffffff'} />
-                <Text style={[styles.inCallBtnLabel, showInCallVolumeModal && styles.inCallBtnLabelActive]}>
+              {/* Volume Adjustment Button */}
+              <View style={styles.inCallBtnCol}>
+                <TouchableOpacity
+                  style={[styles.inCallBtn, showInCallVolumeModal && styles.inCallBtnActive]}
+                  onPress={() => setShowInCallVolumeModal(true)}
+                  delayPressIn={0}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="In-call volume"
+                >
+                  <SlidersIcon size={26} color={showInCallVolumeModal ? '#38bdf8' : '#ffffff'} />
+                </TouchableOpacity>
+                <Text style={[styles.inCallBtnLabel, showInCallVolumeModal && { color: '#38bdf8' }]}>
                   Volume
                 </Text>
-              </TouchableOpacity>
+              </View>
             </View>
           </View>
         )}
 
+        {/* End Call Floating Action */}
         <View style={styles.hangupRow}>
-          <TouchableOpacity style={styles.hangupBtn} onPress={onHangup}>
-            <CloseIcon size={28} color="#ffffff" />
+          <TouchableOpacity
+            style={styles.hangupBtn}
+            onPress={onHangup}
+            delayPressIn={0}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Hang up call"
+          >
+            <PhoneDeclineIcon size={34} color="#ffffff" />
           </TouchableOpacity>
         </View>
 
@@ -3002,85 +3082,147 @@ const styles = StyleSheet.create({
   // In-Call
   inCallContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#09090b',
     justifyContent: 'space-between',
-    paddingVertical: 32,
-    paddingHorizontal: 24,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
   },
   inCallTop: {
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 10,
   },
-  inCallLabel: {
+  inCallBadgePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(24, 24, 27, 0.9)',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginBottom: 10,
+  },
+  inCallBadgeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+  },
+  inCallBadgeDotCalling: {
+    backgroundColor: '#38bdf8',
+  },
+  inCallBadgeDotHeld: {
+    backgroundColor: '#f59e0b',
+  },
+  inCallBadgeText: {
     color: '#a1a1aa',
-    fontSize: 12,
-    letterSpacing: 3,
+    fontSize: 11,
     fontWeight: '700',
+    letterSpacing: 2,
   },
   inCallTimer: {
-    color: '#38bdf8',
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: 6,
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '800',
+    marginBottom: 20,
     fontVariant: ['tabular-nums'],
+    letterSpacing: 1,
   },
   inCallAvatar: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 114,
+    height: 114,
+    borderRadius: 57,
     backgroundColor: '#18181b',
     borderColor: '#38bdf8',
-    borderWidth: 2,
+    borderWidth: 2.5,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 20,
+    marginBottom: 18,
+    elevation: 12,
+    shadowColor: '#38bdf8',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
   },
   inCallAvatarText: {
     color: '#38bdf8',
-    fontSize: 40,
-    fontWeight: '700',
+    fontSize: 48,
+    fontWeight: '800',
   },
   inCallName: {
     color: '#ffffff',
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: '700',
-    marginTop: 14,
+    textAlign: 'center',
+    marginBottom: 6,
+    paddingHorizontal: 20,
+  },
+  inCallNumberBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#18181b',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    borderRadius: 14,
   },
   inCallNumber: {
     color: '#a1a1aa',
-    fontSize: 16,
-    marginTop: 4,
+    fontSize: 14,
+    fontWeight: '600',
   },
-  inCallControls: {
-    gap: 20,
+  inCallControlsCard: {
+    backgroundColor: 'rgba(24, 24, 27, 0.85)',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    borderRadius: 32,
+    paddingVertical: 20,
+    paddingHorizontal: 12,
+    gap: 18,
+    marginHorizontal: 8,
   },
   inCallRow: {
     flexDirection: 'row',
     justifyContent: 'space-around',
+    alignItems: 'center',
+  },
+  inCallBtnCol: {
+    alignItems: 'center',
+    gap: 6,
   },
   inCallBtn: {
     backgroundColor: '#18181b',
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     alignItems: 'center',
     justifyContent: 'center',
     borderColor: '#27272a',
     borderWidth: 1,
   },
+  inCallBtnMutedActive: {
+    borderColor: '#ef4444',
+    backgroundColor: '#7f1d1d',
+  },
+  inCallBtnSpeakerActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#0369a1',
+  },
+  inCallBtnHoldActive: {
+    borderColor: '#f59e0b',
+    backgroundColor: '#78350f',
+  },
   inCallBtnActive: {
     borderColor: '#38bdf8',
-    backgroundColor: '#082f49',
+    backgroundColor: '#0369a1',
   },
   inCallBtnLabel: {
     color: '#a1a1aa',
-    fontSize: 11,
-    marginTop: 4,
+    fontSize: 12,
     fontWeight: '600',
-  },
-  inCallBtnLabelActive: {
-    color: '#38bdf8',
-    fontWeight: '700',
   },
   contactsHeaderRow: {
     flexDirection: 'row',

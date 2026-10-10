@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
-import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert } from 'react-native';
+import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus } from 'react-native';
 import { COLORS } from './src/theme';
 import {
   JsSipService,
@@ -33,6 +33,8 @@ import {
   acknowledgeNativeCallAction,
   clearNativeCallWindow,
   dismissNativeCallNotification,
+  showOngoingCallNotification,
+  dismissOngoingCallNotification,
   getPendingNativeCalls,
   recordNativeCallAction,
   subscribeNativeCallAction,
@@ -108,6 +110,28 @@ export default function App() {
   }, [account]);
   const saveVolumeTimerRef = useRef<number | null>(null);
   const [isAuthLoaded, setIsAuthLoaded] = useState(false);
+  useEffect(() => {
+    const handleAppState = (nextAppState: AppStateStatus) => {
+      const currentCall = activeCallRef.current;
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        if (currentCall) {
+          showOngoingCallNotification(
+            currentCall.id,
+            currentCall.targetName || currentCall.target,
+            currentCall.status === 'active'
+              ? `Call in progress • Ext ${currentCall.target}`
+              : `Dialing • Ext ${currentCall.target}`,
+            currentCall.startTime || Date.now()
+          );
+        }
+      } else if (nextAppState === 'active') {
+        dismissOngoingCallNotification();
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppState);
+    return () => sub.remove();
+  }, []);
   const [uiState, setUiState] = useState<SipState>('disconnected');
   const [callsHistory, setCallsHistory] = useState<CallRecord[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -265,6 +289,7 @@ export default function App() {
         }
       },
       onCallEnded: (callId, cause, details) => {
+        dismissOngoingCallNotification();
         if (cause && cause !== 'NORMAL_CLEARING' && cause !== 'Canceled by User' && cause !== 'Terminated') {
           const reason = formatCallFailureReason(cause, details);
           showToast({ type: 'error', title: reason.title, message: reason.message });
@@ -517,6 +542,7 @@ export default function App() {
   };
 
   const handleHangup = async () => {
+    dismissOngoingCallNotification();
     const callId = activeCallUUIDRef.current;
     if (callId && activeCallRef.current?.status !== 'active') {
       await endSipCall(callId);

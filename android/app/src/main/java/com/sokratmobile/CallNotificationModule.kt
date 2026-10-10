@@ -36,6 +36,22 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     }
 
     @ReactMethod
+    fun showOngoingCallNotification(callId: String, title: String, subtitle: String, startTimeMs: Double) {
+        IncomingCallNotificationHelper.showOngoingCallNotification(
+            reactApplicationContext,
+            callId,
+            title,
+            subtitle,
+            startTimeMs.toLong()
+        )
+    }
+
+    @ReactMethod
+    fun dismissOngoingCallNotification() {
+        IncomingCallNotificationHelper.dismissOngoingCallNotification(reactApplicationContext)
+    }
+
+    @ReactMethod
     fun clearCallWindow() {
         MainActivity.clearIncomingCallWindow()
     }

@@ -15,7 +15,10 @@ import androidx.core.app.NotificationManagerCompat
 object IncomingCallNotificationHelper {
     const val CHANNEL_ID = "sokrat_incoming_calls"
     const val CHANNEL_NAME = "Incoming Calls"
+    const val ONGOING_CHANNEL_ID = "sokrat_ongoing_calls"
+    const val ONGOING_CHANNEL_NAME = "Ongoing Calls"
     private const val NOTIFICATION_ID_BASE = 2000
+    private const val ONGOING_NOTIFICATION_ID = 2099
     private var screenWakeLock: android.os.PowerManager.WakeLock? = null
 
     @Synchronized
@@ -76,6 +79,105 @@ object IncomingCallNotificationHelper {
             enableLights(true)
         }
         manager.createNotificationChannel(channel)
+    }
+
+    fun createOngoingNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return
+        if (manager.getNotificationChannel(ONGOING_CHANNEL_ID) != null) return
+
+        val channel = NotificationChannel(
+            ONGOING_CHANNEL_ID,
+            ONGOING_CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Sokrat VOICE active call indicator"
+            setShowBadge(false)
+            enableLights(false)
+            enableVibration(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    fun showOngoingCallNotification(
+        context: Context,
+        callId: String,
+        title: String,
+        subtitle: String,
+        startTimeMs: Long
+    ) {
+        createOngoingNotificationChannel(context)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            action = "com.sokratmobile.ACTION_SHOW_CALL"
+            putExtra("callId", callId)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        }
+        val openPendingIntent = PendingIntent.getActivity(
+            context,
+            requestCode(callId, 10),
+            openIntent,
+            flags
+        )
+
+        val hangupIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = "com.sokratmobile.ACTION_DECLINE_CALL"
+            putExtra("callId", callId)
+        }
+        val hangupPendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode(callId, 11),
+            hangupIntent,
+            flags
+        )
+
+        val effectiveWhen = if (startTimeMs > 0) startTimeMs else System.currentTimeMillis()
+
+        val notification = NotificationCompat.Builder(context, ONGOING_CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title.ifBlank { "Active Call" })
+            .setContentText(subtitle.ifBlank { "Call in progress" })
+            .setContentIntent(openPendingIntent)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setUsesChronometer(true)
+            .setWhen(effectiveWhen)
+            .setShowWhen(true)
+            .addAction(
+                android.R.drawable.ic_menu_call,
+                "Return to Call",
+                openPendingIntent
+            )
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "End Call",
+                hangupPendingIntent
+            )
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(ONGOING_NOTIFICATION_ID, notification)
+        } catch (error: SecurityException) {
+            error.printStackTrace()
+        }
+    }
+
+    fun dismissOngoingCallNotification(context: Context) {
+        try {
+            val nm = NotificationManagerCompat.from(context)
+            nm.cancel(ONGOING_NOTIFICATION_ID)
+        } catch (error: Exception) {
+            error.printStackTrace()
+        }
     }
 
     fun showCallNotification(

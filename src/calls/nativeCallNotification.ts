@@ -47,6 +47,31 @@ export function clearNativeCallWindow() {
   }
 }
 
+export function showOngoingCallNotification(
+  callId: string,
+  title: string,
+  subtitle: string,
+  startTimeMs?: number
+) {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.showOngoingCallNotification) return;
+  try {
+    mod.showOngoingCallNotification(callId, title, subtitle, startTimeMs || Date.now());
+  } catch (error) {
+    console.warn('[native-call] showOngoingCallNotification failed:', error);
+  }
+}
+
+export function dismissOngoingCallNotification() {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.dismissOngoingCallNotification) return;
+  try {
+    mod.dismissOngoingCallNotification();
+  } catch (error) {
+    console.warn('[native-call] dismissOngoingCallNotification failed:', error);
+  }
+}
+
 
 export async function getPendingNativeCalls(): Promise<CallActionPayload[]> {
   const mod = getModule();
