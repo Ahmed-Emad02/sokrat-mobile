@@ -2,7 +2,7 @@
  * Sokrat VOICE — Modern Incoming Call Ringing Screen.
  * Features fluid multi-ring radar waves, glassmorphic badges, and responsive action controls.
  */
-import React, { useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
@@ -73,11 +73,17 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
       textBreath.stop();
     };
   }, [ripple1, ripple2, ripple3, bounceAnim, textFadeAnim]);
+  const [isAnswering, setIsAnswering] = useState(false);
+
+  const handleAnswerPress = () => {
+    if (isAnswering) return;
+    setIsAnswering(true);
+    onAnswer();
+  };
 
   const displayName = callerName.trim() || callerId.trim() || 'Unknown Caller';
   const displayExt = callerId.trim() || callerName.trim();
   const initial = displayName.charAt(0).toUpperCase() || '?';
-
   return (
     <SafeAreaView style={styles.container}>
       {/* Top Protocol Badge */}
@@ -89,9 +95,10 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
       </View>
 
       {/* Center Radar Waves & Avatar Hero */}
-      <View style={styles.centerHero}>
-        <View style={styles.avatarWrapper}>
+      <View style={styles.centerHero} pointerEvents="box-none">
+        <View style={styles.avatarWrapper} pointerEvents="box-none">
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.rippleRing,
               {
@@ -111,6 +118,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
             ]}
           />
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.rippleRing,
               {
@@ -130,6 +138,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
             ]}
           />
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.rippleRing,
               {
@@ -149,7 +158,10 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
             ]}
           />
 
-          <Animated.View style={[styles.avatarCircle, { transform: [{ scale: bounceAnim }] }]}>
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.avatarCircle, { transform: [{ scale: bounceAnim }] }]}
+          >
             <Text style={styles.avatarInitial}>{initial}</Text>
           </Animated.View>
         </View>
@@ -165,7 +177,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
         </View>
 
         <Animated.Text style={[styles.ringingStatus, { opacity: textFadeAnim }]}>
-          Ringing softphone…
+          {isAnswering ? 'Connecting audio…' : 'Ringing softphone…'}
         </Animated.Text>
       </View>
 
@@ -204,11 +216,12 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
               pointerEvents="none"
             />
             <TouchableOpacity
-              style={[styles.actionBtn, styles.answerBtn]}
-              onPress={onAnswer}
+              style={[styles.actionBtn, styles.answerBtn, isAnswering && { opacity: 0.6 }]}
+              onPress={handleAnswerPress}
               delayPressIn={0}
               hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
               activeOpacity={0.7}
+              disabled={isAnswering}
               accessibilityRole="button"
               accessibilityLabel="Answer incoming call"
             >
@@ -259,7 +272,8 @@ const styles = StyleSheet.create({
   },
   centerHero: {
     alignItems: 'center',
-    marginVertical: 'auto',
+    flex: 1,
+    justifyContent: 'center',
   },
   avatarWrapper: {
     width: 136,
@@ -334,6 +348,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 36,
     marginBottom: 28,
+    zIndex: 100,
+    elevation: 20,
   },
   actionCol: {
     alignItems: 'center',
