@@ -47,13 +47,20 @@ export interface IncomingCallInfo {
   nativePresented?: boolean;
 }
 
+export interface CallEndDetails {
+  originator?: string;
+  statusCode?: number;
+  reasonPhrase?: string;
+}
+
 export interface SipEvents {
   onStateChange: (state: SipState) => void;
   onIncomingCall: (info: IncomingCallInfo) => void;
   onCallEstablished: (call: ActiveCall) => void;
-  onCallEnded: (callId: string, cause?: string) => void;
+  onCallEnded: (callId: string, cause?: string, details?: CallEndDetails) => void;
   onCallHoldChange?: (isHeld: boolean) => void;
   onCallMuteChange?: (isMuted: boolean) => void;
+  onRegistrationFailed?: (code: number, cause?: string) => void;
 }
 export class JsSipService {
   private ua: JsSIP.UA | null = null;
@@ -289,6 +296,7 @@ export class JsSipService {
     ua.on('registrationFailed', (data: { response?: { status_code?: number }; cause?: string }) => {
       const code = data?.response?.status_code || 0;
       console.warn(`[sip] registration failed (code: ${code}, cause: ${data?.cause})`);
+      this.events.onRegistrationFailed?.(code, data?.cause);
       if (code === 403) {
         this.setState('failed');
       } else {
@@ -474,11 +482,22 @@ export class JsSipService {
     });
 
     session.on('failed', (evt: unknown) => {
-      const cause = (evt as { cause?: string })?.cause || 'REJECTED';
+      const e = evt as {
+        cause?: string;
+        originator?: string;
+        message?: { status_code?: number; reason_phrase?: string };
+      };
+      const cause = e?.cause || 'REJECTED';
+      const statusCode = e?.message?.status_code;
+      const reasonPhrase = e?.message?.reason_phrase;
       const callId = this.activeCall?.id || '';
       this.activeCall = null;
       this.currentSession = null;
-      this.events.onCallEnded(callId, cause);
+      this.events.onCallEnded(callId, cause, {
+        originator: e?.originator,
+        statusCode,
+        reasonPhrase,
+      });
     });
 
     session.on('hold', () => {
@@ -595,14 +614,26 @@ export class JsSipService {
     const domain = this.serverHost || CONFIG.sipDomain;
     const targetUri = `sip:${target}@${domain}`;
 
+    const cleanDomain = String(domain || '').split(':')[0].trim().toLowerCase();
+    const isLocalOrTailnet =
+      cleanDomain === 'localhost' ||
+      cleanDomain === '127.0.0.1' ||
+      cleanDomain.startsWith('10.') ||
+      cleanDomain.startsWith('192.168.') ||
+      cleanDomain.startsWith('100.');
+
+    const iceServers = isLocalOrTailnet
+      ? []
+      : [{ urls: 'stun:stun.l.google.com:19302' }];
+
     const options: Record<string, unknown> = {
       mediaConstraints: { audio: true, video: false },
       pcConfig: {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers,
+        iceCandidatePoolSize: 0,
       },
       sessionTimersExpires: 120,
     };
-
     if (localStream) {
       options.mediaStream = localStream;
     }

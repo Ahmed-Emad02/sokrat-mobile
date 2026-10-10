@@ -12,7 +12,9 @@ import {
   SipState,
   ActiveCall,
   IncomingCallInfo,
+  CallEndDetails,
 } from './src/sip/JsSipService';
+import { ToastContainer, showToast } from './src/ui/Toast';
 import {
   initPush,
   bindExtension,
@@ -52,6 +54,44 @@ import {
 import { LoginScreen } from './src/ui/LoginScreen';
 import { RingingScreen } from './src/ui/RingingScreen';
 import { StandardPhoneScreen } from './src/ui/StandardPhoneScreen';
+
+function formatCallFailureReason(cause?: string, details?: CallEndDetails): { title: string; message: string } {
+  if (details?.statusCode) {
+    switch (details.statusCode) {
+      case 404:
+        return { title: 'Call Failed (404)', message: `Extension ${details.reasonPhrase || 'not found on PBX'}` };
+      case 486:
+        return { title: 'User Busy (486)', message: 'The destination is currently busy on another call.' };
+      case 480:
+        return { title: 'Temporarily Unavailable (480)', message: 'The destination extension is offline or unavailable.' };
+      case 488:
+        return { title: 'Not Acceptable (488)', message: 'Incompatible audio codec or media encryption settings.' };
+      case 603:
+        return { title: 'Call Declined (603)', message: 'The recipient declined the call.' };
+      default:
+        return { title: `Call Error (${details.statusCode})`, message: details.reasonPhrase || cause || 'Call rejected by PBX' };
+    }
+  }
+
+  switch (cause) {
+    case 'User Denied Media Access':
+      return { title: 'Microphone Blocked', message: 'Microphone permission was denied. Please allow microphone access.' };
+    case 'Bad Media Description':
+      return { title: 'Media Incompatible', message: 'Codec or SDP mismatch between caller and recipient.' };
+    case 'RTP Timeout':
+      return { title: 'Audio Stream Timeout', message: 'No media packets received from the server.' };
+    case 'No Answer':
+      return { title: 'No Answer', message: 'The destination did not answer in time.' };
+    case 'Busy Here':
+      return { title: 'Line Busy', message: 'The destination extension is busy.' };
+    case 'Request Timeout':
+      return { title: 'Request Timeout', message: 'No response from the PBX server. Check network reachability.' };
+    case 'Connection Error':
+      return { title: 'Network Error', message: 'SIP WebSocket connection was lost.' };
+    default:
+      return { title: 'Call Ended', message: cause || 'Call failed' };
+  }
+}
 export default function App() {
   const sipRef = useRef<JsSipService | null>(null);
   const incomingRef = useRef<IncomingCallInfo | null>(null);
@@ -203,7 +243,32 @@ export default function App() {
         const targetMicVol = accountRef.current?.micVolume ?? 50;
         sipRef.current?.setMicVolume(targetMicVol);
       },
-      onCallEnded: (callId) => {
+      onRegistrationFailed: (code, reason) => {
+        if (code === 403) {
+          showToast({
+            type: 'error',
+            title: 'Authentication Failed (403)',
+            message: 'Invalid SIP extension or secret password. Please check your credentials.',
+          });
+        } else if (code === 404) {
+          showToast({
+            type: 'error',
+            title: 'Extension Not Found (404)',
+            message: 'This extension is not configured on the PBX server.',
+          });
+        } else {
+          showToast({
+            type: 'warning',
+            title: 'Registration Failed',
+            message: reason ? `Server: ${reason}` : 'Failed to register with PBX',
+          });
+        }
+      },
+      onCallEnded: (callId, cause, details) => {
+        if (cause && cause !== 'NORMAL_CLEARING' && cause !== 'Canceled by User' && cause !== 'Terminated') {
+          const reason = formatCallFailureReason(cause, details);
+          showToast({ type: 'error', title: reason.title, message: reason.message });
+        }
         const resolvedCallId = callId || activeCallUUIDRef.current;
         const currentCall = activeCallRef.current;
         const currentIncoming = incomingRef.current;
@@ -429,9 +494,15 @@ export default function App() {
       if (sipRef.current?.activeCall) {
         updateActiveCall({ ...sipRef.current.activeCall });
       }
-    } catch (err) {
-      console.error('[app] outbound call failed:', err);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[app] outbound call failed:', errMsg);
       stopCallManagers();
+      showToast({
+        type: 'error',
+        title: 'Cannot Place Call',
+        message: errMsg,
+      });
     }
   };
 
@@ -534,6 +605,7 @@ export default function App() {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
         <StatusBar barStyle="light-content" />
+        <ToastContainer />
       </SafeAreaProvider>
     );
   }
@@ -543,6 +615,7 @@ export default function App() {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
         <StatusBar barStyle="light-content" />
+        <ToastContainer />
         <RingingScreen
           callerId={incoming.callerId}
           callerName={incoming.callerName}
@@ -558,6 +631,7 @@ export default function App() {
     return (
       <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
         <StatusBar barStyle="light-content" />
+        <ToastContainer />
         <LoginScreen
           onLogin={async (ext, password, serverHost) => {
             const newAcc: SavedAccount = {
@@ -579,6 +653,7 @@ export default function App() {
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
       <StatusBar barStyle="light-content" />
+      <ToastContainer />
       <StandardPhoneScreen
         account={account}
         state={uiState}
