@@ -180,31 +180,21 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         try {
             val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
             val isInCall = audioManager.mode == android.media.AudioManager.MODE_IN_COMMUNICATION
+            val stream = if (isInCall) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+            val max = audioManager.getStreamMaxVolume(stream)
+            val target = ((percent / 100.0) * max.toDouble()).roundToInt().coerceIn(1, max)
 
-            // 1. In-call voice stream (earpiece / handset)
-            val maxVoice = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
-            val targetVoice = ((percent / 100.0) * maxVoice.toDouble()).roundToInt().coerceIn(1, maxVoice)
+            // Set volume silently with 0 flags (no intrusive HUD popup and no audio beeps)
+            audioManager.setStreamVolume(stream, target, 0)
 
-            // 2. Media / loudspeaker stream
-            val maxMusic = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-            val targetMusic = ((percent / 100.0) * maxMusic.toDouble()).roundToInt().coerceIn(0, maxMusic)
-
-            // Always set STREAM_VOICE_CALL with UI
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, targetVoice, android.media.AudioManager.FLAG_SHOW_UI)
-
-            // Always set STREAM_MUSIC (with audio beep out-of-call)
-            val musicFlags = if (isInCall) 0 else (android.media.AudioManager.FLAG_SHOW_UI or android.media.AudioManager.FLAG_PLAY_SOUND)
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetMusic, musicFlags)
-
-            // Link hardware volume buttons to the active stream
             reactApplicationContext.currentActivity?.let { act ->
                 act.runOnUiThread {
-                    act.volumeControlStream = if (isInCall) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+                    act.volumeControlStream = stream
                 }
             }
 
-            val curStep = if (isInCall) targetVoice else targetMusic
-            val maxStep = if (isInCall) maxVoice else maxMusic
+            val curStep = target
+            val maxStep = max
             val map = Arguments.createMap().apply {
                 putInt("currentStep", curStep)
                 putInt("maxStep", maxStep)

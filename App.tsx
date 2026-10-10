@@ -386,7 +386,6 @@ export default function App() {
       sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
       sip.setMicVolume(activeAccount.micVolume ?? 50);
       sip.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
-      void setNativeSpeakerVolume(activeAccount.speakerVolume ?? 85);
       setAccount(activeAccount);
       setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
@@ -596,7 +595,6 @@ export default function App() {
     sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
     sipRef.current?.setMicVolume(newAcc.micVolume ?? 50);
     sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
-    void setNativeSpeakerVolume(newAcc.speakerVolume ?? 85);
     CONFIG.sipDomain = newAcc.serverHost;
     CONFIG.sipWss = getSipWss(newAcc.serverHost, newAcc.useTls);
     CONFIG.pushGateway = getPushGateway(newAcc.serverHost);
