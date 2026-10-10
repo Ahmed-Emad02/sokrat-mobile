@@ -1626,7 +1626,8 @@ export function StandardPhoneScreen({
                 contentContainerStyle={styles.settingsCard}
                 showsVerticalScrollIndicator={true}
                 keyboardShouldPersistTaps="handled"
-                nestedScrollEnabled={true}
+                bounces={true}
+                overScrollMode="always"
               >
                   <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
 
@@ -1796,7 +1797,7 @@ export function StandardPhoneScreen({
                             }
                             style={styles.speedDialClearBtn}
                           >
-                            <Text style={styles.speedDialClearText}>✕</Text>
+                            <CloseIcon size={14} color="#a1a1aa" />
                           </TouchableOpacity>
                         ) : null}
                       </View>
@@ -2429,6 +2430,7 @@ const styles = StyleSheet.create({
   settingsCardWrapper: {
     width: '100%',
     maxWidth: 400,
+    height: '85%',
     maxHeight: '85%',
     backgroundColor: '#18181b',
     borderRadius: 20,
@@ -2436,12 +2438,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: 'hidden',
     alignSelf: 'center',
+    zIndex: 10,
+    elevation: 10,
   },
   settingsScroll: {
-    flexGrow: 0,
+    flex: 1,
+    width: '100%',
   },
   settingsCard: {
     padding: 22,
+    paddingBottom: 40,
   },
   dialogCard: {
     width: '100%',
