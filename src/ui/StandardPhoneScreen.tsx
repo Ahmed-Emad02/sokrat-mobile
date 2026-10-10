@@ -430,7 +430,18 @@ export function StandardPhoneScreen({
 
   // Dialpad Collapse / Expand Toggle
   const [isDialpadVisible, setIsDialpadVisible] = useState(true);
+  const dialpadAnim = useRef(new Animated.Value(1)).current;
 
+  const toggleDialpad = () => {
+    const nextState = !isDialpadVisible;
+    setIsDialpadVisible(nextState);
+    Animated.spring(dialpadAnim, {
+      toValue: nextState ? 1 : 0,
+      speed: 20,
+      bounciness: 4,
+      useNativeDriver: false,
+    }).start();
+  };
   // Recents History Filter (All vs Missed)
   const [historyFilter, setHistoryFilter] = useState<'all' | 'missed'>('all');
   const tabPagerRef = useRef<any>(null);
@@ -1244,14 +1255,28 @@ export function StandardPhoneScreen({
           </View>
 
           {/* Lower Half: Dialpad Display & 3x4 Keypad */}
-          <View
-            style={[
-              styles.dialpadSection,
-              !isDialpadVisible && styles.dialpadSectionCollapsed,
-            ]}
-          >
-            {isDialpadVisible && (
-              <>
+          <View style={styles.dialpadSection}>
+            <Animated.View
+              style={{
+                maxHeight: dialpadAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 420],
+                }),
+                opacity: dialpadAnim.interpolate({
+                  inputRange: [0, 0.35, 1],
+                  outputRange: [0, 0.2, 1],
+                }),
+                transform: [
+                  {
+                    translateY: dialpadAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [40, 0],
+                    }),
+                  },
+                ],
+                overflow: 'hidden',
+              }}
+            >
                 {/* Number Display with inline Backspace & Movable Caret Indicator */}
                 <View style={styles.numberRow}>
                   {digits.length === 0 ? (
@@ -1391,8 +1416,7 @@ export function StandardPhoneScreen({
                     );
                   })}
                 </View>
-              </>
-            )}
+            </Animated.View>
 
             {/* Bottom Action Bar */}
             <View
@@ -1444,20 +1468,26 @@ export function StandardPhoneScreen({
               {/* Pull Down / Pull Up Dialpad Toggle Button */}
               <TouchableOpacity
                 style={styles.dialAuxBtn}
-                onPress={() => {
-                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                  setIsDialpadVisible(!isDialpadVisible);
-                }}
+                onPress={toggleDialpad}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 activeOpacity={0.6}
                 accessibilityRole="button"
                 accessibilityLabel={isDialpadVisible ? 'Hide dialpad' : 'Show dialpad'}
               >
-                {isDialpadVisible ? (
-                  <ChevronDownIcon size={24} color="#a1a1aa" />
-                ) : (
-                  <KeypadIcon size={22} color="#38bdf8" />
-                )}
+                <Animated.View
+                  style={{
+                    transform: [
+                      {
+                        rotate: dialpadAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ['180deg', '0deg'],
+                        }),
+                      },
+                    ],
+                  }}
+                >
+                  <ChevronDownIcon size={24} color={isDialpadVisible ? '#a1a1aa' : '#38bdf8'} />
+                </Animated.View>
               </TouchableOpacity>
             </View>
           </View>
@@ -2279,7 +2309,7 @@ const styles = StyleSheet.create({
   },
   bottomNav: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    alignItems: 'center',
     paddingVertical: 10,
     borderTopColor: '#18181b',
     borderTopWidth: 1,
@@ -2295,7 +2325,9 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   navItem: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 4,
   },
   navLabel: {
@@ -2310,17 +2342,6 @@ const styles = StyleSheet.create({
   contactsContent: {
     flex: 1,
     paddingHorizontal: 20,
-  },
-  contactSearchInput: {
-    backgroundColor: '#18181b',
-    color: '#ffffff',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    marginBottom: 12,
-    fontSize: 14,
-    borderColor: '#27272a',
-    borderWidth: 1,
   },
   contactRow: {
     flexDirection: 'row',
