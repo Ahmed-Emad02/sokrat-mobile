@@ -15,8 +15,8 @@ import androidx.core.app.NotificationManagerCompat
 object IncomingCallNotificationHelper {
     const val CHANNEL_ID = "sokrat_incoming_calls"
     const val CHANNEL_NAME = "Incoming Calls"
-    const val ONGOING_CHANNEL_ID = "sokrat_ongoing_calls"
-    const val ONGOING_CHANNEL_NAME = "Ongoing Calls"
+    const val ONGOING_CHANNEL_ID = "sokrat_active_call_v3"
+    const val ONGOING_CHANNEL_NAME = "Active Call"
     private const val NOTIFICATION_ID_BASE = 2000
     private const val ONGOING_NOTIFICATION_ID = 2099
     private var screenWakeLock: android.os.PowerManager.WakeLock? = null
@@ -85,6 +85,9 @@ object IncomingCallNotificationHelper {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             ?: return
+        try {
+            manager.deleteNotificationChannel("sokrat_ongoing_calls")
+        } catch (_: Exception) {}
         if (manager.getNotificationChannel(ONGOING_CHANNEL_ID) != null) return
 
         val channel = NotificationChannel(
@@ -93,12 +96,13 @@ object IncomingCallNotificationHelper {
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
             description = "Sokrat VOICE active call indicator"
-            setShowBadge(false)
+            setShowBadge(true)
             enableLights(false)
             enableVibration(false)
             setSound(null, null)
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
+        manager.createNotificationChannel(channel)
     }
 
     fun showOngoingCallNotification(
@@ -141,7 +145,8 @@ object IncomingCallNotificationHelper {
         val effectiveWhen = if (startTimeMs > 0) startTimeMs else System.currentTimeMillis()
 
         val notification = NotificationCompat.Builder(context, ONGOING_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_call)
+            .setColor(0xFF0284C7.toInt())
             .setContentTitle(title.ifBlank { "Active Call" })
             .setContentText(subtitle.ifBlank { "Call in progress" })
             .setContentIntent(openPendingIntent)
@@ -149,6 +154,7 @@ object IncomingCallNotificationHelper {
             .setAutoCancel(false)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setUsesChronometer(true)
             .setWhen(effectiveWhen)
             .setShowWhen(true)
