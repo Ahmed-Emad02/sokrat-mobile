@@ -663,11 +663,21 @@ export class JsSipService {
    * Answer incoming call session.
    */
   async answer(callId: string): Promise<boolean> {
-    const session = this.currentSession as { answer?: (opt?: unknown) => void } | null;
-    if (!session ||
-        typeof session.answer !== 'function' ||
-        this.activeCall?.id !== callId ||
-        this.activeCall.direction !== 'inbound') {
+    const session = this.currentSession as { id?: string; answer?: (opt?: unknown) => void } | null;
+    if (!session || typeof session.answer !== 'function') {
+      console.warn(`[sip][callId=${callId}] answer failed: no active session`);
+      return false;
+    }
+
+    const activeCall = this.activeCall;
+    if (!activeCall || activeCall.direction !== 'inbound') {
+      console.warn(`[sip][callId=${callId}] answer rejected: no active inbound call`);
+      return false;
+    }
+
+    const isMatch = !callId || activeCall.id === callId || session.id === callId;
+    if (!isMatch) {
+      console.warn(`[sip][callId=${callId}] answer rejected: mismatch with activeCallId=${activeCall.id}`);
       return false;
     }
 
@@ -687,11 +697,11 @@ export class JsSipService {
 
     try {
       session.answer(options);
-      this.activeCall.status = 'active';
-      if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
+      activeCall.status = 'active';
+      if (!activeCall.startTime) activeCall.startTime = Date.now();
       console.log(`[sip][callId=${callId}] answer dispatched -> active call established`);
-      this.events.onCallEstablished(this.activeCall);
-      void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
+      this.events.onCallEstablished(activeCall);
+      void this.setLiveMicGain(this.micGainDb, activeCall.id);
       this.setSpeakerVolume(this.speakerVolume);
       return true;
     } catch (error) {

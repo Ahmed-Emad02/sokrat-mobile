@@ -176,7 +176,9 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
           <TouchableOpacity
             style={[styles.actionBtn, styles.declineBtn]}
             onPress={onDecline}
-            activeOpacity={0.8}
+            delayPressIn={0}
+            hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+            activeOpacity={0.7}
             accessibilityRole="button"
             accessibilityLabel="Decline incoming call"
           >
@@ -187,17 +189,32 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
 
         {/* Answer Action */}
         <View style={styles.actionCol}>
-          <Animated.View style={{ transform: [{ scale: bounceAnim }] }}>
+          <View style={styles.answerBtnWrap}>
+            <Animated.View
+              style={[
+                styles.answerHalo,
+                {
+                  transform: [{ scale: bounceAnim }],
+                  opacity: bounceAnim.interpolate({
+                    inputRange: [1.0, 1.07],
+                    outputRange: [0.35, 0.75],
+                  }),
+                },
+              ]}
+              pointerEvents="none"
+            />
             <TouchableOpacity
               style={[styles.actionBtn, styles.answerBtn]}
               onPress={onAnswer}
-              activeOpacity={0.8}
+              delayPressIn={0}
+              hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+              activeOpacity={0.7}
               accessibilityRole="button"
               accessibilityLabel="Answer incoming call"
             >
               <PhoneAnswerIcon size={32} color="#ffffff" />
             </TouchableOpacity>
-          </Animated.View>
+          </View>
           <Text style={styles.actionLabel}>Answer</Text>
         </View>
       </View>
@@ -336,6 +353,18 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.5,
     shadowRadius: 10,
+  },
+  answerBtnWrap: {
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  answerHalo: {
+    position: 'absolute',
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    backgroundColor: '#16a34a',
   },
   answerBtn: {
     backgroundColor: '#16a34a',

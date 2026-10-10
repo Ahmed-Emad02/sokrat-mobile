@@ -552,8 +552,15 @@ export default function App() {
   };
 
   const handleAnswer = async () => {
-    const callId = activeCallUUIDRef.current;
-    if (!callId) return;
+    const callId =
+      activeCallUUIDRef.current ||
+      incomingRef.current?.callId ||
+      sipRef.current?.activeCall?.id ||
+      '';
+    if (!callId) {
+      console.warn('[app] handleAnswer called but no callId found');
+      return;
+    }
     answerIncoming(callId);
     const answered = await answerSipCall(callId);
     if (!answered && sipRef.current?.activeCall?.id === callId) {
