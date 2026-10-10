@@ -370,7 +370,20 @@ export class JsSipService {
 
     this.activeCall = call;
 
-    // Attach peerconnection remote audio track listeners
+    // Auto-advance ICE candidate gathering so JsSIP sends INVITE immediately without hanging
+    let sessionIceTimer: number | null = null;
+    session.on('icecandidate', (data: unknown) => {
+      const d = data as { ready?: () => void };
+      if (typeof d?.ready === 'function') {
+        clearTimeout(sessionIceTimer as number);
+        sessionIceTimer = setTimeout(() => {
+          try {
+            d.ready?.();
+          } catch {}
+        }, 150) as unknown as number;
+      }
+    });
+
     // Attach peerconnection remote audio track listeners and codec preferences
     session.on('peerconnection', (data: unknown) => {
       const pc = (data as { peerconnection?: unknown })?.peerconnection as {
@@ -622,14 +635,20 @@ export class JsSipService {
       cleanDomain.startsWith('192.168.') ||
       cleanDomain.startsWith('100.');
 
-    const iceServers = isLocalOrTailnet
-      ? []
-      : [{ urls: 'stun:stun.l.google.com:19302' }];
+    const eventHandlers: Record<string, (evt: unknown) => void> = {
+      icecandidate: (data: unknown) => {
+        const d = data as { ready?: () => void };
+        try {
+          d?.ready?.();
+        } catch {}
+      },
+    };
 
     const options: Record<string, unknown> = {
+      eventHandlers,
       mediaConstraints: { audio: true, video: false },
       pcConfig: {
-        iceServers,
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
         iceCandidatePoolSize: 0,
       },
       sessionTimersExpires: 120,
