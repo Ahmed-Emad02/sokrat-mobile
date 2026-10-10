@@ -17,6 +17,7 @@ import {
   UIManager,
   View,
   PanResponder,
+  Pressable,
 } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -74,33 +75,27 @@ function VolumeSlider({
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponderCapture: () => true,
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: (evt) => {
-          const width = trackWidth > 0 ? trackWidth : 250;
-          const pct = Math.round(Math.max(0, Math.min(100, (evt.nativeEvent.locationX / width) * 100)));
-          startValueRef.current = pct;
-          onChange(pct);
+        onStartShouldSetPanResponder: () => false,
+        onStartShouldSetPanResponderCapture: () => false,
+        onMoveShouldSetPanResponder: (_evt, gestureState) => {
+          return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 6;
+        },
+        onMoveShouldSetPanResponderCapture: (_evt, gestureState) => {
+          return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 6;
+        },
+        onPanResponderTerminationRequest: () => true,
+        onPanResponderGrant: () => {
+          startValueRef.current = value;
         },
         onPanResponderMove: (_evt, gestureState) => {
-          const width = trackWidth > 0 ? trackWidth : 250;
+          const width = trackWidth > 0 ? trackWidth : 200;
           const deltaPct = (gestureState.dx / width) * 100;
           const newPct = Math.round(Math.max(0, Math.min(100, startValueRef.current + deltaPct)));
           onChange(newPct);
         },
       }),
-    [onChange, trackWidth]
+    [onChange, trackWidth, value]
   );
-  const stepDown = () => {
-    onChange(Math.max(0, value - 5));
-  };
-
-  const stepUp = () => {
-    onChange(Math.min(100, value + 5));
-  };
 
   return (
     <View style={styles.volSliderContainer}>
@@ -120,18 +115,24 @@ function VolumeSlider({
       <View style={styles.volSliderControlsRow}>
         <TouchableOpacity
           style={styles.volStepBtn}
-          onPress={stepDown}
+          onPress={() => onChange(Math.max(0, value - 5))}
           activeOpacity={0.6}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Text style={styles.volStepBtnText}>−</Text>
         </TouchableOpacity>
 
-        <View
+        <Pressable
           style={styles.volTrackTouchArea}
           onLayout={(e) => {
             const w = e.nativeEvent.layout.width;
             if (w > 0) setTrackWidth(w);
+          }}
+          onPress={(e) => {
+            const width = trackWidth > 0 ? trackWidth : 200;
+            const clickX = e.nativeEvent.locationX;
+            const pct = Math.round(Math.max(0, Math.min(100, (clickX / width) * 100)));
+            onChange(pct);
           }}
           {...panResponder.panHandlers}
         >
@@ -145,11 +146,10 @@ function VolumeSlider({
             ]}
             pointerEvents="none"
           />
-        </View>
-
+        </Pressable>
         <TouchableOpacity
           style={styles.volStepBtn}
-          onPress={stepUp}
+          onPress={() => onChange(Math.min(100, value + 5))}
           activeOpacity={0.6}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
