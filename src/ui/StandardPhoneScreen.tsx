@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Alert,
   Animated,
@@ -293,7 +293,94 @@ const DIALPAD_KEYS = [
   { digit: '#', sub: '(W)' },
 ];
 
-function AnimatedDialpadKey({
+function formatTimeAgo(ts: number): string {
+  const elapsed = Math.floor((Date.now() - ts) / 1000);
+  if (elapsed < 60) return 'Just now';
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)} min ago`;
+  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)} hr ago`;
+  return 'Yesterday';
+}
+
+const RecentCallRow = React.memo(function RecentCallRow({
+  item,
+  onCall,
+  onOpenDetails,
+}: {
+  item: CallRecord;
+  onCall: (number: string) => void;
+  onOpenDetails: (record: CallRecord) => void;
+}) {
+  return (
+    <View style={styles.recentItem}>
+      <TouchableOpacity
+        style={styles.recentMainCol}
+        onPress={() => onCall(item.number)}
+        activeOpacity={0.7}
+        delayPressIn={0}
+      >
+        <View style={styles.avatarMini}>
+          <UserIcon size={20} color="#a1a1aa" />
+        </View>
+
+        <View style={styles.recentInfo}>
+          <Text
+            style={[
+              styles.recentName,
+              item.direction === 'missed' && styles.recentNameMissed,
+            ]}
+            numberOfLines={1}
+          >
+            {item.name || item.number}
+          </Text>
+          <Text style={styles.recentSub}>
+            {item.direction === 'missed' ? 'Missed call' : 'VoIP'}
+          </Text>
+        </View>
+
+        <Text style={styles.recentTime}>{formatTimeAgo(item.timestamp)}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.infoCircleBtn}
+        onPress={() => onOpenDetails(item)}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        activeOpacity={0.6}
+        delayPressIn={0}
+        accessibilityRole="button"
+        accessibilityLabel={`Call details for ${item.name || item.number}`}
+      >
+        <InfoIcon size={20} color="#38bdf8" />
+      </TouchableOpacity>
+    </View>
+  );
+});
+
+const ContactRow = React.memo(function ContactRow({
+  item,
+  onToggleFavorite,
+  onCall,
+}: {
+  item: Contact;
+  onToggleFavorite: (id: string) => void;
+  onCall: (extension: string) => void;
+}) {
+  return (
+    <View style={styles.contactRow}>
+      <TouchableOpacity style={styles.favStarBtn} onPress={() => onToggleFavorite(item.id)} delayPressIn={0}>
+        <StarIcon size={22} color={item.favorite ? '#f59e0b' : '#71717a'} fill={item.favorite ? '#f59e0b' : 'none'} />
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.contactDetailCol} onPress={() => onCall(item.extension)} delayPressIn={0}>
+        <Text style={styles.contactRowName}>{item.name}</Text>
+        <Text style={styles.contactRowExt}>Ext {item.extension}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.contactCallBtn} onPress={() => onCall(item.extension)} delayPressIn={0}>
+        <PhoneIcon size={16} color="#10b981" />
+      </TouchableOpacity>
+    </View>
+  );
+});
+
+const AnimatedDialpadKey = React.memo(function AnimatedDialpadKey({
   k,
   isConfigured,
   speedTarget,
@@ -303,16 +390,16 @@ function AnimatedDialpadKey({
   k: { digit: string; sub?: string };
   isConfigured: boolean;
   speedTarget?: string;
-  onPress: () => void;
-  onLongPress: () => void;
+  onPress: (digit: string) => void;
+  onLongPress: (digit: string) => void;
 }) {
   const scale = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
     Animated.spring(scale, {
       toValue: 0.88,
-      speed: 60,
-      bounciness: 4,
+      speed: 80,
+      bounciness: 2,
       useNativeDriver: true,
     }).start();
   };
@@ -320,8 +407,8 @@ function AnimatedDialpadKey({
   const handlePressOut = () => {
     Animated.spring(scale, {
       toValue: 1.0,
-      speed: 35,
-      bounciness: 8,
+      speed: 55,
+      bounciness: 4,
       useNativeDriver: true,
     }).start();
   };
@@ -332,10 +419,11 @@ function AnimatedDialpadKey({
         style={styles.keyBtn}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
-        onPress={onPress}
-        onLongPress={onLongPress}
-        delayLongPress={450}
-        activeOpacity={0.7}
+        onPress={() => onPress(k.digit)}
+        onLongPress={() => onLongPress(k.digit)}
+        delayPressIn={0}
+        delayLongPress={400}
+        activeOpacity={0.65}
         accessibilityRole="button"
         accessibilityLabel={
           isConfigured
@@ -364,7 +452,7 @@ function AnimatedDialpadKey({
       </TouchableOpacity>
     </Animated.View>
   );
-}
+});
 
 export function StandardPhoneScreen({
   account,
@@ -491,12 +579,24 @@ export function StandardPhoneScreen({
     void onUpdateVolume?.('mic', val);
   };
 
-  const displayedCalls = callsHistory.filter((item) => {
+  const displayedCalls = useMemo(() => {
     if (historyFilter === 'missed') {
-      return item.direction === 'missed';
+      return callsHistory.filter((item) => item.direction === 'missed');
     }
-    return true;
-  });
+    return callsHistory;
+  }, [callsHistory, historyFilter]);
+
+  const filteredContacts = useMemo(() => {
+    const q = contactSearch.trim().toLowerCase();
+    if (!q) return contacts;
+    return contacts.filter((c) =>
+      c.name.toLowerCase().includes(q) || c.extension.includes(q)
+    );
+  }, [contacts, contactSearch]);
+
+  const favoriteContacts = useMemo(() => {
+    return contacts.filter((c) => c.favorite);
+  }, [contacts]);
 
   // Animated Dialpad Input Cursor Caret
   const cursorOpacity = useRef(new Animated.Value(1)).current;
@@ -597,27 +697,28 @@ export function StandardPhoneScreen({
     void fetchExtensions();
   }, [account?.serverHost]);
 
-  const handleKeyLongPress = (digit: string) => {
+  const handleKeyLongPress = useCallback((digit: string) => {
     const target = speedDial[digit]?.trim();
-    console.log(`[speed-dial] long-press digit=${digit} target=${target || 'none'}`);
     if (target) {
       setDigits('');
       onCall(target);
     } else if (digit === '0') {
       setDigits((prev) => prev + '+');
     }
-  };
+  }, [speedDial, onCall]);
 
-  const filteredTransferExtensions = serverExtensions
-    .filter((e) => e.extension !== account?.extension)
-    .filter((e) => {
-      const q = transferTarget.trim().toLowerCase();
-      if (!q) return true;
-      return (
-        e.extension.toLowerCase().includes(q) ||
-        (e.name || '').toLowerCase().includes(q)
-      );
-    });
+  const filteredTransferExtensions = useMemo(() => {
+    const q = transferTarget.trim().toLowerCase();
+    return serverExtensions
+      .filter((e) => e.extension !== account?.extension)
+      .filter((e) => {
+        if (!q) return true;
+        return (
+          e.extension.toLowerCase().includes(q) ||
+          (e.name || '').toLowerCase().includes(q)
+        );
+      });
+  }, [serverExtensions, account?.extension, transferTarget]);
   const formatCallTime = (sec: number) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -638,18 +739,10 @@ export function StandardPhoneScreen({
     return `${month} ${day}, ${d.getFullYear()} at ${hours}:${minStr} ${ampm}`;
   };
 
-  const handleOpenCallDetails = (record: CallRecord) => {
+  const handleOpenCallDetails = useCallback((record: CallRecord) => {
     setSelectedCallRecord(record);
     setShowCallDetailsModal(true);
-  };
-
-  const formatTimeAgo = (ts: number) => {
-    const elapsed = Math.floor((Date.now() - ts) / 1000);
-    if (elapsed < 60) return 'Just now';
-    if (elapsed < 3600) return `${Math.floor(elapsed / 60)} min ago`;
-    if (elapsed < 86400) return `${Math.floor(elapsed / 3600)} hr ago`;
-    return 'Yesterday';
-  };
+  }, []);
   const [isSyncingContacts, setIsSyncingContacts] = useState(false);
 
   const handleSyncContacts = async () => {
@@ -689,7 +782,7 @@ export function StandardPhoneScreen({
     }
   };
 
-  const handleDigitPress = (d: string) => {
+  const handleDigitPress = useCallback((d: string) => {
     cursorOpacity.setValue(1);
     setDigits((prev) => {
       const idx = Math.max(0, Math.min(prev.length, cursorIndex));
@@ -697,9 +790,9 @@ export function StandardPhoneScreen({
       setCursorIndex(idx + 1);
       return next;
     });
-  };
+  }, [cursorIndex, cursorOpacity]);
 
-  const handleBackspace = () => {
+  const handleBackspace = useCallback(() => {
     cursorOpacity.setValue(1);
     setDigits((prev) => {
       if (!prev) return '';
@@ -709,7 +802,7 @@ export function StandardPhoneScreen({
       setCursorIndex(idx - 1);
       return next;
     });
-  };
+  }, [cursorIndex, cursorOpacity]);
 
   const hasDigits = digits.trim().length > 0;
   const lastCallNumber =
@@ -1209,46 +1302,16 @@ export function StandardPhoneScreen({
                 data={displayedCalls.slice(0, 40)}
                 keyExtractor={(item) => item.id}
                 showsVerticalScrollIndicator={false}
+                initialNumToRender={10}
+                maxToRenderPerBatch={10}
+                windowSize={5}
+                removeClippedSubviews={Platform.OS === 'android'}
                 renderItem={({ item }) => (
-                  <View style={styles.recentItem}>
-                    <TouchableOpacity
-                      style={styles.recentMainCol}
-                      onPress={() => onCall(item.number)}
-                      activeOpacity={0.7}
-                    >
-                      <View style={styles.avatarMini}>
-                        <UserIcon size={20} color="#a1a1aa" />
-                      </View>
-
-                      <View style={styles.recentInfo}>
-                        <Text
-                          style={[
-                            styles.recentName,
-                            item.direction === 'missed' && styles.recentNameMissed,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item.name || item.number}
-                        </Text>
-                        <Text style={styles.recentSub}>
-                          {item.direction === 'missed' ? 'Missed call' : 'VoIP'}
-                        </Text>
-                      </View>
-
-                      <Text style={styles.recentTime}>{formatTimeAgo(item.timestamp)}</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.infoCircleBtn}
-                      onPress={() => handleOpenCallDetails(item)}
-                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                      activeOpacity={0.6}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Call details for ${item.name || item.number}`}
-                    >
-                      <InfoIcon size={20} color="#38bdf8" />
-                    </TouchableOpacity>
-                  </View>
+                  <RecentCallRow
+                    item={item}
+                    onCall={onCall}
+                    onOpenDetails={handleOpenCallDetails}
+                  />
                 )}
               />
             )}
@@ -1381,38 +1444,14 @@ export function StandardPhoneScreen({
                     const speedTarget = speedDial[k.digit]?.trim();
                     const isConfigured = Boolean(speedTarget);
                     return (
-                      <TouchableOpacity
+                      <AnimatedDialpadKey
                         key={k.digit}
-                        style={styles.keyBtn}
-                        onPress={() => handleDigitPress(k.digit)}
-                        onLongPress={() => handleKeyLongPress(k.digit)}
-                        delayLongPress={450}
-                        activeOpacity={0.6}
-                        accessibilityLabel={
-                          isConfigured
-                            ? `Digit ${k.digit}, hold to speed dial ${speedTarget}`
-                            : `Digit ${k.digit}`
-                        }
-                      >
-                        <Text style={styles.keyNumber}>{k.digit}</Text>
-                        <View style={styles.keySubRow}>
-                          {k.digit === '1' ? (
-                            <VoicemailIcon
-                              size={14}
-                              color={isConfigured ? '#38bdf8' : '#a1a1aa'}
-                            />
-                          ) : k.sub ? (
-                            <Text
-                              style={[
-                                styles.keyLetters,
-                                isConfigured && styles.keyLettersActive,
-                              ]}
-                            >
-                              {k.sub}
-                            </Text>
-                          ) : null}
-                        </View>
-                      </TouchableOpacity>
+                        k={k}
+                        isConfigured={isConfigured}
+                        speedTarget={speedTarget}
+                        onPress={handleDigitPress}
+                        onLongPress={handleKeyLongPress}
+                      />
                     );
                   })}
                 </View>
@@ -1516,24 +1555,18 @@ export function StandardPhoneScreen({
             </TouchableOpacity>
           </View>
           <FlatList
-            data={contacts.filter((c) =>
-              c.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
-              c.extension.includes(contactSearch)
-            )}
+            data={filteredContacts}
             keyExtractor={(c) => c.id}
+            initialNumToRender={12}
+            maxToRenderPerBatch={12}
+            windowSize={5}
+            removeClippedSubviews={Platform.OS === 'android'}
             renderItem={({ item }) => (
-              <View style={styles.contactRow}>
-                <TouchableOpacity style={styles.favStarBtn} onPress={() => onToggleFavorite(item.id)}>
-                  <StarIcon size={22} color={item.favorite ? '#f59e0b' : '#71717a'} fill={item.favorite ? '#f59e0b' : 'none'} />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.contactDetailCol} onPress={() => onCall(item.extension)}>
-                  <Text style={styles.contactRowName}>{item.name}</Text>
-                  <Text style={styles.contactRowExt}>Ext {item.extension}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.contactCallBtn} onPress={() => onCall(item.extension)}>
-                  <PhoneIcon size={16} color="#10b981" />
-                </TouchableOpacity>
-              </View>
+              <ContactRow
+                item={item}
+                onToggleFavorite={onToggleFavorite}
+                onCall={onCall}
+              />
             )}
           />
         </View>
@@ -1542,26 +1575,23 @@ export function StandardPhoneScreen({
         <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
         <View style={styles.contactsContent}>
           <FlatList
-            data={contacts.filter((c) => c.favorite)}
+            data={favoriteContacts}
             keyExtractor={(c) => c.id}
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={5}
+            removeClippedSubviews={Platform.OS === 'android'}
             ListEmptyComponent={
               <View style={styles.emptyHistory}>
                 <Text style={styles.emptyHistoryText}>No favourites yet. Star contacts to see them here.</Text>
               </View>
             }
             renderItem={({ item }) => (
-              <View style={styles.contactRow}>
-                <TouchableOpacity style={styles.favStarBtn} onPress={() => onToggleFavorite(item.id)}>
-                  <StarIcon size={22} color="#f59e0b" fill="#f59e0b" />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.contactDetailCol} onPress={() => onCall(item.extension)}>
-                  <Text style={styles.contactRowName}>{item.name}</Text>
-                  <Text style={styles.contactRowExt}>Ext {item.extension}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.contactCallBtn} onPress={() => onCall(item.extension)}>
-                  <PhoneIcon size={16} color="#10b981" />
-                </TouchableOpacity>
-              </View>
+              <ContactRow
+                item={item}
+                onToggleFavorite={onToggleFavorite}
+                onCall={onCall}
+              />
             )}
           />
         </View>
