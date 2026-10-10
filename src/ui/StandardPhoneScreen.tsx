@@ -685,17 +685,19 @@ export function StandardPhoneScreen({
   const [callTimerSecs, setCallTimerSecs] = useState(0);
 
   useEffect(() => {
-    let timer: number | undefined;
-    if (activeCall?.status === 'active') {
-      timer = setInterval(() => setCallTimerSecs((s) => s + 1), 1000) as unknown as number;
-    } else {
+    if (activeCall?.status !== 'active') {
       setCallTimerSecs(0);
+      return;
     }
-    return () => {
-      clearInterval(timer);
+    const updateElapsed = () => {
+      const start = activeCall?.startTime || Date.now();
+      const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      setCallTimerSecs(elapsed);
     };
-  }, [activeCall?.status]);
-
+    updateElapsed();
+    const timer = setInterval(updateElapsed, 1000);
+    return () => clearInterval(timer);
+  }, [activeCall?.status, activeCall?.startTime]);
   useEffect(() => {
     StorageService.getSpeedDial().then((sd) => {
       const initial = { '1': '*97', ...sd };
@@ -1071,8 +1073,23 @@ export function StandardPhoneScreen({
   // --- Active In-Call View ---
   if (activeCall) {
     const isCallingState = activeCall.status === 'calling';
+    const isRingingState = activeCall.status === 'ringing';
     const isHeldState = activeCall.isHeld;
     const isConnectedState = activeCall.status === 'active' && !isHeldState;
+
+    const callStatusBadgeText = isHeldState
+      ? 'CALL ON HOLD'
+      : isConnectedState
+      ? 'CONNECTED • HD AUDIO'
+      : isRingingState
+      ? 'RINGING…'
+      : 'DIALING…';
+
+    const centerStatusOrTimer = isConnectedState
+      ? formatCallTime(callTimerSecs)
+      : isRingingState
+      ? 'Ringing…'
+      : 'Dialing…';
 
     return (
       <SafeAreaView style={styles.inCallContainer}>
@@ -1082,17 +1099,18 @@ export function StandardPhoneScreen({
             <View
               style={[
                 styles.inCallBadgeDot,
-                isCallingState && styles.inCallBadgeDotCalling,
+                (isCallingState || isRingingState) && styles.inCallBadgeDotCalling,
                 isHeldState && styles.inCallBadgeDotHeld,
               ]}
             />
             <Text style={styles.inCallBadgeText}>
-              {isHeldState ? 'CALL ON HOLD' : isConnectedState ? 'CONNECTED • HD AUDIO' : 'CALLING…'}
+              {callStatusBadgeText}
             </Text>
           </View>
 
-          <Text style={styles.inCallTimer}>{formatCallTime(callTimerSecs)}</Text>
-
+          <Text style={[styles.inCallTimer, !isConnectedState && styles.inCallTimerPreConnect]}>
+            {centerStatusOrTimer}
+          </Text>
           <View style={styles.inCallAvatar}>
             <Text style={styles.inCallAvatarText}>
               {activeCall.targetName.charAt(0) || activeCall.target.charAt(0) || '?'}
@@ -3386,6 +3404,12 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     fontVariant: ['tabular-nums'],
     letterSpacing: 1,
+  },
+  inCallTimerPreConnect: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#38bdf8',
+    letterSpacing: 0.5,
   },
   inCallAvatar: {
     width: 114,

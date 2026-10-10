@@ -55,16 +55,19 @@ export function ActiveCallModal({
   const [transferTarget, setTransferTarget] = useState('');
 
   useEffect(() => {
-    let timer: number | undefined;
-    if (call?.status === 'active') {
-      timer = setInterval(() => setSeconds((s) => s + 1), 1000) as unknown as number;
-    } else {
+    if (call?.status !== 'active') {
       setSeconds(0);
+      return;
     }
-    return () => {
-      clearInterval(timer);
+    const updateElapsed = () => {
+      const start = call?.startTime || Date.now();
+      const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      setSeconds(elapsed);
     };
-  }, [call?.status]);
+    updateElapsed();
+    const timer = setInterval(updateElapsed, 1000);
+    return () => clearInterval(timer);
+  }, [call?.status, call?.startTime]);
 
   if (!call) return null;
 

@@ -125,6 +125,8 @@ export default function App() {
             currentCall.targetName || currentCall.target,
             currentCall.status === 'active'
               ? `Call in progress • Ext ${currentCall.target}`
+              : currentCall.status === 'ringing'
+              ? `Ringing • Ext ${currentCall.target}`
               : `Dialing • Ext ${currentCall.target}`,
             currentCall.startTime || Date.now()
           );
@@ -296,6 +298,21 @@ export default function App() {
         sipRef.current?.setSpeakerVolume(targetSpeakerVol);
         const targetMicVol = accountRef.current?.micVolume ?? 50;
         sipRef.current?.setMicVolume(targetMicVol);
+      },
+      onCallStatusChange: (call) => {
+        updateActiveCall({ ...call });
+        if (AppState.currentState === 'background' || AppState.currentState === 'inactive') {
+          showOngoingCallNotification(
+            call.id,
+            call.targetName || call.target,
+            call.status === 'active'
+              ? `Call in progress • Ext ${call.target}`
+              : call.status === 'ringing'
+              ? `Ringing • Ext ${call.target}`
+              : `Dialing • Ext ${call.target}`,
+            call.startTime || Date.now()
+          );
+        }
       },
       onRegistrationFailed: (code, reason) => {
         if (code === 403) {

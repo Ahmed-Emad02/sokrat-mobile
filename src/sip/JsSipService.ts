@@ -57,6 +57,7 @@ export interface SipEvents {
   onStateChange: (state: SipState) => void;
   onIncomingCall: (info: IncomingCallInfo) => void;
   onCallEstablished: (call: ActiveCall) => void;
+  onCallStatusChange?: (call: ActiveCall) => void;
   onCallEnded: (callId: string, cause?: string, details?: CallEndDetails) => void;
   onCallHoldChange?: (isHeld: boolean) => void;
   onCallMuteChange?: (isMuted: boolean) => void;
@@ -458,11 +459,11 @@ export class JsSipService {
     // Attach session-level listeners
     session.on('progress', () => {
       if (this.activeCall) {
-        this.activeCall.status = 'calling';
+        this.activeCall.status = 'ringing';
+        this.events.onCallStatusChange?.(this.activeCall);
       }
       this.attachEarlyMediaAudio(session);
     });
-
     session.on('accepted', () => {
       console.log(`[sip][callId=${call.id}] session accepted; waiting for confirmation`);
       this.attachEarlyMediaAudio(session);
@@ -474,6 +475,7 @@ export class JsSipService {
         if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
         console.log(`[sip][callId=${call.id}] session confirmed`);
         this.events.onCallEstablished(this.activeCall);
+        this.events.onCallStatusChange?.(this.activeCall);
         void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
         this.setSpeakerVolume(this.speakerVolume);
       }
