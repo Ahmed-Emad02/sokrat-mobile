@@ -7,7 +7,7 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG } from '../config';
-import { startCallManagers } from '../calls/incall';
+import { startCallManagers, stopCallManagers, setMicrophoneMute } from '../calls/incall';
 import { CodecPreference } from '../storage/store';
 
 const CALL_ID_PATTERN =
@@ -372,6 +372,10 @@ export class JsSipService {
 
     this.activeCall = call;
 
+    if (session.direction === 'outgoing') {
+      startCallManagers();
+    }
+
     // Immediately complete ICE gathering so JsSIP generates and dispatches SDP answers instantly
     session.on('icecandidate', (data: unknown) => {
       const d = data as { ready?: () => void };
@@ -486,14 +490,15 @@ export class JsSipService {
     });
 
     session.on('ended', (evt: unknown) => {
+      stopCallManagers();
       const cause = (evt as { cause?: string })?.cause || 'NORMAL_CLEARING';
       const callId = this.activeCall?.id || '';
       this.activeCall = null;
       this.currentSession = null;
       this.events.onCallEnded(callId, cause);
     });
-
     session.on('failed', (evt: unknown) => {
+      stopCallManagers();
       const e = evt as {
         cause?: string;
         originator?: string;
@@ -503,8 +508,6 @@ export class JsSipService {
       const statusCode = e?.message?.status_code;
       const reasonPhrase = e?.message?.reason_phrase;
       const callId = this.activeCall?.id || '';
-      this.activeCall = null;
-      this.currentSession = null;
       this.events.onCallEnded(callId, cause, {
         originator: e?.originator,
         statusCode,
@@ -729,6 +732,7 @@ export class JsSipService {
     };
     try {
       session.answer(options);
+      startCallManagers();
       activeCall.status = 'active';
       if (!activeCall.startTime) activeCall.startTime = Date.now();
       console.log(`[sip][callId=${callId}] answer dispatched -> active call established`);
@@ -761,6 +765,7 @@ export class JsSipService {
       } catch {}
       this.localStream = null;
     }
+    stopCallManagers();
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
     if (session && typeof session.terminate === 'function') {
       try {
@@ -827,6 +832,7 @@ export class JsSipService {
       } catch {}
     }
 
+    setMicrophoneMute(nextMuted);
     this.events.onCallMuteChange?.(nextMuted);
     return nextMuted;
   }
