@@ -586,8 +586,15 @@ export class JsSipService {
     const constraints = {
       audio: {
         echoCancellation: true,
-        noiseSuppression: false,
+        noiseSuppression: true,
         autoGainControl: false,
+        channelCount: 1,
+        googEchoCancellation: true,
+        googAutoGainControl: false,
+        googNoiseSuppression: true,
+        googHighpassFilter: true,
+        googTypingNoiseDetection: false,
+        googAudioMirroring: false,
       },
       video: false,
     } as unknown as Parameters<typeof mediaDevices.getUserMedia>[0];
