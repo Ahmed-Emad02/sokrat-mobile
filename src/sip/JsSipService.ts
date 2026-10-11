@@ -587,7 +587,7 @@ export class JsSipService {
       audio: {
         echoCancellation: true,
         noiseSuppression: false,
-        autoGainControl: true,
+        autoGainControl: false,
       },
       video: false,
     } as unknown as Parameters<typeof mediaDevices.getUserMedia>[0];
