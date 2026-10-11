@@ -784,12 +784,21 @@ export default function App() {
           }
         }}
         onToggleSpeaker={async () => {
-          const next = !isSpeakerOn;
-          setIsSpeakerOn(next);
-          setSpeakerphone(next);
-          const targetRoute: AudioRouteType = next ? 'SPEAKER_PHONE' : 'EARPIECE';
-          const newState = await chooseAudioRoute(targetRoute);
+          let nextRoute: AudioRouteType;
+          if (audioDeviceState.hasBluetooth) {
+            if (audioDeviceState.selectedDevice === 'BLUETOOTH') {
+              nextRoute = 'SPEAKER_PHONE';
+            } else if (audioDeviceState.selectedDevice === 'SPEAKER_PHONE') {
+              nextRoute = 'EARPIECE';
+            } else {
+              nextRoute = 'BLUETOOTH';
+            }
+          } else {
+            nextRoute = audioDeviceState.selectedDevice === 'SPEAKER_PHONE' ? 'EARPIECE' : 'SPEAKER_PHONE';
+          }
+          const newState = await chooseAudioRoute(nextRoute);
           setAudioDeviceState(newState);
+          setIsSpeakerOn(newState.selectedDevice === 'SPEAKER_PHONE');
           const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
           setTimeout(() => {
             void setNativeSpeakerVolume(targetSpeakerVol);

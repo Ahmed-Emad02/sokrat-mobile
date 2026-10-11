@@ -1183,13 +1183,15 @@ export function StandardPhoneScreen({
                     (audioDeviceState?.selectedDevice === 'BLUETOOTH' || audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn) && styles.inCallBtnSpeakerActive,
                   ]}
                   onPress={() => {
-                    if (onToggleSpeaker) {
+                    if (audioDeviceState?.hasBluetooth || (audioDeviceState?.availableDevices?.length ?? 0) > 2) {
+                      setShowAudioRouteModal(true);
+                    } else if (onToggleSpeaker) {
                       onToggleSpeaker();
                     }
                   }}
                   onLongPress={() => {
-                    if (audioDeviceState?.hasBluetooth || (audioDeviceState?.availableDevices?.length ?? 0) > 2) {
-                      setShowAudioRouteModal(true);
+                    if (onToggleSpeaker) {
+                      onToggleSpeaker();
                     }
                   }}
                   delayPressIn={0}
