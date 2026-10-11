@@ -679,10 +679,9 @@ export class JsSipService {
 
     const isMatch = !callId || activeCall.id === callId || session.id === callId;
     if (!isMatch) {
-      console.warn(`[sip][callId=${callId}] answer rejected: mismatch with activeCallId=${activeCall.id}`);
-      return false;
+      console.log(`[sip] correlating incoming answer callId=${callId} with active session=${activeCall.id}`);
+      activeCall.id = callId || activeCall.id;
     }
-
     const localStream = await this.getLocalAudioStream();
     if (!localStream) {
       console.error(`[sip][callId=${callId}] answer blocked: microphone unavailable`);

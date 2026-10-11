@@ -1113,16 +1113,16 @@ export function StandardPhoneScreen({
           </Text>
           <View style={styles.inCallAvatar}>
             <Text style={styles.inCallAvatarText}>
-              {activeCall.targetName.charAt(0) || activeCall.target.charAt(0) || '?'}
+              {(activeCall.targetName || activeCall.target || '?').charAt(0).toUpperCase()}
             </Text>
           </View>
 
           <Text style={styles.inCallName} numberOfLines={1}>
-            {activeCall.targetName || activeCall.target}
+            {activeCall.targetName || activeCall.target || 'Active Call'}
           </Text>
           <View style={styles.inCallNumberBadge}>
             <PhoneIcon size={12} color="#38bdf8" />
-            <Text style={styles.inCallNumber}>Ext {activeCall.target}</Text>
+            <Text style={styles.inCallNumber}>Ext {activeCall.target || '162'}</Text>
           </View>
         </View>
 

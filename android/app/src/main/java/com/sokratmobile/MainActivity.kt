@@ -42,24 +42,18 @@ class MainActivity : ReactActivity() {
 
   private fun applyIncomingCallWindow(intent: Intent?) {
     val action = intent?.getStringExtra("callAction")
-    val incomingWindow = action == "SHOW" || action == "ANSWER"
+    val isIncoming = action == "SHOW" || action == "ANSWER"
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-      setShowWhenLocked(incomingWindow)
-      setTurnScreenOn(incomingWindow)
+      setShowWhenLocked(true)
+      if (isIncoming) {
+        setTurnScreenOn(true)
+      }
     }
-    if (incomingWindow) {
-      window.addFlags(
-        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-      )
-    } else {
-      window.clearFlags(
-        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-      )
-    }
+    window.addFlags(
+      WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+    )
   }
 
   companion object {
