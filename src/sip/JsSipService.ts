@@ -122,6 +122,10 @@ export class JsSipService {
     this.liveGainTimer = setTimeout(async () => {
         const gain = this.pendingGainDb ?? this.micGainDb;
         this.liveGainTimer = null;
+        if (gain === 0) {
+          resolve(true);
+          return;
+        }
         try {
           const gateway = this.serverHost ? `http://${this.serverHost}:8095` : CONFIG.pushGateway;
           const res = await fetch(`${gateway}/api/call/volume`, {
@@ -579,8 +583,17 @@ export class JsSipService {
       console.warn('[sip] microphone acquisition timed out after 6000ms');
       resolve(null);
     }, 6000);
+    const constraints = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: false,
+        autoGainControl: true,
+      },
+      video: false,
+    } as unknown as Parameters<typeof mediaDevices.getUserMedia>[0];
+
     mediaDevices
-      .getUserMedia({ audio: true, video: false })
+      .getUserMedia(constraints)
       .then((value) => {
         const stream = value as unknown as MediaStream;
         if (finished) {
@@ -985,18 +998,21 @@ export class JsSipService {
       return line;
     });
 
-    // 3. For Opus, ensure inband FEC (useinbandfec=1) is active for packet loss protection
+    // 3. For Opus: ensure inband FEC, disable DTX (prevents choppiness), set 64kbps CBR
     const opusPayload = Object.entries(payloadToCodec).find(([, name]) => name === 'opus')?.[0];
     if (opusPayload) {
       for (let i = 0; i < updatedLines.length; i++) {
         if (updatedLines[i].startsWith(`a=fmtp:${opusPayload} `)) {
-          if (!updatedLines[i].includes('useinbandfec=1')) {
-            updatedLines[i] = `${updatedLines[i]};useinbandfec=1`;
-          }
+          let fmtp = updatedLines[i];
+          if (!fmtp.includes('useinbandfec=')) fmtp += ';useinbandfec=1';
+          if (!fmtp.includes('usedtx=')) fmtp += ';usedtx=0';
+          else fmtp = fmtp.replace(/usedtx=1/g, 'usedtx=0');
+          if (!fmtp.includes('maxaveragebitrate=')) fmtp += ';maxaveragebitrate=64000';
+          if (!fmtp.includes('cbr=')) fmtp += ';cbr=1';
+          updatedLines[i] = fmtp;
         }
       }
     }
-
     return updatedLines.join('\r\n');
   }
 }
