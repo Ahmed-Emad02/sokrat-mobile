@@ -98,8 +98,8 @@ export async function chooseAudioRoute(route: AudioRouteType): Promise<AudioDevi
       InCallManager.setSpeakerphoneOn(false);
       InCallManager.setForceSpeakerphoneOn(false);
     }
-    if (Platform.OS === 'android' && CallNotificationNative?.setSpeakerphone) {
-      void CallNotificationNative.setSpeakerphone(route === 'SPEAKER_PHONE').catch?.(() => {});
+    if (Platform.OS === 'android' && CallNotificationNative?.setAudioRoute) {
+      await CallNotificationNative.setAudioRoute(route).catch?.(() => {});
     }
     const res = await InCallManager.chooseAudioRoute(route);
     if (res?.availableAudioDeviceList) {
@@ -107,6 +107,15 @@ export async function chooseAudioRoute(route: AudioRouteType): Promise<AudioDevi
     }
     if (res?.selectedAudioDevice) {
       cachedSelectedDevice = res.selectedAudioDevice as AudioRouteType;
+    }
+    if (Platform.OS === 'android' && CallNotificationNative?.getAvailableAudioRoutes) {
+      const nativeRoutes = await CallNotificationNative.getAvailableAudioRoutes().catch?.(() => null);
+      if (nativeRoutes?.availableDevices) {
+        cachedAudioDevices = nativeRoutes.availableDevices as AudioRouteType[];
+      }
+      if (nativeRoutes?.selectedDevice) {
+        cachedSelectedDevice = nativeRoutes.selectedDevice as AudioRouteType;
+      }
     }
   } catch (err) {
     console.warn('[incall] chooseAudioRoute error:', err);
@@ -130,6 +139,17 @@ export function subscribeAudioDeviceChanges(
   listener: (state: AudioDeviceState) => void
 ): () => void {
   listener(getAudioDeviceState());
+  if (Platform.OS === 'android' && CallNotificationNative?.getAvailableAudioRoutes) {
+    void CallNotificationNative.getAvailableAudioRoutes().then((res: { availableDevices?: string[]; selectedDevice?: string; hasBluetooth?: boolean }) => {
+      if (res?.availableDevices) cachedAudioDevices = res.availableDevices as AudioRouteType[];
+      if (res?.selectedDevice) cachedSelectedDevice = res.selectedDevice as AudioRouteType;
+      listener({
+        availableDevices: cachedAudioDevices,
+        selectedDevice: cachedSelectedDevice,
+        hasBluetooth: res?.hasBluetooth ?? cachedAudioDevices.includes('BLUETOOTH'),
+      });
+    }).catch(() => {});
+  }
 
   const sub = DeviceEventEmitter.addListener(
     'onAudioDeviceChanged',

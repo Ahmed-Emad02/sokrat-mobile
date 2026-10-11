@@ -80,6 +80,121 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             promise.reject("SPEAKER_ERROR", e.message, e)
         }
     }
+
+    @ReactMethod
+    fun setAudioRoute(route: String, promise: Promise) {
+        try {
+            val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (audioManager == null) {
+                promise.reject("AUDIO_MANAGER_NULL", "AudioManager not available")
+                return
+            }
+
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val targetDevice = when (route.uppercase()) {
+                    "BLUETOOTH" -> audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_HEARING_AID ||
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                    }
+                    "SPEAKER_PHONE" -> audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    "EARPIECE" -> audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    }
+                    "WIRED_HEADSET" -> audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                    }
+                    else -> null
+                }
+
+                if (targetDevice != null) {
+                    val success = audioManager.setCommunicationDevice(targetDevice)
+                    android.util.Log.d("CallNotificationModule", "setCommunicationDevice($route, name=${targetDevice.productName}) result: $success")
+                } else {
+                    if (route.uppercase() == "EARPIECE") {
+                        audioManager.clearCommunicationDevice()
+                    }
+                    android.util.Log.w("CallNotificationModule", "No device found for route: $route")
+                }
+            }
+
+            audioManager.isSpeakerphoneOn = (route.uppercase() == "SPEAKER_PHONE")
+            promise.resolve(route)
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "setAudioRoute failed", e)
+            promise.reject("AUDIO_ROUTE_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getAvailableAudioRoutes(promise: Promise) {
+        try {
+            val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val list = com.facebook.react.bridge.Arguments.createArray()
+            val map = com.facebook.react.bridge.Arguments.createMap()
+            var currentSelected = "EARPIECE"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && audioManager != null) {
+                val commDevice = audioManager.communicationDevice
+                val devices = audioManager.availableCommunicationDevices
+                var hasBt = false
+                for (dev in devices) {
+                    val typeName = when (dev.type) {
+                        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                        AudioDeviceInfo.TYPE_BLE_HEADSET,
+                        AudioDeviceInfo.TYPE_HEARING_AID,
+                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> {
+                            hasBt = true
+                            "BLUETOOTH"
+                        }
+                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER_PHONE"
+                        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "EARPIECE"
+                        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                        AudioDeviceInfo.TYPE_USB_HEADSET -> "WIRED_HEADSET"
+                        else -> null
+                    }
+                    if (typeName != null) {
+                        list.pushString(typeName)
+                    }
+                }
+                if (commDevice != null) {
+                    currentSelected = when (commDevice.type) {
+                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER_PHONE"
+                        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                        AudioDeviceInfo.TYPE_BLE_HEADSET,
+                        AudioDeviceInfo.TYPE_HEARING_AID,
+                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BLUETOOTH"
+                        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                        AudioDeviceInfo.TYPE_USB_HEADSET -> "WIRED_HEADSET"
+                        else -> "EARPIECE"
+                    }
+                }
+                map.putArray("availableDevices", list)
+                map.putString("selectedDevice", currentSelected)
+                map.putBoolean("hasBluetooth", hasBt)
+            } else {
+                list.pushString("EARPIECE")
+                list.pushString("SPEAKER_PHONE")
+                map.putArray("availableDevices", list)
+                map.putString("selectedDevice", if (audioManager?.isSpeakerphoneOn == true) "SPEAKER_PHONE" else "EARPIECE")
+                map.putBoolean("hasBluetooth", false)
+            }
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("GET_ROUTES_ERROR", e.message, e)
+        }
+    }
     @ReactMethod
     fun showIncomingCallNotification(
         callId: String,

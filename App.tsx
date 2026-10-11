@@ -796,7 +796,12 @@ export default function App() {
           }, 200);
         }}
         audioDeviceState={audioDeviceState}
-        onChooseAudioRoute={chooseAudioRoute}
+        onChooseAudioRoute={async (route: AudioRouteType) => {
+          const newState = await chooseAudioRoute(route);
+          setAudioDeviceState(newState);
+          setIsSpeakerOn(route === 'SPEAKER_PHONE');
+          return newState;
+        }}
         onSendDtmf={(d: string) => sipRef.current?.sendDTMF(d)}
         onTransfer={(t: string) => sipRef.current?.blindTransfer(t)}
         onSaveAccount={handleSaveAccount}
