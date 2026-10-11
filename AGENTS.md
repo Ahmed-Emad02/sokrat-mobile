@@ -98,3 +98,12 @@ platform toolchain, not from WSL.
 - Registers device tokens via `POST /api/push/register-device`.
 - Build and test against the Rocky VM (`ssh rocky`) for end-to-end call flows —
   see `../../ACCESS.md` §5.
+
+---
+
+## 7. Non-Interference Invariants with Desktop SIP (MicroSIP / Zoiper)
+
+- **Production Invariant**: Existing users rely primarily on desktop clients (**MicroSIP, Zoiper**) and IP desk phones. The mobile app must operate without disrupting desktop routing or audio fidelity.
+- **WebRTC Scope**: WebRTC endpoints (`pjsip_custom.conf`) are dedicated strictly to Sokrat Mobile and Sokrat CRM embedded softphones. Standard users remain on standard SIP.
+- **Client-Side DSP**: All audio processing (noise suppression, highpass filter, gain calibration) belongs in `src/sip/JsSipService.ts`. Never inject PBX-level dialplan hacks, volume multipliers, or early-media overrides into Asterisk that could alter desktop behavior.
+- **No PBX Dialplan Hijacking**: Never place wildcard dial patterns into `[from-internal-custom]` on the PBX server. Outbound routing must go through standard FreePBX trunk macros.
