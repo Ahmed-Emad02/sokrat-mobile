@@ -287,6 +287,50 @@ function UnifiedAudioControls({
   );
 }
 
+function formatCallDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+}
+
+const InCallTimerDisplay = React.memo(function InCallTimerDisplay({
+  startTime,
+  status,
+}: {
+  startTime?: number;
+  status?: string;
+}) {
+  const isConnected = status === 'active';
+  const isRinging = status === 'ringing';
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (status !== 'active') {
+      setElapsed(0);
+      return;
+    }
+    const tick = () => {
+      const start = startTime || Date.now();
+      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [status, startTime]);
+
+  const label = isConnected
+    ? formatCallDuration(elapsed)
+    : isRinging
+    ? 'Ringing…'
+    : 'Dialing…';
+
+  return (
+    <Text style={[styles.inCallTimer, !isConnected && styles.inCallTimerPreConnect]}>
+      {label}
+    </Text>
+  );
+});
+
 type Props = {
   account: SavedAccount | null;
   state: SipState;
@@ -682,22 +726,6 @@ export function StandardPhoneScreen({
   const [showInCallDtmf, setShowInCallDtmf] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferTarget, setTransferTarget] = useState('');
-  const [callTimerSecs, setCallTimerSecs] = useState(0);
-
-  useEffect(() => {
-    if (activeCall?.status !== 'active') {
-      setCallTimerSecs(0);
-      return;
-    }
-    const updateElapsed = () => {
-      const start = activeCall?.startTime || Date.now();
-      const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
-      setCallTimerSecs(elapsed);
-    };
-    updateElapsed();
-    const timer = setInterval(updateElapsed, 1000);
-    return () => clearInterval(timer);
-  }, [activeCall?.status, activeCall?.startTime]);
   useEffect(() => {
     StorageService.getSpeedDial().then((sd) => {
       const initial = { '1': '*97', ...sd };
@@ -764,11 +792,7 @@ export function StandardPhoneScreen({
         );
       });
   }, [serverExtensions, account?.extension, transferTarget]);
-  const formatCallTime = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
-  };
+  const formatCallTime = formatCallDuration;
 
   const formatExactDate = (ts: number): string => {
     const d = new Date(ts);
@@ -1085,11 +1109,6 @@ export function StandardPhoneScreen({
       ? 'RINGING…'
       : 'DIALING…';
 
-    const centerStatusOrTimer = isConnectedState
-      ? formatCallTime(callTimerSecs)
-      : isRingingState
-      ? 'Ringing…'
-      : 'Dialing…';
 
     return (
       <SafeAreaView style={styles.inCallContainer}>
@@ -1108,9 +1127,7 @@ export function StandardPhoneScreen({
             </Text>
           </View>
 
-          <Text style={[styles.inCallTimer, !isConnectedState && styles.inCallTimerPreConnect]}>
-            {centerStatusOrTimer}
-          </Text>
+          <InCallTimerDisplay startTime={activeCall.startTime} status={activeCall.status} />
           <View style={styles.inCallAvatar}>
             <Text style={styles.inCallAvatarText}>
               {(activeCall.targetName || activeCall.target || '?').charAt(0).toUpperCase()}
