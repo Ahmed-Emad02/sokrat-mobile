@@ -65,8 +65,11 @@ export function setMicrophoneMute(muted: boolean) {
 
 export function setSpeakerphone(on: boolean) {
   try {
+    InCallManager.setSpeakerphoneOn(on);
     InCallManager.setForceSpeakerphoneOn(on);
-    cachedSelectedDevice = on ? 'SPEAKER_PHONE' : 'EARPIECE';
+    const targetRoute: AudioRouteType = on ? 'SPEAKER_PHONE' : 'EARPIECE';
+    cachedSelectedDevice = targetRoute;
+    void InCallManager.chooseAudioRoute(targetRoute);
   } catch (err) {
     console.warn('[incall] setSpeakerphone error:', err);
   }
@@ -84,8 +87,10 @@ export async function chooseAudioRoute(route: AudioRouteType): Promise<AudioDevi
   try {
     cachedSelectedDevice = route;
     if (route === 'SPEAKER_PHONE') {
+      InCallManager.setSpeakerphoneOn(true);
       InCallManager.setForceSpeakerphoneOn(true);
     } else {
+      InCallManager.setSpeakerphoneOn(false);
       InCallManager.setForceSpeakerphoneOn(false);
     }
     const res = await InCallManager.chooseAudioRoute(route);

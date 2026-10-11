@@ -783,10 +783,13 @@ export default function App() {
             updateActiveCall({ ...activeCallRef.current, isHeld: nextHeld });
           }
         }}
-        onToggleSpeaker={() => {
+        onToggleSpeaker={async () => {
           const next = !isSpeakerOn;
           setIsSpeakerOn(next);
           setSpeakerphone(next);
+          const targetRoute: AudioRouteType = next ? 'SPEAKER_PHONE' : 'EARPIECE';
+          const newState = await chooseAudioRoute(targetRoute);
+          setAudioDeviceState(newState);
           const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
           setTimeout(() => {
             void setNativeSpeakerVolume(targetSpeakerVol);
