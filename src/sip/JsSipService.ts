@@ -7,7 +7,7 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG } from '../config';
-import { startCallManagers } from '../calls/incall';
+import { startCallManagers, startRingback, stopRingback } from '../calls/incall';
 import { CodecPreference } from '../storage/store';
 
 const CALL_ID_PATTERN =
@@ -372,6 +372,11 @@ export class JsSipService {
 
     this.activeCall = call;
 
+    if (session.direction === 'outgoing') {
+      startCallManagers();
+      startRingback();
+    }
+
     // Immediately complete ICE gathering so JsSIP generates and dispatches SDP answers instantly
     session.on('icecandidate', (data: unknown) => {
       const d = data as { ready?: () => void };
@@ -468,10 +473,10 @@ export class JsSipService {
       this.attachEarlyMediaAudio(session);
     });
     session.on('accepted', () => {
+      stopRingback();
       console.log(`[sip][callId=${call.id}] session accepted; waiting for confirmation`);
       this.attachEarlyMediaAudio(session);
     });
-
     session.on('confirmed', () => {
       if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'active';
@@ -482,18 +487,19 @@ export class JsSipService {
         void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
         this.setSpeakerVolume(this.speakerVolume);
       }
+      stopRingback();
       this.attachEarlyMediaAudio(session);
     });
-
     session.on('ended', (evt: unknown) => {
+      stopRingback();
       const cause = (evt as { cause?: string })?.cause || 'NORMAL_CLEARING';
       const callId = this.activeCall?.id || '';
       this.activeCall = null;
       this.currentSession = null;
       this.events.onCallEnded(callId, cause);
     });
-
     session.on('failed', (evt: unknown) => {
+      stopRingback();
       const e = evt as {
         cause?: string;
         originator?: string;
@@ -550,6 +556,7 @@ export class JsSipService {
           if (r.track) tracks.push(r.track);
         }
         if (tracks.length > 0) {
+          stopRingback();
           const stream = new MediaStream(tracks);
           if (this.activeCall) {
             this.activeCall.remoteStream = stream;
@@ -761,6 +768,7 @@ export class JsSipService {
       } catch {}
       this.localStream = null;
     }
+    stopRingback();
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
     if (session && typeof session.terminate === 'function') {
       try {

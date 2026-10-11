@@ -36,6 +36,10 @@ export function startCallManagers() {
   InCallManager.setKeepScreenOn(true);
 }
 export function stopCallManagers() {
+  try {
+    InCallManager.stopRingback();
+    InCallManager.stopRingtone();
+  } catch {}
   InCallManager.stop();
 }
 
@@ -52,6 +56,22 @@ export function stopRingtone() {
     InCallManager.stopRingtone();
   } catch (err) {
     console.warn('[incall] stopRingtone error:', err);
+  }
+}
+
+export function startRingback() {
+  try {
+    InCallManager.startRingback('_DEFAULT_');
+  } catch (err) {
+    console.warn('[incall] startRingback error:', err);
+  }
+}
+
+export function stopRingback() {
+  try {
+    InCallManager.stopRingback();
+  } catch (err) {
+    console.warn('[incall] stopRingback error:', err);
   }
 }
 
