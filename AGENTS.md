@@ -107,3 +107,7 @@ platform toolchain, not from WSL.
 - **WebRTC Scope**: WebRTC endpoints (`pjsip_custom.conf`) are dedicated strictly to Sokrat Mobile and Sokrat CRM embedded softphones. Standard users remain on standard SIP.
 - **Client-Side DSP**: All audio processing (noise suppression, highpass filter, gain calibration) belongs in `src/sip/JsSipService.ts`. Never inject PBX-level dialplan hacks, volume multipliers, or early-media overrides into Asterisk that could alter desktop behavior.
 - **No PBX Dialplan Hijacking**: Never place wildcard dial patterns into `[from-internal-custom]` on the PBX server. Outbound routing must go through standard FreePBX trunk macros.
+- **Zero Extension Hardcoding**: Test extensions (`160`, `162`, `150`) are strictly test fixtures. The app and PBX integration must work for ANY extension created in Sokrat VOIP dashboard.
+- **Zero-Friction Employee Onboarding**: Deploying a user is strictly 3 steps: (1) Admin creates extension in PBX dashboard, (2) Employee installs APK, (3) Employee logs in. Everything must configure dynamically.
+- **Dual-Use Compatibility**: The same extension must work concurrently on Sokrat Mobile and the embedded Sokrat CRM WebRTC client (`max_contacts >= 5`, `remove_existing = no`).
+- **PBX Git Branching Policy**: Server changes on `sokrat-voip` must NEVER be pushed to `main` (active installations use `main`). Server changes must use a dedicated feature branch on GitHub.
