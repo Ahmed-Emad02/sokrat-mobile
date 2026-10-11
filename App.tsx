@@ -433,7 +433,7 @@ export default function App() {
         useTls: storedAccount?.useTls ?? false,
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
-        preferredCodec: storedAccount?.preferredCodec || 'opus',
+        preferredCodec: storedAccount?.preferredCodec || 'pcmu',
         micVolume: Math.min(storedAccount?.micVolume ?? 50, 50),
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };

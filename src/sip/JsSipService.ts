@@ -66,7 +66,7 @@ export interface SipEvents {
 export class JsSipService {
   private ua: JsSIP.UA | null = null;
   private currentSession: unknown = null;
-  private preferredCodec: CodecPreference = 'auto';
+  private preferredCodec: CodecPreference = 'pcmu';
   private micVolume = 50;
   private speakerVolume = 85;
   private micGainDb = 0;
