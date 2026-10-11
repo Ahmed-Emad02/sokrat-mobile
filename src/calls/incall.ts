@@ -5,7 +5,9 @@
  * screen off when the phone is held to the ear (proximity sensor).
  */
 import InCallManager from 'react-native-incall-manager';
-import { DeviceEventEmitter, Platform } from 'react-native';
+import { DeviceEventEmitter, Platform, NativeModules } from 'react-native';
+
+const CallNotificationNative = NativeModules.CallNotificationModule;
 
 export type AudioRouteType = 'EARPIECE' | 'SPEAKER_PHONE' | 'BLUETOOTH' | 'WIRED_HEADSET';
 
@@ -70,6 +72,9 @@ export function setSpeakerphone(on: boolean) {
     const targetRoute: AudioRouteType = on ? 'SPEAKER_PHONE' : 'EARPIECE';
     cachedSelectedDevice = targetRoute;
     void InCallManager.chooseAudioRoute(targetRoute);
+    if (Platform.OS === 'android' && CallNotificationNative?.setSpeakerphone) {
+      void CallNotificationNative.setSpeakerphone(on).catch?.(() => {});
+    }
   } catch (err) {
     console.warn('[incall] setSpeakerphone error:', err);
   }
@@ -92,6 +97,9 @@ export async function chooseAudioRoute(route: AudioRouteType): Promise<AudioDevi
     } else {
       InCallManager.setSpeakerphoneOn(false);
       InCallManager.setForceSpeakerphoneOn(false);
+    }
+    if (Platform.OS === 'android' && CallNotificationNative?.setSpeakerphone) {
+      void CallNotificationNative.setSpeakerphone(route === 'SPEAKER_PHONE').catch?.(() => {});
     }
     const res = await InCallManager.chooseAudioRoute(route);
     if (res?.availableAudioDeviceList) {

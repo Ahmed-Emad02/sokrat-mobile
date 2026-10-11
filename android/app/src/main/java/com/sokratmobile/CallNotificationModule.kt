@@ -18,6 +18,9 @@ import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.facebook.react.module.annotations.ReactModule
 import kotlin.math.roundToInt
+import android.media.AudioManager
+import android.media.AudioDeviceInfo
+import android.os.Build
 
 @ReactModule(name = CallNotificationModule.NAME)
 class CallNotificationModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
@@ -32,6 +35,50 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     override fun invalidate() {
         instance = null
         super.invalidate()
+    }
+    @ReactMethod
+    fun setSpeakerphone(enable: Boolean, promise: Promise) {
+        try {
+            val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (audioManager == null) {
+                promise.reject("AUDIO_MANAGER_NULL", "AudioManager not available")
+                return
+            }
+
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (enable) {
+                    val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speaker != null) {
+                        val success = audioManager.setCommunicationDevice(speaker)
+                        android.util.Log.d("CallNotificationModule", "setCommunicationDevice(SPEAKER) result: $success")
+                    } else {
+                        audioManager.clearCommunicationDevice()
+                    }
+                } else {
+                    val earpiece = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    }
+                    if (earpiece != null) {
+                        val success = audioManager.setCommunicationDevice(earpiece)
+                        android.util.Log.d("CallNotificationModule", "setCommunicationDevice(EARPIECE) result: $success")
+                    } else {
+                        audioManager.clearCommunicationDevice()
+                    }
+                }
+            }
+
+            audioManager.isSpeakerphoneOn = enable
+            promise.resolve(enable)
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "setSpeakerphone failed", e)
+            promise.reject("SPEAKER_ERROR", e.message, e)
+        }
     }
     @ReactMethod
     fun showIncomingCallNotification(
