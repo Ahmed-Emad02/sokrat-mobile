@@ -8,6 +8,7 @@ import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG } from '../config';
 import { startCallManagers, stopCallManagers, setMicrophoneMute } from '../calls/incall';
+import { dismissNativeCallNotification } from '../calls/nativeCallNotification';
 import { CodecPreference } from '../storage/store';
 
 const CALL_ID_PATTERN =
@@ -493,6 +494,7 @@ export class JsSipService {
       stopCallManagers();
       const cause = (evt as { cause?: string })?.cause || 'NORMAL_CLEARING';
       const callId = this.activeCall?.id || '';
+      dismissNativeCallNotification(callId);
       this.activeCall = null;
       this.currentSession = null;
       this.events.onCallEnded(callId, cause);
@@ -508,6 +510,9 @@ export class JsSipService {
       const statusCode = e?.message?.status_code;
       const reasonPhrase = e?.message?.reason_phrase;
       const callId = this.activeCall?.id || '';
+      dismissNativeCallNotification(callId);
+      this.activeCall = null;
+      this.currentSession = null;
       this.events.onCallEnded(callId, cause, {
         originator: e?.originator,
         statusCode,
@@ -733,6 +738,7 @@ export class JsSipService {
     try {
       session.answer(options);
       startCallManagers();
+      dismissNativeCallNotification(callId);
       activeCall.status = 'active';
       if (!activeCall.startTime) activeCall.startTime = Date.now();
       console.log(`[sip][callId=${callId}] answer dispatched -> active call established`);
@@ -767,6 +773,7 @@ export class JsSipService {
     }
     stopCallManagers();
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
+    dismissNativeCallNotification(this.activeCall?.id || '');
     if (session && typeof session.terminate === 'function') {
       try {
         session.terminate();
@@ -799,6 +806,7 @@ export class JsSipService {
         reason_phrase: 'Decline',
       });
       console.log(`[sip][callId=${this.activeCall.id}] decline dispatched`);
+      dismissNativeCallNotification(callId || this.activeCall?.id || '');
     } catch (error) {
       console.warn(`[sip][callId=${this.activeCall.id}] decline failed:`, error);
       return false;

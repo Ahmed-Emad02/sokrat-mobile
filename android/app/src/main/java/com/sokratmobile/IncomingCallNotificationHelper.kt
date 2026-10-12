@@ -288,6 +288,17 @@ object IncomingCallNotificationHelper {
         try {
             val nm = NotificationManagerCompat.from(context)
             nm.cancel(notificationId(callId))
+            IncomingCallStore.pending(context).forEach {
+                nm.cancel(notificationId(it.callId))
+            }
+            val sysNm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && sysNm != null) {
+                sysNm.activeNotifications?.forEach { sbn ->
+                    if (sbn.notification.channelId == CHANNEL_ID) {
+                        sysNm.cancel(sbn.id)
+                    }
+                }
+            }
         } catch (error: Exception) {
             error.printStackTrace()
         }
