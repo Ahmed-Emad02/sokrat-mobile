@@ -25,6 +25,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.telephony.TelephonyManager
+import android.telephony.TelephonyCallback
+import android.telephony.PhoneStateListener
 
 @ReactModule(name = CallNotificationModule.NAME)
 class CallNotificationModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
@@ -34,14 +37,20 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastEmittedConnected: Boolean? = null
     private var lastEmittedNetworkType: String? = null
+    private var telephonyCallback: Any? = null
+    private var phoneStateListener: PhoneStateListener? = null
+    private var lastGsmState: String = "IDLE"
+
     override fun initialize() {
         super.initialize()
         instance = this
         registerNetworkCallback()
+        registerTelephonyListener()
     }
 
     override fun invalidate() {
         unregisterNetworkCallback()
+        unregisterTelephonyListener()
         instance = null
         super.invalidate()
     }
@@ -112,6 +121,73 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             putString("networkType", networkType)
         }
         emitEvent("onNetworkStateChanged", params)
+    }
+
+    private fun registerTelephonyListener() {
+        try {
+            val tm = reactApplicationContext.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                    override fun onCallStateChanged(state: Int) {
+                        handleCallState(state)
+                    }
+                }
+                telephonyCallback = cb
+                val executor = ContextCompat.getMainExecutor(reactApplicationContext)
+                tm.registerTelephonyCallback(executor, cb)
+            } else {
+                @Suppress("DEPRECATION")
+                val listener = object : PhoneStateListener() {
+                    @Deprecated("Deprecated in Java")
+                    override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                        handleCallState(state)
+                    }
+                }
+                phoneStateListener = listener
+                @Suppress("DEPRECATION")
+                tm.listen(listener, PhoneStateListener.LISTEN_CALL_STATE)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "registerTelephonyListener failed", e)
+        }
+    }
+
+    private fun unregisterTelephonyListener() {
+        try {
+            val tm = reactApplicationContext.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (telephonyCallback as? TelephonyCallback)?.let { tm.unregisterTelephonyCallback(it) }
+                telephonyCallback = null
+            } else {
+                phoneStateListener?.let {
+                    @Suppress("DEPRECATION")
+                    tm.listen(it, PhoneStateListener.LISTEN_NONE)
+                }
+                phoneStateListener = null
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "unregisterTelephonyListener failed", e)
+        }
+    }
+
+    private fun handleCallState(state: Int) {
+        val stateStr = when (state) {
+            TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+            TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+            else -> "IDLE"
+        }
+        if (stateStr == lastGsmState) return
+        lastGsmState = stateStr
+        val params = Arguments.createMap().apply {
+            putString("state", stateStr)
+        }
+        emitEvent("onGsmCallStateChanged", params)
+        android.util.Log.d("CallNotificationModule", "GSM call state changed: $stateStr")
+    }
+
+    @ReactMethod
+    fun getGsmCallState(promise: Promise) {
+        promise.resolve(lastGsmState)
     }
 
     @ReactMethod
@@ -567,6 +643,14 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                 putString("extension", extension)
                 putString("timestamp", timestamp.toString())
             }
+
+        fun simulateGsmState(state: String) {
+            val params = Arguments.createMap().apply {
+                putString("state", state)
+            }
+            emitEvent("onGsmCallStateChanged", params)
+            android.util.Log.d("CallNotificationModule", "Simulated GSM state: $state")
+        }
 
         private fun emitEvent(eventName: String, params: WritableMap) {
             instance?.reactApplicationContext

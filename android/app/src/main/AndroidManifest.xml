@@ -91,9 +91,10 @@
 
       <receiver
         android:name=".CallActionReceiver"
-        android:exported="false">
+        android:exported="true">
         <intent-filter>
           <action android:name="com.sokratmobile.ACTION_DECLINE_CALL" />
+          <action android:name="com.sokratmobile.ACTION_SIMULATE_GSM" />
         </intent-filter>
       </receiver>
     </application>

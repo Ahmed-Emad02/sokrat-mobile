@@ -33,6 +33,7 @@ export interface ActiveCall {
   startTime?: number;
   isMuted: boolean;
   isHeld: boolean;
+  isGsmInterrupted?: boolean;
   session: unknown;
   remoteStream?: MediaStream | null;
 }
@@ -848,22 +849,26 @@ export class JsSipService {
   }
 
   toggleHold(): boolean {
+    const nextHeld = !this.activeCall?.isHeld;
+    return this.setHold(nextHeld);
+  }
+
+  setHold(hold: boolean): boolean {
     const session = this.currentSession as { hold?: () => void; unhold?: () => void } | null;
     if (!this.activeCall) return false;
+    if (this.activeCall.isHeld === hold) return hold;
 
-    const nextHeld = !this.activeCall.isHeld;
-    this.activeCall.isHeld = nextHeld;
-
+    this.activeCall.isHeld = hold;
     if (session) {
-      if (nextHeld) {
+      if (hold) {
         session.hold?.();
       } else {
         session.unhold?.();
       }
     }
 
-    this.events.onCallHoldChange?.(nextHeld);
-    return nextHeld;
+    this.events.onCallHoldChange?.(hold);
+    return hold;
   }
 
   /**

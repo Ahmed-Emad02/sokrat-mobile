@@ -1101,7 +1101,9 @@ export function StandardPhoneScreen({
     const isHeldState = activeCall.isHeld;
     const isConnectedState = activeCall.status === 'active' && !isHeldState;
 
-    const callStatusBadgeText = isHeldState
+    const callStatusBadgeText = activeCall.isGsmInterrupted
+      ? 'PAUSED (CELLULAR CALL ACTIVE)'
+      : isHeldState
       ? 'CALL ON HOLD'
       : isConnectedState
       ? 'CONNECTED • HD AUDIO'

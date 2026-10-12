@@ -6,7 +6,13 @@ import android.content.Intent
 
 class CallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        if (intent?.action != "com.sokratmobile.ACTION_DECLINE_CALL") return
+        if (intent == null) return
+        if (intent.action == "com.sokratmobile.ACTION_SIMULATE_GSM") {
+            val state = intent.getStringExtra("state") ?: "IDLE"
+            CallNotificationModule.simulateGsmState(state)
+            return
+        }
+        if (intent.action != "com.sokratmobile.ACTION_DECLINE_CALL") return
         val callId = intent.getStringExtra("callId")
         if (callId.isNullOrBlank()) return
 

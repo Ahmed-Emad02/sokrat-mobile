@@ -56,6 +56,7 @@ import {
   AudioRouteType,
 } from './src/calls/incall';
 import { subscribeNetworkChanges, NetworkState } from './src/calls/network';
+import { subscribeGsmCallState, GsmCallState } from './src/calls/telephony';
 import {
   StorageService,
   SavedAccount,
@@ -173,9 +174,37 @@ export default function App() {
         bindExtension(accountRef.current.extension);
       }
     });
+    const unsubGsm = subscribeGsmCallState((gsmState: GsmCallState) => {
+      console.log('[app] GSM cellular call state updated:', gsmState);
+      const current = activeCallRef.current;
+      if (!current) return;
+
+      if (gsmState === 'RINGING' || gsmState === 'OFFHOOK') {
+        if (current.status === 'active' && !current.isHeld) {
+          console.log('[app] auto-holding VoIP call due to GSM cellular preemption');
+          sipRef.current?.setHold(true);
+          updateActiveCall({
+            ...current,
+            isHeld: true,
+            isGsmInterrupted: true,
+          });
+        }
+      } else if (gsmState === 'IDLE') {
+        if (current.isGsmInterrupted) {
+          console.log('[app] GSM cellular call ended; auto-resuming VoIP call');
+          sipRef.current?.setHold(false);
+          updateActiveCall({
+            ...current,
+            isHeld: false,
+            isGsmInterrupted: false,
+          });
+        }
+      }
+    });
     return () => {
       unsubAudio();
       unsubNet();
+      unsubGsm();
     };
   }, []);
 
