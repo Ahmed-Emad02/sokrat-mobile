@@ -197,11 +197,12 @@ export class JsSipService {
   }
   private localStream: MediaStream | null = null;
   private reconnectAttempt = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: number | null = null;
+  private keepAliveTimer: number | null = null;
   private extension = '';
   private password = '';
   private serverHost = '';
+  private networkDebounceTimer: number | null = null;
   private useTls = false;
 
   state: SipState = 'disconnected';
@@ -220,9 +221,10 @@ export class JsSipService {
    * Connect and register to Asterisk PJSIP.
    * Defaults to ws://<host>:8088/ws on LAN for reliable handshake without SSL cert warnings.
    */
-  async connect(extension: string, password: string, host?: string, useTls = false): Promise<void> {
+  async connect(extension: string, password: string, host?: string, useTls = false, force = false): Promise<void> {
     const targetHost = host || CONFIG.sipDomain;
     if (
+      !force &&
       this.isConnectedOrConnecting() &&
       this.extension === extension &&
       this.password === password &&
@@ -231,7 +233,7 @@ export class JsSipService {
     ) {
       return;
     }
-    this.disconnect();
+    this.disconnect(false);
     this.extension = extension;
     this.password = password;
     this.serverHost = targetHost;
@@ -920,6 +922,55 @@ export class JsSipService {
     }
   }
 
+  handleNetworkChange(network: { isConnected: boolean; networkType: string }): void {
+    console.log(`[sip] network changed: connected=${network.isConnected}, type=${network.networkType}`);
+    if (!network.isConnected) {
+      clearTimeout(this.networkDebounceTimer ?? undefined);
+      this.networkDebounceTimer = null;
+      if (!this.activeCall) {
+        this.setState('disconnected');
+      }
+      return;
+    }
+
+    if (this.activeCall) {
+      console.log('[sip] network switched during active call; refreshing transport connection');
+      try {
+        // @ts-expect-error JsSIP transport reconnect
+        this.ua?.transport?.connect();
+      } catch {}
+      return;
+    }
+
+    clearTimeout(this.networkDebounceTimer ?? undefined);
+    this.networkDebounceTimer = setTimeout(() => {
+      this.networkDebounceTimer = null;
+      void this.forceReconnect();
+    }, 350) as unknown as number;
+  }
+
+  async forceReconnect(): Promise<void> {
+    const ext = this.extension;
+    const pwd = this.password;
+    const host = this.serverHost;
+    const tls = this.useTls;
+    if (!ext || !pwd || !host) return;
+    if (this.activeCall) return;
+
+    console.log('[sip] forcing immediate SIP reconnection due to network handover...');
+    this.reconnectAttempt = 0;
+    clearTimeout(this.reconnectTimer ?? undefined);
+    this.reconnectTimer = null;
+
+    this.disconnect(false);
+    this.setState('connecting');
+
+    setTimeout(() => {
+      void this.connect(ext, pwd, host, tls, true);
+    }, 200);
+  }
+
+
   private startKeepAlive() {
     this.stopKeepAlive();
     this.keepAliveTimer = setInterval(() => {
@@ -946,8 +997,8 @@ export class JsSipService {
     this.keepAliveTimer = null;
   }
 
-  disconnect() {
-    clearTimeout(this.reconnectTimer);
+  disconnect(notifyState = true) {
+    clearTimeout(this.reconnectTimer ?? undefined);
     this.reconnectTimer = null;
     this.stopKeepAlive();
     if (this.ua) {
@@ -958,7 +1009,9 @@ export class JsSipService {
     }
     this.currentSession = null;
     this.activeCall = null;
-    this.setState('disconnected');
+    if (notifyState) {
+      this.setState('disconnected');
+    }
   }
 
   isRegistered(): boolean {

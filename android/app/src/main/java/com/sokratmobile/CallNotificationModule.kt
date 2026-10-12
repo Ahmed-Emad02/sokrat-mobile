@@ -21,20 +21,123 @@ import kotlin.math.roundToInt
 import android.media.AudioManager
 import android.media.AudioDeviceInfo
 import android.os.Build
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 
 @ReactModule(name = CallNotificationModule.NAME)
 class CallNotificationModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
 
     override fun getName(): String = NAME
 
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastEmittedConnected: Boolean? = null
+    private var lastEmittedNetworkType: String? = null
     override fun initialize() {
         super.initialize()
         instance = this
+        registerNetworkCallback()
     }
 
     override fun invalidate() {
+        unregisterNetworkCallback()
         instance = null
         super.invalidate()
+    }
+
+    private fun registerNetworkCallback() {
+        try {
+            val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    emitNetworkChange(true, getNetworkType(cm, network))
+                }
+
+                override fun onLost(network: Network) {
+                    emitNetworkChange(false, "NONE")
+                }
+
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                    val hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    emitNetworkChange(hasInternet, getNetworkTypeFromCapabilities(capabilities))
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cm.registerDefaultNetworkCallback(networkCallback!!)
+            } else {
+                val request = NetworkRequest.Builder().build()
+                cm.registerNetworkCallback(request, networkCallback!!)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "registerNetworkCallback failed", e)
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        try {
+            val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            networkCallback?.let { cm.unregisterNetworkCallback(it) }
+            networkCallback = null
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "unregisterNetworkCallback failed", e)
+        }
+    }
+
+    private fun getNetworkType(cm: ConnectivityManager, network: Network): String {
+        val caps = cm.getNetworkCapabilities(network) ?: return "UNKNOWN"
+        return getNetworkTypeFromCapabilities(caps)
+    }
+
+    private fun getNetworkTypeFromCapabilities(caps: NetworkCapabilities): String {
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "CELLULAR"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) -> "BLUETOOTH"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+            else -> "OTHER"
+        }
+    }
+
+    private fun emitNetworkChange(isConnected: Boolean, networkType: String) {
+        if (isConnected == lastEmittedConnected && networkType == lastEmittedNetworkType) {
+            return
+        }
+        lastEmittedConnected = isConnected
+        lastEmittedNetworkType = networkType
+        val params = Arguments.createMap().apply {
+            putBoolean("isConnected", isConnected)
+            putString("networkType", networkType)
+        }
+        emitEvent("onNetworkStateChanged", params)
+    }
+
+    @ReactMethod
+    fun getNetworkState(promise: Promise) {
+        try {
+            val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (cm == null) {
+                val map = Arguments.createMap().apply {
+                    putBoolean("isConnected", false)
+                    putString("networkType", "NONE")
+                }
+                promise.resolve(map)
+                return
+            }
+            val activeNetwork = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) cm.activeNetwork else null
+            val caps = if (activeNetwork != null) cm.getNetworkCapabilities(activeNetwork) else null
+            val isConnected = caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val networkType = if (caps != null) getNetworkTypeFromCapabilities(caps) else "NONE"
+            val map = Arguments.createMap().apply {
+                putBoolean("isConnected", isConnected)
+                putString("networkType", networkType)
+            }
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("NETWORK_ERROR", e.message, e)
+        }
     }
     @ReactMethod
     fun setSpeakerphone(enable: Boolean, promise: Promise) {

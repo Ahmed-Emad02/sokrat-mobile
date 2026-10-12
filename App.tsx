@@ -55,6 +55,7 @@ import {
   AudioDeviceState,
   AudioRouteType,
 } from './src/calls/incall';
+import { subscribeNetworkChanges, NetworkState } from './src/calls/network';
 import {
   StorageService,
   SavedAccount,
@@ -161,10 +162,21 @@ export default function App() {
   });
 
   useEffect(() => {
-    return subscribeAudioDeviceChanges((s) => {
+    const unsubAudio = subscribeAudioDeviceChanges((s) => {
       setAudioDeviceState(s);
       setIsSpeakerOn(s.selectedDevice === 'SPEAKER_PHONE');
     });
+    const unsubNet = subscribeNetworkChanges((netState: NetworkState) => {
+      console.log('[app] network state updated:', netState);
+      sipRef.current?.handleNetworkChange(netState);
+      if (netState.isConnected && accountRef.current) {
+        bindExtension(accountRef.current.extension);
+      }
+    });
+    return () => {
+      unsubAudio();
+      unsubNet();
+    };
   }, []);
 
   const updateIncoming = (value: IncomingCallInfo | null) => {
