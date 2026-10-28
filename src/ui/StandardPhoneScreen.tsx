@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react';
 import {
   Alert,
   Animated,
   Dimensions,
+  Easing,
   FlatList,
+  I18nManager,
   LayoutAnimation,
   Modal,
   Platform,
@@ -14,26 +16,51 @@ import {
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
-  UIManager,
   View,
   PanResponder,
   Pressable,
 } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { COLORS } from '../theme';
-import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, CodecPreference } from '../storage/store';
-import { SipState, ActiveCall } from '../sip/JsSipService';
+import { useTheme, themedStyles } from '../theme';
+import { useI18n, setLanguage, Language, t } from '../i18n';
+import { getPushGateway } from '../config';
+
+const ScreenStylesContext = createContext<Record<string, any> | null>(null);
+const useScreenStyles = (): Record<string, any> => {
+  const styles = useContext(ScreenStylesContext);
+  if (!styles) throw new Error('ScreenStylesContext missing');
+  return styles;
+};
+
+// Text that sits on a filled brand/danger/success control must stay white in
+// both themes, even though the same literal is used for body text elsewhere.
+const SCREEN_OVERRIDES = {
+  callPillText: { color: 'onBrand' as const },
+  transferManualText: { color: 'onBrand' as const },
+  transferActionText: { color: 'onBrand' as const },
+  transferModeBtnTextActive: { color: 'onBrand' as const },
+  dialogSubmitText: { color: 'onBrand' as const },
+  settingsSaveText: { color: 'onBrand' as const },
+  consultActionBtnText: { color: 'onBrand' as const },
+  consultBadgeText: { color: 'onBrand' as const },
+  volumeDoneBtnText: { color: 'onBrand' as const },
+  volThumb: { borderColor: 'onBrand' as const },
+  contactCallBtn: { backgroundColor: 'brandSoft' as const },
+  settingsSaveBtn: { backgroundColor: 'brandFill' as const },
+};
+import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, CodecPreference, DEFAULT_WHATSAPP_PREFS, WhatsAppPrefs } from '../storage/store';
+import { SipState, ActiveCall, AttendedTransferState } from '../sip/JsSipService';
+import { sanitizeCountryCode } from '../utils/whatsapp';
+import { CallerProfileModal } from './CallerProfileModal';
 import {
   CloseIcon,
   PhoneDeclineIcon,
   PhoneIcon,
   ContactsIcon,
   StarIcon,
+  BookmarkIcon,
   BluetoothIcon,
   HeadphoneIcon,
   EarpieceIcon,
@@ -60,6 +87,9 @@ import {
 } from './Icons';
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
 import { fetchDeviceContacts, getNativeSpeakerVolume, SpeakerVolumeState } from '../calls/nativeCallNotification';
+import { searchContacts } from '../utils/dialSearch';
+import { nameCallRecords } from '../utils/callLog';
+import { editDialInput, type DialSelection } from '../utils/dialInput';
 
 function VolumeSlider({
   label,
@@ -74,6 +104,7 @@ function VolumeSlider({
   icon: React.ReactNode;
   description: string;
 }) {
+  const styles = useScreenStyles();
   const [trackWidth, setTrackWidth] = useState(250);
   const startValueRef = useRef(value);
 
@@ -199,6 +230,7 @@ function UnifiedAudioControls({
   onToggleSpeaker,
   audioDeviceState,
   onChooseAudioRoute,
+  showRouteControls = true,
 }: {
   speakerVolume: number;
   micVolume: number;
@@ -209,28 +241,33 @@ function UnifiedAudioControls({
   onToggleSpeaker?: () => void;
   audioDeviceState?: AudioDeviceState;
   onChooseAudioRoute?: (route: AudioRouteType) => Promise<AudioDeviceState>;
+  showRouteControls?: boolean;
 }) {
+  const styles = useScreenStyles();
+  const { colors } = useTheme();
+  const { t } = useI18n();
   const micDb = Math.round(((micVolume - 50) / 50) * (micVolume >= 50 ? 6 : 12));
   const micDbLabel = micDb === 0 ? '0 dB • Calibrated' : `${micDb > 0 ? '+' : ''}${micDb} dB`;
 
   return (
     <View style={styles.unifiedAudioContainer}>
       <VolumeSlider
-        label="Speaker Output Volume"
+        label={t('Speaker Output Volume')}
         value={speakerVolume}
         onChange={onChangeSpeaker}
-        icon={<SpeakerIcon size={18} color="#38bdf8" />}
+        icon={<SpeakerIcon size={18} color={colors.brand} />}
         description={`Output stream volume (${speakerStep.current}/${speakerStep.max} steps). Controls in-call earpiece and loudspeaker.`}
       />
 
       <VolumeSlider
-        label="Microphone Sensitivity"
+        label={t('Microphone Sensitivity')}
         value={micVolume}
         onChange={onChangeMic}
-        icon={<MicIcon size={18} color="#38bdf8" />}
+        icon={<MicIcon size={18} color={colors.brand} />}
         description={`Microphone capture gain (${micDbLabel}). Applied directly to live calls.`}
       />
 
+      {showRouteControls !== false && (
       <View style={styles.inCallAudioRouteRow}>
         {audioDeviceState?.hasBluetooth && (
           <TouchableOpacity
@@ -240,9 +277,23 @@ function UnifiedAudioControls({
             ]}
             onPress={() => onChooseAudioRoute?.('BLUETOOTH')}
           >
-            <BluetoothIcon size={14} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? '#38bdf8' : '#a1a1aa'} />
+            <BluetoothIcon size={14} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? colors.brand : colors.textMuted} />
             <Text style={[styles.inCallAudioRouteText, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.inCallAudioRouteTextActive]}>
-              Bluetooth
+              {audioDeviceState?.bluetoothName || t('Bluetooth')}
+            </Text>
+          </TouchableOpacity>
+        )}
+        {audioDeviceState?.availableDevices?.includes('WIRED_HEADSET') && (
+          <TouchableOpacity
+            style={[
+              styles.inCallAudioRouteBtn,
+              audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.inCallAudioRouteBtnActive,
+            ]}
+            onPress={() => onChooseAudioRoute?.('WIRED_HEADSET')}
+          >
+            <HeadphoneIcon size={14} color={audioDeviceState.selectedDevice === 'WIRED_HEADSET' ? colors.brand : colors.textMuted} />
+            <Text style={[styles.inCallAudioRouteText, audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.inCallAudioRouteTextActive]}>
+              Headset
             </Text>
           </TouchableOpacity>
         )}
@@ -259,9 +310,9 @@ function UnifiedAudioControls({
             }
           }}
         >
-          <EarpieceIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? '#38bdf8' : '#a1a1aa'} />
+          <EarpieceIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? colors.brand : colors.textMuted} />
           <Text style={[styles.inCallAudioRouteText, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.inCallAudioRouteTextActive]}>
-            Handset
+            {t('Handset')}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -277,12 +328,13 @@ function UnifiedAudioControls({
             }
           }}
         >
-          <SpeakerIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? '#38bdf8' : '#a1a1aa'} />
+          <SpeakerIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? colors.brand : colors.textMuted} />
           <Text style={[styles.inCallAudioRouteText, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.inCallAudioRouteTextActive]}>
-            Speaker
+            {t('Speaker')}
           </Text>
         </TouchableOpacity>
       </View>
+      )}
     </View>
   );
 }
@@ -300,6 +352,7 @@ const InCallTimerDisplay = React.memo(function InCallTimerDisplay({
   startTime?: number;
   status?: string;
 }) {
+  const styles = useScreenStyles();
   const isConnected = status === 'active';
   const isRinging = status === 'ringing';
   const [elapsed, setElapsed] = useState(0);
@@ -344,7 +397,12 @@ type Props = {
   onToggleHold: () => void;
   onToggleSpeaker: () => void;
   onSendDtmf: (digit: string) => void;
-  onTransfer: (target: string) => void;
+  onBlindTransfer: (target: string) => void;
+  attendedTransferState: AttendedTransferState | null;
+  onStartWarmTransfer: (target: string) => Promise<void>;
+  onCompleteTransfer: () => Promise<void>;
+  onCancelTransfer: () => Promise<void>;
+  onSwapLines: () => Promise<void>;
   onSaveAccount: (account: SavedAccount) => void;
   onLogout: () => void;
   onClearHistory: () => void;
@@ -377,10 +435,10 @@ const DIALPAD_KEYS = [
 
 function formatTimeAgo(ts: number): string {
   const elapsed = Math.floor((Date.now() - ts) / 1000);
-  if (elapsed < 60) return 'Just now';
-  if (elapsed < 3600) return `${Math.floor(elapsed / 60)} min ago`;
-  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)} hr ago`;
-  return 'Yesterday';
+  if (elapsed < 60) return t('Just now');
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)} ${t('min ago')}`;
+  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)} ${t('hr ago')}`;
+  return t('Yesterday');
 }
 
 const RecentCallRow = React.memo(function RecentCallRow({
@@ -392,6 +450,9 @@ const RecentCallRow = React.memo(function RecentCallRow({
   onCall: (number: string) => void;
   onOpenDetails: (record: CallRecord) => void;
 }) {
+  const styles = useScreenStyles();
+  const { colors } = useTheme();
+  const { t } = useI18n();
   return (
     <View style={styles.recentItem}>
       <TouchableOpacity
@@ -401,7 +462,7 @@ const RecentCallRow = React.memo(function RecentCallRow({
         delayPressIn={0}
       >
         <View style={styles.avatarMini}>
-          <UserIcon size={20} color="#a1a1aa" />
+          <UserIcon size={20} color={colors.textMuted} />
         </View>
 
         <View style={styles.recentInfo}>
@@ -415,7 +476,7 @@ const RecentCallRow = React.memo(function RecentCallRow({
             {item.name || item.number}
           </Text>
           <Text style={styles.recentSub}>
-            {item.direction === 'missed' ? 'Missed call' : 'VoIP'}
+            {item.direction === 'missed' ? t('Missed call') : t('VoIP')}
           </Text>
         </View>
 
@@ -429,9 +490,9 @@ const RecentCallRow = React.memo(function RecentCallRow({
         activeOpacity={0.6}
         delayPressIn={0}
         accessibilityRole="button"
-        accessibilityLabel={`Call details for ${item.name || item.number}`}
+        accessibilityLabel={`View profile for ${item.name || item.number}`}
       >
-        <InfoIcon size={20} color="#38bdf8" />
+        <InfoIcon size={20} color={colors.brand} />
       </TouchableOpacity>
     </View>
   );
@@ -441,22 +502,33 @@ const ContactRow = React.memo(function ContactRow({
   item,
   onToggleFavorite,
   onCall,
+  onOpenProfile,
 }: {
   item: Contact;
   onToggleFavorite: (id: string) => void;
   onCall: (extension: string) => void;
+  onOpenProfile: (contact: Contact) => void;
 }) {
+  const styles = useScreenStyles();
+  const { colors } = useTheme();
+  const { t } = useI18n();
   return (
     <View style={styles.contactRow}>
       <TouchableOpacity style={styles.favStarBtn} onPress={() => onToggleFavorite(item.id)} delayPressIn={0}>
-        <StarIcon size={22} color={item.favorite ? '#f59e0b' : '#71717a'} fill={item.favorite ? '#f59e0b' : 'none'} />
+        <BookmarkIcon size={22} color={item.favorite ? colors.brand : colors.textFaint} fill={item.favorite ? colors.brand : 'none'} />
       </TouchableOpacity>
-      <TouchableOpacity style={styles.contactDetailCol} onPress={() => onCall(item.extension)} delayPressIn={0}>
+      <TouchableOpacity
+        style={styles.contactDetailCol}
+        onPress={() => onOpenProfile(item)}
+        delayPressIn={0}
+        accessibilityRole="button"
+        accessibilityLabel={`${item.name}, ${item.extension}`}
+      >
         <Text style={styles.contactRowName}>{item.name}</Text>
-        <Text style={styles.contactRowExt}>Ext {item.extension}</Text>
+        <Text style={styles.contactRowExt}>{item.extension}</Text>
       </TouchableOpacity>
       <TouchableOpacity style={styles.contactCallBtn} onPress={() => onCall(item.extension)} delayPressIn={0}>
-        <PhoneIcon size={16} color="#10b981" />
+        <PhoneIcon size={16} color={colors.brand} />
       </TouchableOpacity>
     </View>
   );
@@ -475,6 +547,8 @@ const AnimatedDialpadKey = React.memo(function AnimatedDialpadKey({
   onPress: (digit: string) => void;
   onLongPress: (digit: string) => void;
 }) {
+  const styles = useScreenStyles();
+  const { colors } = useTheme();
   const scale = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
@@ -519,7 +593,7 @@ const AnimatedDialpadKey = React.memo(function AnimatedDialpadKey({
             {k.digit === '1' ? (
               <VoicemailIcon
                 size={14}
-                color={isConfigured ? '#38bdf8' : '#a1a1aa'}
+                color={isConfigured ? colors.brand : colors.textMuted}
               />
             ) : k.sub ? (
               <Text
@@ -538,7 +612,7 @@ const AnimatedDialpadKey = React.memo(function AnimatedDialpadKey({
   );
 });
 
-export function StandardPhoneScreen({
+function StandardPhoneScreenInner({
   account,
   state,
   callsHistory,
@@ -553,7 +627,12 @@ export function StandardPhoneScreen({
   audioDeviceState,
   onChooseAudioRoute,
   onSendDtmf,
-  onTransfer,
+  onBlindTransfer,
+  attendedTransferState,
+  onStartWarmTransfer,
+  onCompleteTransfer,
+  onCancelTransfer,
+  onSwapLines,
   onSaveAccount,
   onSaveContactsBatch,
   onLogout,
@@ -564,20 +643,47 @@ export function StandardPhoneScreen({
   onToggleFavorite,
   onUpdateVolume,
 }: Props) {
+  const styles = useScreenStyles();
+  const { colors } = useTheme();
+  const { t, lang } = useI18n();
+  const changeLanguage = async (next: Language) => {
+    if (next === lang) return;
+    await setLanguage(next);
+    Alert.alert(
+      t('Language'),
+      t('Restart the app to apply the new layout direction.'),
+    );
+  };
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState<BottomTab>('phone');
   const [digits, setDigits] = useState('');
-  const [cursorIndex, setCursorIndex] = useState(0);
+  const [dialSelection, setDialSelection] = useState<DialSelection>({ start: 0, end: 0 });
+  const setCursorIndex = (index: number) => setDialSelection({ start: index, end: index });
   const [showMenu, setShowMenu] = useState(false);
+  const menuAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (showMenu) {
+      menuAnim.setValue(0);
+      Animated.timing(menuAnim, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showMenu, menuAnim]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showAddContactModal, setShowAddContactModal] = useState(false);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [contactSearch, setContactSearch] = useState('');
 
-  const [selectedCallRecord, setSelectedCallRecord] = useState<CallRecord | null>(null);
-  const [showCallDetailsModal, setShowCallDetailsModal] = useState(false);
+  const [profileNumber, setProfileNumber] = useState<string | null>(null);
+  const [whatsappPrefs, setWhatsappPrefs] = useState<WhatsAppPrefs>({ ...DEFAULT_WHATSAPP_PREFS });
+  const [editWhatsAppCountryCode, setEditWhatsAppCountryCode] = useState('');
+  const [editWhatsAppPrompt, setEditWhatsAppPrompt] = useState(true);
 
   // Settings State Form
-  const [editExt, setEditExt] = useState(account?.extension || '150');
+  const [editExt, setEditExt] = useState(account?.extension || '');
   const [editPass, setEditPass] = useState(account?.password || '');
   const [editHost, setEditHost] = useState(account?.serverHost || '');
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
@@ -588,6 +694,17 @@ export function StandardPhoneScreen({
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
   const [showInCallVolumeModal, setShowInCallVolumeModal] = useState(false);
   const [inCallSpeakerStep, setInCallSpeakerStep] = useState<{ current: number; max: number }>({ current: 12, max: 15 });
+  // Coalesce native volume writes while the speaker slider is dragged.
+  const speakerNativeTimerRef = useRef<number | null>(null);
+  const speakerPendingRef = useRef<number | null>(null);
+  const speakerSendSeqRef = useRef(0);
+
+  useEffect(() => () => {
+    if (speakerNativeTimerRef.current != null) {
+      clearTimeout(speakerNativeTimerRef.current);
+      speakerNativeTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (activeCall || showInCallVolumeModal) {
@@ -605,34 +722,123 @@ export function StandardPhoneScreen({
   // Dialpad Collapse / Expand Toggle
   const [isDialpadVisible, setIsDialpadVisible] = useState(true);
   const dialpadAnim = useRef(new Animated.Value(1)).current;
+  const [dialpadKeysHeight, setDialpadKeysHeight] = useState(420);
 
   const toggleDialpad = () => {
-    const nextState = !isDialpadVisible;
-    setIsDialpadVisible(nextState);
-    Animated.spring(dialpadAnim, {
-      toValue: nextState ? 1 : 0,
-      speed: 20,
-      bounciness: 4,
-      useNativeDriver: false,
-    }).start();
+    if (isDialpadVisible) {
+      Animated.timing(dialpadAnim, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => setIsDialpadVisible(false));
+    } else {
+      setIsDialpadVisible(true);
+      Animated.timing(dialpadAnim, {
+        toValue: 1,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
   };
   // Recents History Filter (All vs Missed)
   const [historyFilter, setHistoryFilter] = useState<'all' | 'missed'>('all');
   const [showAudioRouteModal, setShowAudioRouteModal] = useState(false);
   const tabPagerRef = useRef<any>(null);
   const tabIndicatorAnim = useRef(new Animated.Value(0)).current;
+  const pageOpacity = useRef(new Animated.Value(1)).current;
+  const pageTranslateX = useRef(new Animated.Value(0)).current;
+  const tabSwitchingRef = useRef(false);
+  const pendingTabEntranceRef = useRef<number | null>(null);
 
-  const handleTabPress = (tab: BottomTab) => {
-    setActiveTab(tab);
-    const idx = tab === 'phone' ? 0 : tab === 'contacts' ? 1 : 2;
+  const handleTabPress = useCallback((tab: BottomTab) => {
+    if (tab === activeTab || tabSwitchingRef.current) return;
+    const order: BottomTab[] = ['phone', 'contacts', 'favourites'];
+    const fromIndex = order.indexOf(activeTab);
+    const toIndex = order.indexOf(tab);
+    const forward = toIndex > fromIndex;
+    const enterFrom = forward
+      ? (I18nManager.isRTL ? -1 : 1)
+      : (I18nManager.isRTL ? 1 : -1);
+
+    tabSwitchingRef.current = true;
     Animated.spring(tabIndicatorAnim, {
-      toValue: idx,
+      toValue: toIndex,
       speed: 25,
       bounciness: 4,
       useNativeDriver: true,
     }).start();
-    tabPagerRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: true });
-  };
+
+    Animated.parallel([
+      Animated.timing(pageOpacity, {
+        toValue: 0,
+        duration: 100,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(pageTranslateX, {
+        toValue: -enterFrom * 24,
+        duration: 100,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      // Mark the direction and swap the content. The entrance animation is
+      // started from useLayoutEffect below, only after the new tab has been
+      // committed — otherwise the opacity ramp can reveal the old tab again
+      // for a frame (the "old tab flash").
+      pendingTabEntranceRef.current = enterFrom;
+      setActiveTab(tab);
+    });
+  }, [activeTab, pageOpacity, pageTranslateX, tabIndicatorAnim]);
+
+  useLayoutEffect(() => {
+    const enterFrom = pendingTabEntranceRef.current;
+    if (enterFrom === null) return;
+    pendingTabEntranceRef.current = null;
+    pageTranslateX.setValue(enterFrom * 36);
+    // Wait one frame after the new tab commits before raising the opacity, so
+    // even a delayed native mount can never reveal the previous tab content.
+    const frame = requestAnimationFrame(() => {
+      Animated.parallel([
+        Animated.timing(pageOpacity, {
+          toValue: 1,
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pageTranslateX, {
+          toValue: 0,
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        tabSwitchingRef.current = false;
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab, pageOpacity, pageTranslateX]);
+
+  const tabSwipeResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_evt, gesture) =>
+          Math.abs(gesture.dx) > 30 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        onMoveShouldSetPanResponderCapture: (_evt, gesture) =>
+          Math.abs(gesture.dx) > 30 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        onPanResponderRelease: (_evt, gesture) => {
+          if (Math.abs(gesture.dx) < 70) return;
+          const order: BottomTab[] = ['phone', 'contacts', 'favourites'];
+          const index = order.indexOf(activeTab);
+          const forward = I18nManager.isRTL ? gesture.dx > 0 : gesture.dx < 0;
+          const nextIndex = Math.min(2, Math.max(0, index + (forward ? 1 : -1)));
+          if (nextIndex !== index) handleTabPress(order[nextIndex]);
+        },
+      }),
+    [activeTab, handleTabPress],
+  );
 
   const handleScrollEnd = (e: { nativeEvent: { contentOffset: { x: number } } }) => {
     const offsetX = e.nativeEvent.contentOffset.x;
@@ -650,15 +856,27 @@ export function StandardPhoneScreen({
   };
   const handleSpeakerChange = (val: number) => {
     setEditSpeakerVol(val);
-    const p = onUpdateVolume?.('speaker', val);
-    if (p && typeof p === 'object' && 'then' in p) {
-      void (p as Promise<SpeakerVolumeState | null>).then((res) => {
-        if (res) {
+    speakerPendingRef.current = val;
+    if (speakerNativeTimerRef.current != null) return;
+
+    // Apply at most one native stream-volume write every 50 ms. The thumb and
+    // badge still follow every drag event, so the UI stays responsive.
+    speakerNativeTimerRef.current = setTimeout(() => {
+      speakerNativeTimerRef.current = null;
+      const pending = speakerPendingRef.current;
+      speakerPendingRef.current = null;
+      if (pending == null) return;
+      const seq = ++speakerSendSeqRef.current;
+      const p = onUpdateVolume?.('speaker', pending);
+      if (p && typeof p === 'object' && 'then' in p) {
+        void (p as Promise<SpeakerVolumeState | null>).then((res) => {
+          // Ignore a response that belongs to an older drag position.
+          if (!res || seq !== speakerSendSeqRef.current) return;
           setInCallSpeakerStep({ current: res.currentStep, max: res.maxStep });
           setEditSpeakerVol(res.percent);
-        }
-      });
-    }
+        });
+      }
+    }, 50) as unknown as number;
   };
 
   const handleMicChange = (val: number) => {
@@ -667,11 +885,12 @@ export function StandardPhoneScreen({
   };
 
   const displayedCalls = useMemo(() => {
+    const namedCalls = nameCallRecords(callsHistory, contacts);
     if (historyFilter === 'missed') {
-      return callsHistory.filter((item) => item.direction === 'missed');
+      return namedCalls.filter((item) => item.direction === 'missed');
     }
-    return callsHistory;
-  }, [callsHistory, historyFilter]);
+    return namedCalls;
+  }, [callsHistory, contacts, historyFilter]);
 
   const filteredContacts = useMemo(() => {
     const q = contactSearch.trim().toLowerCase();
@@ -685,38 +904,8 @@ export function StandardPhoneScreen({
     return contacts.filter((c) => c.favorite);
   }, [contacts]);
 
-  // Animated Dialpad Input Cursor Caret
-  const cursorOpacity = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(cursorOpacity, {
-          toValue: 0,
-          duration: 530,
-          useNativeDriver: true,
-        }),
-        Animated.timing(cursorOpacity, {
-          toValue: 1,
-          duration: 530,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    animation.start();
-    return () => animation.stop();
-  }, [cursorOpacity]);
   // Live PBX Extensions (for 1-click transfer)
-  const [serverExtensions, setServerExtensions] = useState<Array<{ extension: string; name: string }>>([
-    { extension: '101', name: 'ahmed' },
-    { extension: '102', name: 'mazen' },
-    { extension: '103', name: '103' },
-    { extension: '111', name: 'cisco' },
-    { extension: '150', name: '150' },
-    { extension: '151', name: '151' },
-    { extension: '170', name: '170' },
-    { extension: '200', name: '200' },
-  ]);
+  const [serverExtensions, setServerExtensions] = useState<Array<{ extension: string; name: string }>>([]);
 
   // New Contact Form
   const [newContactName, setNewContactName] = useState('');
@@ -726,6 +915,12 @@ export function StandardPhoneScreen({
   const [showInCallDtmf, setShowInCallDtmf] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferTarget, setTransferTarget] = useState('');
+  // 'blind' = REFER-and-drop, 'warm' = attended/consultative
+  const [transferMode, setTransferMode] = useState<'blind' | 'warm'>('blind');
+  // Pending guards for warm transfer action buttons
+  const [pendingTransferAction, setPendingTransferAction] = useState<
+    'start' | 'swap' | 'complete' | 'cancel' | null
+  >(null);
   useEffect(() => {
     StorageService.getSpeedDial().then((sd) => {
       const initial = { '1': '*97', ...sd };
@@ -738,7 +933,7 @@ export function StandardPhoneScreen({
     try {
       const host = account?.serverHost;
       if (!host) return;
-      let res = await fetch(`http://${host}:8095/api/push/extensions`).catch(() => null);
+      let res = await fetch(`${getPushGateway(host)}/api/push/extensions`).catch(() => null);
       if (!res || !res.ok) {
         res = await fetch(`http://${host}:8080/api/federation/v1/extensions`).catch(() => null);
       }
@@ -767,6 +962,19 @@ export function StandardPhoneScreen({
   }, [account?.extension, account?.serverHost, account?.password]);
 
   useEffect(() => {
+    let cancelled = false;
+    void StorageService.getWhatsAppPrefs().then((prefs) => {
+      if (cancelled) return;
+      setWhatsappPrefs(prefs);
+      setEditWhatsAppCountryCode(prefs.countryCode);
+      setEditWhatsAppPrompt(prefs.promptEnabled);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     void fetchExtensions();
   }, [account?.serverHost]);
 
@@ -792,26 +1000,39 @@ export function StandardPhoneScreen({
         );
       });
   }, [serverExtensions, account?.extension, transferTarget]);
-  const formatCallTime = formatCallDuration;
 
-  const formatExactDate = (ts: number): string => {
-    const d = new Date(ts);
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const month = months[d.getMonth()];
-    const day = d.getDate();
-    let hours = d.getHours();
-    const minutes = d.getMinutes();
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12;
-    hours = hours ? hours : 12;
-    const minStr = minutes < 10 ? `0${minutes}` : `${minutes}`;
-    return `${month} ${day}, ${d.getFullYear()} at ${hours}:${minStr} ${ampm}`;
-  };
-
-  const handleOpenCallDetails = useCallback((record: CallRecord) => {
-    setSelectedCallRecord(record);
-    setShowCallDetailsModal(true);
+  const handleOpenProfile = useCallback((record: CallRecord) => {
+    setProfileNumber(record.number);
   }, []);
+
+  const handleOpenContactProfile = useCallback((contact: Contact) => {
+    setProfileNumber(contact.extension);
+  }, []);
+
+  // Stable list renderers keep visible rows from re-rendering on every
+  // dialpad keystroke or transient screen state change.
+  const recentCalls = useMemo(() => displayedCalls.slice(0, 40), [displayedCalls]);
+  const dialSearchMatches = useMemo(() => searchContacts(contacts, digits), [contacts, digits]);
+  const showDialSearch = digits.replace(/\D/g, '').length > 0;
+  const recentKeyExtractor = useCallback((item: CallRecord) => item.id, []);
+  const contactKeyExtractor = useCallback((item: Contact) => item.id, []);
+  const renderRecentCall = useCallback(
+    ({ item }: { item: CallRecord }) => (
+      <RecentCallRow item={item} onCall={onCall} onOpenDetails={handleOpenProfile} />
+    ),
+    [onCall, handleOpenProfile],
+  );
+  const renderContact = useCallback(
+    ({ item }: { item: Contact }) => (
+      <ContactRow
+        item={item}
+        onToggleFavorite={onToggleFavorite}
+        onCall={onCall}
+        onOpenProfile={handleOpenContactProfile}
+      />
+    ),
+    [handleOpenContactProfile, onCall, onToggleFavorite],
+  );
   const [isSyncingContacts, setIsSyncingContacts] = useState(false);
 
   const handleSyncContacts = async () => {
@@ -852,26 +1073,16 @@ export function StandardPhoneScreen({
   };
 
   const handleDigitPress = useCallback((d: string) => {
-    cursorOpacity.setValue(1);
-    setDigits((prev) => {
-      const idx = Math.max(0, Math.min(prev.length, cursorIndex));
-      const next = prev.slice(0, idx) + d + prev.slice(idx);
-      setCursorIndex(idx + 1);
-      return next;
-    });
-  }, [cursorIndex, cursorOpacity]);
+    const next = editDialInput(digits, dialSelection, d);
+    setDigits(next.text);
+    setDialSelection(next.selection);
+  }, [digits, dialSelection]);
 
   const handleBackspace = useCallback(() => {
-    cursorOpacity.setValue(1);
-    setDigits((prev) => {
-      if (!prev) return '';
-      const idx = Math.max(0, Math.min(prev.length, cursorIndex));
-      if (idx <= 0) return prev;
-      const next = prev.slice(0, idx - 1) + prev.slice(idx);
-      setCursorIndex(idx - 1);
-      return next;
-    });
-  }, [cursorIndex, cursorOpacity]);
+    const next = editDialInput(digits, dialSelection, null);
+    setDigits(next.text);
+    setDialSelection(next.selection);
+  }, [digits, dialSelection]);
 
   const hasDigits = digits.trim().length > 0;
   const lastCallNumber =
@@ -880,12 +1091,14 @@ export function StandardPhoneScreen({
 
   const handleAuxAction = () => {
     if (hasDigits) {
+      setEditingContact(null);
       setNewContactName('');
       setNewContactNumber(digits.trim());
       setShowAddContactModal(true);
     } else if (hasRedial) {
       setDigits(lastCallNumber);
       setCursorIndex(lastCallNumber.length);
+      onCall(lastCallNumber);
     }
   };
 
@@ -895,6 +1108,22 @@ export function StandardPhoneScreen({
     setDigits('');
     setCursorIndex(0);
   };
+
+  const handleSaveWhatsAppCountryCode = useCallback((code: string) => {
+    const clean = sanitizeCountryCode(code);
+    setWhatsappPrefs((prev) => {
+      const next = { ...prev, countryCode: clean };
+      void StorageService.saveWhatsAppPrefs(next);
+      return next;
+    });
+    setEditWhatsAppCountryCode(clean);
+  }, []);
+
+  const openSettings = useCallback(() => {
+    setEditWhatsAppCountryCode(whatsappPrefs.countryCode);
+    setEditWhatsAppPrompt(whatsappPrefs.promptEnabled);
+    setShowSettingsModal(true);
+  }, [whatsappPrefs.countryCode, whatsappPrefs.promptEnabled]);
 
   const handleSaveSettings = () => {
     if (!editExt.trim() || !editPass.trim() || !editHost.trim()) return;
@@ -921,20 +1150,43 @@ export function StandardPhoneScreen({
     }
     setSpeedDial(newSpeedDial);
     StorageService.saveSpeedDial(newSpeedDial);
+
+    const nextWhatsAppPrefs: WhatsAppPrefs = {
+      countryCode: sanitizeCountryCode(editWhatsAppCountryCode),
+      promptEnabled: editWhatsAppPrompt,
+    };
+    setWhatsappPrefs(nextWhatsAppPrefs);
+    void StorageService.saveWhatsAppPrefs(nextWhatsAppPrefs);
+
     setShowSettingsModal(false);
   };
 
-  const handleCreateContact = () => {
-    if (!newContactName.trim() || !newContactNumber.trim()) return;
-    onSaveContact({
-      id: 'c_' + Date.now(),
-      name: newContactName.trim(),
-      extension: newContactNumber.trim(),
-      favorite: false,
-    });
+  const closeContactModal = useCallback(() => {
+    setShowAddContactModal(false);
+    setEditingContact(null);
     setNewContactName('');
     setNewContactNumber('');
-    setShowAddContactModal(false);
+  }, []);
+
+  const handleCreateContact = () => {
+    const name = newContactName.trim();
+    const extension = newContactNumber.trim();
+    if (!name || !extension) return;
+    if (editingContact) {
+      onSaveContact({
+        ...editingContact,
+        name,
+        extension,
+      });
+    } else {
+      onSaveContact({
+        id: 'c_' + Date.now(),
+        name,
+        extension,
+        favorite: false,
+      });
+    }
+    closeContactModal();
   };
 
   const handleSignOutClick = () => {
@@ -955,7 +1207,7 @@ export function StandardPhoneScreen({
             <View style={styles.volumeDialogCard}>
               <View style={styles.transferHeaderRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.dialogTitle}>Audio & Volume Controls</Text>
+                  <Text style={styles.dialogTitle}>{t('Audio & Volume Controls')}</Text>
                   <Text style={styles.transferSubTitle}>
                     {activeCall
                       ? 'Adjust speaker loudness and microphone sensitivity mid-call:'
@@ -966,7 +1218,7 @@ export function StandardPhoneScreen({
                   onPress={() => setShowInCallVolumeModal(false)}
                   style={styles.transferDismissBtn}
                 >
-                  <CloseIcon size={18} color="#94a3b8" />
+                  <CloseIcon size={18} color={colors.textDim} />
                 </TouchableOpacity>
               </View>
               <UnifiedAudioControls
@@ -977,12 +1229,14 @@ export function StandardPhoneScreen({
                 onChangeSpeaker={handleSpeakerChange}
                 onChangeMic={handleMicChange}
                 onToggleSpeaker={onToggleSpeaker}
+                audioDeviceState={audioDeviceState}
+                onChooseAudioRoute={onChooseAudioRoute}
               />
               <TouchableOpacity
                 style={styles.volumeDoneBtn}
                 onPress={() => setShowInCallVolumeModal(false)}
               >
-                <Text style={styles.volumeDoneBtnText}>Done</Text>
+                <Text style={styles.volumeDoneBtnText}>{t('Done')}</Text>
               </TouchableOpacity>
             </View>
           </TouchableWithoutFeedback>
@@ -1003,13 +1257,13 @@ export function StandardPhoneScreen({
           <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
             <View style={styles.audioRouteCard}>
               <View style={styles.audioRouteHeader}>
-                <Text style={styles.audioRouteTitle}>Audio Output & Input</Text>
+                <Text style={styles.audioRouteTitle}>{t('Audio Output & Input')}</Text>
                 <TouchableOpacity onPress={() => setShowAudioRouteModal(false)} style={styles.transferDismissBtn}>
-                  <CloseIcon size={18} color="#94a3b8" />
+                  <CloseIcon size={18} color={colors.textDim} />
                 </TouchableOpacity>
               </View>
               <Text style={styles.audioRouteSub}>
-                Select active device for microphone and speaker:
+                {t('Select active device for microphone and speaker:')}
               </Text>
               {audioDeviceState?.hasBluetooth && (
                 <TouchableOpacity
@@ -1024,15 +1278,39 @@ export function StandardPhoneScreen({
                   activeOpacity={0.7}
                 >
                   <View style={styles.audioRouteIconWrap}>
-                    <BluetoothIcon size={22} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? '#38bdf8' : '#ffffff'} />
+                    <BluetoothIcon size={22} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? colors.brand : colors.text} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.audioRouteOptionText, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.audioRouteOptionTextActive]}>
-                      Bluetooth Headset
+                      {audioDeviceState?.bluetoothName || 'Bluetooth Headset'}
                     </Text>
-                    <Text style={styles.audioRouteOptionSub}>Wireless connected audio</Text>
+                    <Text style={styles.audioRouteOptionSub}>{t('Wireless connected audio')}</Text>
                   </View>
                   {audioDeviceState.selectedDevice === 'BLUETOOTH' && <View style={styles.audioRouteActiveDot} />}
+                </TouchableOpacity>
+              )}
+              {audioDeviceState?.availableDevices?.includes('WIRED_HEADSET') && (
+                <TouchableOpacity
+                  style={[
+                    styles.audioRouteOption,
+                    audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.audioRouteOptionActive,
+                  ]}
+                  onPress={async () => {
+                    await onChooseAudioRoute?.('WIRED_HEADSET');
+                    setShowAudioRouteModal(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.audioRouteIconWrap}>
+                    <HeadphoneIcon size={22} color={audioDeviceState.selectedDevice === 'WIRED_HEADSET' ? colors.brand : colors.text} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.audioRouteOptionText, audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.audioRouteOptionTextActive]}>
+                      {t('Wired Headset')}
+                    </Text>
+                    <Text style={styles.audioRouteOptionSub}>{t('3.5 mm or USB audio')}</Text>
+                  </View>
+                  {audioDeviceState.selectedDevice === 'WIRED_HEADSET' && <View style={styles.audioRouteActiveDot} />}
                 </TouchableOpacity>
               )}
               <TouchableOpacity
@@ -1051,13 +1329,13 @@ export function StandardPhoneScreen({
                 activeOpacity={0.7}
               >
                 <View style={styles.audioRouteIconWrap}>
-                  <EarpieceIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? '#38bdf8' : '#ffffff'} />
+                  <EarpieceIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? colors.brand : colors.text} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.audioRouteOptionText, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.audioRouteOptionTextActive]}>
-                    Phone Earpiece
+                    {t('Phone Earpiece')}
                   </Text>
-                  <Text style={styles.audioRouteOptionSub}>Handset speaker & microphone</Text>
+                  <Text style={styles.audioRouteOptionSub}>{t('Handset speaker & microphone')}</Text>
                 </View>
                 {(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && <View style={styles.audioRouteActiveDot} />}
               </TouchableOpacity>
@@ -1077,13 +1355,13 @@ export function StandardPhoneScreen({
                 activeOpacity={0.7}
               >
                 <View style={styles.audioRouteIconWrap}>
-                  <SpeakerIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? '#38bdf8' : '#ffffff'} />
+                  <SpeakerIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? colors.brand : colors.text} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.audioRouteOptionText, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.audioRouteOptionTextActive]}>
-                    Loudspeaker
+                    {t('Loudspeaker')}
                   </Text>
-                  <Text style={styles.audioRouteOptionSub}>Hands-free speakerphone</Text>
+                  <Text style={styles.audioRouteOptionSub}>{t('Hands-free speakerphone')}</Text>
                 </View>
                 {(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && <View style={styles.audioRouteActiveDot} />}
               </TouchableOpacity>
@@ -1106,10 +1384,10 @@ export function StandardPhoneScreen({
       : isHeldState
       ? 'CALL ON HOLD'
       : isConnectedState
-      ? 'CONNECTED • HD AUDIO'
+      ? t('CONNECTED • HD AUDIO')
       : isRingingState
-      ? 'RINGING…'
-      : 'DIALING…';
+      ? t('RINGING…')
+      : t('DIALING…');
 
 
     return (
@@ -1140,8 +1418,8 @@ export function StandardPhoneScreen({
             {activeCall.targetName || activeCall.target || 'Active Call'}
           </Text>
           <View style={styles.inCallNumberBadge}>
-            <PhoneIcon size={12} color="#38bdf8" />
-            <Text style={styles.inCallNumber}>Ext {activeCall.target || '162'}</Text>
+            <PhoneIcon size={12} color={colors.brand} />
+            <Text style={styles.inCallNumber}>{activeCall.target || account?.extension || ''}</Text>
           </View>
         </View>
 
@@ -1172,10 +1450,10 @@ export function StandardPhoneScreen({
                   accessibilityRole="button"
                   accessibilityLabel={activeCall.isMuted ? 'Unmute microphone' : 'Mute microphone'}
                 >
-                  {activeCall.isMuted ? <MicOffIcon size={26} color="#ef4444" /> : <MicIcon size={26} color="#ffffff" />}
+                  {activeCall.isMuted ? <MicOffIcon size={26} color={colors.dangerText} /> : <MicIcon size={26} color={colors.text} />}
                 </TouchableOpacity>
-                <Text style={[styles.inCallBtnLabel, activeCall.isMuted && { color: '#ef4444' }]}>
-                  {activeCall.isMuted ? 'Unmute' : 'Mute'}
+                <Text style={[styles.inCallBtnLabel, activeCall.isMuted && { color: colors.dangerText }]}>
+                  {activeCall.isMuted ? t('Unmute') : t('Mute')}
                 </Text>
               </View>
 
@@ -1189,9 +1467,9 @@ export function StandardPhoneScreen({
                   accessibilityRole="button"
                   accessibilityLabel="Show dialpad"
                 >
-                  <KeypadIcon size={26} color="#ffffff" />
+                  <KeypadIcon size={26} color={colors.text} />
                 </TouchableOpacity>
-                <Text style={styles.inCallBtnLabel}>Keypad</Text>
+                <Text style={styles.inCallBtnLabel}>{t('Keypad')}</Text>
               </View>
 
               {/* Speaker / Bluetooth Audio Output Button */}
@@ -1219,24 +1497,24 @@ export function StandardPhoneScreen({
                   accessibilityLabel="Audio output device"
                 >
                   {audioDeviceState?.selectedDevice === 'BLUETOOTH' ? (
-                    <BluetoothIcon size={26} color="#38bdf8" />
+                    <BluetoothIcon size={26} color={colors.brand} />
                   ) : audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn ? (
-                    <SpeakerIcon size={26} color="#38bdf8" />
+                    <SpeakerIcon size={26} color={colors.brand} />
                   ) : (
-                    <SpeakerIcon size={26} color="#ffffff" />
+                    <SpeakerIcon size={26} color={colors.text} />
                   )}
                 </TouchableOpacity>
                 <Text
                   style={[
                     styles.inCallBtnLabel,
-                    (audioDeviceState?.selectedDevice === 'BLUETOOTH' || audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn) && { color: '#38bdf8' },
+                    (audioDeviceState?.selectedDevice === 'BLUETOOTH' || audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn) && { color: colors.brand },
                   ]}
                 >
                   {audioDeviceState?.selectedDevice === 'BLUETOOTH'
-                    ? 'Bluetooth'
+                    ? t('Bluetooth')
                     : audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn
-                    ? 'Speaker'
-                    : 'Earpiece'}
+                    ? t('Speaker')
+                    : t('Earpiece')}
                 </Text>
               </View>
             </View>
@@ -1252,10 +1530,10 @@ export function StandardPhoneScreen({
                   accessibilityRole="button"
                   accessibilityLabel={activeCall.isHeld ? 'Resume call' : 'Hold call'}
                 >
-                  {activeCall.isHeld ? <PlayIcon size={26} color="#f59e0b" /> : <PauseIcon size={26} color="#ffffff" />}
+                  {activeCall.isHeld ? <PlayIcon size={26} color={colors.warning} /> : <PauseIcon size={26} color={colors.text} />}
                 </TouchableOpacity>
-                <Text style={[styles.inCallBtnLabel, activeCall.isHeld && { color: '#f59e0b' }]}>
-                  {activeCall.isHeld ? 'Resume' : 'Hold'}
+                <Text style={[styles.inCallBtnLabel, activeCall.isHeld && { color: colors.warningText }]}>
+                  {activeCall.isHeld ? t('Resume') : t('Hold')}
                 </Text>
               </View>
 
@@ -1269,9 +1547,9 @@ export function StandardPhoneScreen({
                   accessibilityRole="button"
                   accessibilityLabel="Transfer call"
                 >
-                  <TransferIcon size={26} color="#ffffff" />
+                  <TransferIcon size={26} color={colors.text} />
                 </TouchableOpacity>
-                <Text style={styles.inCallBtnLabel}>Transfer</Text>
+                <Text style={styles.inCallBtnLabel}>{t('Transfer')}</Text>
               </View>
 
               {/* Volume Adjustment Button */}
@@ -1284,15 +1562,134 @@ export function StandardPhoneScreen({
                   accessibilityRole="button"
                   accessibilityLabel="In-call volume"
                 >
-                  <SlidersIcon size={26} color={showInCallVolumeModal ? '#38bdf8' : '#ffffff'} />
+                  <SlidersIcon size={26} color={showInCallVolumeModal ? colors.brand : colors.text} />
                 </TouchableOpacity>
-                <Text style={[styles.inCallBtnLabel, showInCallVolumeModal && { color: '#38bdf8' }]}>
-                  Volume
+                <Text style={[styles.inCallBtnLabel, showInCallVolumeModal && { color: colors.brand }]}>
+                  {t('Volume')}
                 </Text>
               </View>
             </View>
           </View>
         )}
+
+        {/* Warm Transfer Consultation Card */}
+        {attendedTransferState && (() => {
+          const xfer = attendedTransferState;
+          const isGsmBlocked = activeCall.isGsmInterrupted === true;
+          const canSwap =
+            !isGsmBlocked &&
+            pendingTransferAction === null &&
+            (xfer.status === 'connected' || xfer.status === 'holding');
+          const canComplete =
+            !isGsmBlocked &&
+            pendingTransferAction === null &&
+            xfer.status === 'connected';
+          const canCancel =
+            pendingTransferAction === null &&
+            xfer.status !== 'transferring' &&
+            xfer.status !== 'recovering';
+
+          const statusLabel: Record<typeof xfer.status, string> = {
+            holding: 'Original on hold',
+            dialing: 'Dialling consult…',
+            ringing: 'Consult ringing…',
+            connected: 'Consult connected',
+            swapping: 'Swapping lines…',
+            transferring: 'Completing transfer…',
+            recovering: 'Recovering original…',
+          };
+
+          return (
+            <View style={styles.consultCard}>
+              <View style={styles.consultHeaderRow}>
+                <View style={styles.consultBadge}>
+                  <Text style={styles.consultBadgeText}>WARM TRANSFER</Text>
+                </View>
+                <Text style={styles.consultStatusText}>{statusLabel[xfer.status]}</Text>
+              </View>
+
+              <View style={styles.consultLinesRow}>
+                <View style={[styles.consultLine, xfer.activeLine === 'original' && styles.consultLineActive]}>
+                  <Text style={styles.consultLineLabel}>Original</Text>
+                  <Text style={styles.consultLineTarget} numberOfLines={1}>{xfer.originalTarget}</Text>
+                  {xfer.activeLine === 'original' && (
+                    <Text style={styles.consultLineIndicator}>● ACTIVE</Text>
+                  )}
+                </View>
+                <View style={styles.consultLineSep} />
+                <View style={[styles.consultLine, xfer.activeLine === 'consult' && styles.consultLineActive]}>
+                  <Text style={styles.consultLineLabel}>Consult</Text>
+                  <Text style={styles.consultLineTarget} numberOfLines={1}>{xfer.consultTarget}</Text>
+                  {xfer.activeLine === 'consult' && (
+                    <Text style={styles.consultLineIndicator}>● ACTIVE</Text>
+                  )}
+                </View>
+              </View>
+
+              {xfer.error ? (
+                <Text style={styles.consultErrorText}>{xfer.error}</Text>
+              ) : null}
+
+              {isGsmBlocked ? (
+                <Text style={styles.consultGsmWarning}>Transfer actions disabled — cellular call active</Text>
+              ) : null}
+
+              <View style={styles.consultActionsRow}>
+                <TouchableOpacity
+                  style={[styles.consultActionBtn, styles.consultSwapBtn, !canSwap && styles.consultBtnDisabled]}
+                  disabled={!canSwap}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    if (!canSwap) return;
+                    setPendingTransferAction('swap');
+                    onSwapLines().catch(() => {/* error surfaced via onTransferError toast */}).finally(() => {
+                      setPendingTransferAction(null);
+                    });
+                  }}
+                >
+                  <Text style={styles.consultActionBtnText}>
+                    {pendingTransferAction === 'swap' ? 'Swapping…' : 'Swap'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.consultActionBtn, styles.consultCompleteBtn, !canComplete && styles.consultBtnDisabled]}
+                  disabled={!canComplete}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    if (!canComplete) return;
+                    setPendingTransferAction('complete');
+                    onCompleteTransfer().catch(() => {}).finally(() => {
+                      setPendingTransferAction(null);
+                    });
+                  }}
+                >
+                  <Text style={styles.consultActionBtnText}>
+                    {pendingTransferAction === 'complete' ? 'Transferring…' : 'Complete'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.consultActionBtn, styles.consultCancelBtn, !canCancel && styles.consultBtnDisabled]}
+                  disabled={!canCancel}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    if (!canCancel) return;
+                    setPendingTransferAction('cancel');
+                    onCancelTransfer().catch(() => {}).finally(() => {
+                      setPendingTransferAction(null);
+                    });
+                  }}
+                >
+                  <Text style={[styles.consultActionBtnText, { color: colors.text }]}>
+                    {pendingTransferAction === 'cancel' ? 'Cancelling…' : 'Cancel'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })()}
+
 
         {/* End Call Floating Action */}
         <View style={styles.hangupRow}>
@@ -1304,11 +1701,12 @@ export function StandardPhoneScreen({
             accessibilityRole="button"
             accessibilityLabel="Hang up call"
           >
-            <PhoneDeclineIcon size={34} color="#ffffff" />
+            <PhoneDeclineIcon size={34} color={colors.onBrand} />
           </TouchableOpacity>
         </View>
 
-        {/* Transfer Dialog with 1-Click Server Extension List */}
+        {/* Transfer Dialog — Blind or Warm */}
+        {showTransferModal && (
         <Modal
           visible={showTransferModal}
           transparent
@@ -1323,14 +1721,46 @@ export function StandardPhoneScreen({
                     <View style={{ flex: 1 }}>
                       <Text style={styles.dialogTitle}>Transfer Call</Text>
                       <Text style={styles.transferSubTitle}>
-                        Tap an extension below to transfer with 1 click:
+                        {transferMode === 'blind'
+                          ? 'Blind: send call immediately, no consultation.'
+                          : 'Warm: put original on hold, call consult first.'}
                       </Text>
                     </View>
                     <TouchableOpacity
                       onPress={() => setShowTransferModal(false)}
                       style={styles.transferDismissBtn}
                     >
-                      <CloseIcon size={18} color="#94a3b8" />
+                      <CloseIcon size={18} color={colors.textDim} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Mode Selector */}
+                  <View style={styles.transferModeRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.transferModeBtn,
+                        transferMode === 'blind' && styles.transferModeBtnActive,
+                      ]}
+                      activeOpacity={0.75}
+                      onPress={() => setTransferMode('blind')}
+                    >
+                      <Text style={[
+                        styles.transferModeBtnText,
+                        transferMode === 'blind' && styles.transferModeBtnTextActive,
+                      ]}>Blind</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.transferModeBtn,
+                        transferMode === 'warm' && styles.transferModeBtnActive,
+                      ]}
+                      activeOpacity={0.75}
+                      onPress={() => setTransferMode('warm')}
+                    >
+                      <Text style={[
+                        styles.transferModeBtnText,
+                        transferMode === 'warm' && styles.transferModeBtnTextActive,
+                      ]}>Warm</Text>
                     </TouchableOpacity>
                   </View>
 
@@ -1339,7 +1769,7 @@ export function StandardPhoneScreen({
                     value={transferTarget}
                     onChangeText={setTransferTarget}
                     placeholder="Filter or enter custom extension…"
-                    placeholderTextColor="#666"
+                    placeholderTextColor={colors.textFaint}
                     keyboardType="phone-pad"
                   />
 
@@ -1355,9 +1785,19 @@ export function StandardPhoneScreen({
                         key={item.extension}
                         style={styles.transferExtRow}
                         onPress={() => {
-                          onTransfer(item.extension);
-                          setShowTransferModal(false);
-                          setTransferTarget('');
+                          if (transferMode === 'blind') {
+                            onBlindTransfer(item.extension);
+                            setShowTransferModal(false);
+                            setTransferTarget('');
+                          } else {
+                            // Warm: close modal immediately; consultation card appears via state
+                            setShowTransferModal(false);
+                            setTransferTarget('');
+                            setPendingTransferAction('start');
+                            onStartWarmTransfer(item.extension).finally(() => {
+                              setPendingTransferAction(null);
+                            });
+                          }
                         }}
                         activeOpacity={0.7}
                       >
@@ -1372,29 +1812,46 @@ export function StandardPhoneScreen({
                               ? item.name
                               : `Extension ${item.extension}`}
                           </Text>
-                          <Text style={styles.transferExtNumber}>Ext {item.extension}</Text>
+                          <Text style={styles.transferExtNumber}>{item.extension}</Text>
                         </View>
-                        <View style={styles.transferActionBadge}>
-                          <Text style={styles.transferActionText}>Transfer</Text>
+                        <View style={[
+                          styles.transferActionBadge,
+                          transferMode === 'warm' && styles.transferActionBadgeWarm,
+                        ]}>
+                          <Text style={styles.transferActionText}>
+                            {transferMode === 'blind' ? 'Transfer' : 'Consult'}
+                          </Text>
                         </View>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
 
-                  {/* Manual Transfer Button for custom numbers */}
+                  {/* Manual transfer/consult button for custom numbers */}
                   {transferTarget.trim().length > 0 && (
                     <TouchableOpacity
                       style={styles.transferManualBtn}
                       onPress={() => {
-                        onTransfer(transferTarget.trim());
-                        setShowTransferModal(false);
-                        setTransferTarget('');
+                        const target = transferTarget.trim();
+                        if (transferMode === 'blind') {
+                          onBlindTransfer(target);
+                          setShowTransferModal(false);
+                          setTransferTarget('');
+                        } else {
+                          setShowTransferModal(false);
+                          setTransferTarget('');
+                          setPendingTransferAction('start');
+                          onStartWarmTransfer(target).finally(() => {
+                            setPendingTransferAction(null);
+                          });
+                        }
                       }}
                       activeOpacity={0.8}
                     >
-                      <TransferIcon size={16} color="#000000" />
+                      <TransferIcon size={16} color={colors.onBrand} />
                       <Text style={styles.transferManualText}>
-                        Transfer to "{transferTarget.trim()}"
+                        {transferMode === 'blind'
+                          ? `Transfer to "${transferTarget.trim()}"`
+                          : `Consult "${transferTarget.trim()}"`}
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -1403,10 +1860,11 @@ export function StandardPhoneScreen({
             </View>
           </TouchableWithoutFeedback>
         </Modal>
+        )}
 
         {/* In-Call Audio & Volume Adjustment Sheet */}
-        {renderVolumeModal()}
-        {renderAudioRouteModal()}
+        {showInCallVolumeModal && renderVolumeModal()}
+        {showAudioRouteModal && renderAudioRouteModal()}
       </SafeAreaView>
     );
   }
@@ -1418,37 +1876,37 @@ export function StandardPhoneScreen({
       <View style={styles.topBar}>
         <View>
           <Text style={styles.topTitle}>
-            {activeTab === 'phone' ? 'Phone' : activeTab === 'contacts' ? 'Contacts' : 'Favourites'}
+            {activeTab === 'phone' ? 'VOICE' : activeTab === 'contacts' ? t('Contacts') : t('Favourites')}
           </Text>
           <TouchableOpacity
             style={[
               styles.statusBadge,
               state === 'registered' ? styles.statusBadgeOk : state === 'connecting' ? styles.statusBadgeWait : styles.statusBadgeErr,
             ]}
-            onPress={() => setShowSettingsModal(true)}
+            onPress={openSettings}
           >
             <View
               style={[
                 styles.statusDot,
-                { backgroundColor: state === 'registered' ? '#10b981' : state === 'connecting' ? '#f59e0b' : '#ef4444' },
+                { backgroundColor: state === 'registered' ? colors.success : state === 'connecting' ? colors.warning : colors.danger },
               ]}
             />
             <Text
               style={[
                 styles.statusBadgeText,
-                { color: state === 'registered' ? '#10b981' : state === 'connecting' ? '#f59e0b' : '#ef4444' },
+                { color: state === 'registered' ? colors.successText : state === 'connecting' ? colors.warningText : colors.dangerText },
               ]}
             >
               {state === 'registered'
-                ? `Ext ${account?.extension || '150'} · Connected ✓`
+                ? `${account?.extension || ''} · ${t('Connected')} ✓`
                 : state === 'connecting'
-                ? `Ext ${account?.extension || '150'} · Connecting…`
-                : `Ext ${account?.extension || '150'} · Offline`}
+                ? `${account?.extension || ''} · ${t('Connecting…')}`
+                : `${account?.extension || ''} · ${t('Offline')}`}
             </Text>
           </TouchableOpacity>
         </View>
         <TouchableOpacity style={styles.menuBtn} onPress={() => setShowMenu(!showMenu)}>
-          <MenuDotsIcon size={24} color="#ffffff" />
+          <MenuDotsIcon size={24} color={colors.text} />
         </TouchableOpacity>
       </View>
 
@@ -1458,17 +1916,39 @@ export function StandardPhoneScreen({
           <TouchableWithoutFeedback onPress={() => setShowMenu(false)}>
             <View style={styles.menuBackdrop} />
           </TouchableWithoutFeedback>
-          <View style={styles.dropdownMenu}>
+          <Animated.View
+            style={[
+              styles.dropdownMenu,
+              I18nManager.isRTL ? { left: 20, right: undefined, transformOrigin: 'left top' } : null,
+              {
+                opacity: menuAnim,
+                transform: [
+                  {
+                    scale: menuAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.92, 1],
+                    }),
+                  },
+                  {
+                    translateY: menuAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [-6, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
             <TouchableOpacity
               style={styles.dropdownItem}
               onPress={() => {
                 setShowMenu(false);
-                setShowSettingsModal(true);
+                openSettings();
               }}
             >
               <View style={styles.menuItemRow}>
-                <SettingsIcon size={18} color="#38bdf8" />
-                <Text style={styles.dropdownText}>Settings & PBX Host</Text>
+                <SettingsIcon size={18} color={colors.brand} />
+                <Text style={styles.dropdownText}>{t('Settings & PBX Host')}</Text>
               </View>
             </TouchableOpacity>
             {activeTab === 'phone' && (
@@ -1480,8 +1960,8 @@ export function StandardPhoneScreen({
                 }}
               >
                 <View style={styles.menuItemRow}>
-                  <TrashIcon size={18} color="#a1a1aa" />
-                  <Text style={styles.dropdownText}>Clear History</Text>
+                  <TrashIcon size={18} color={colors.textMuted} />
+                  <Text style={styles.dropdownText}>{t('Clear History')}</Text>
                 </View>
               </TouchableOpacity>
             )}
@@ -1491,12 +1971,13 @@ export function StandardPhoneScreen({
                   style={styles.dropdownItem}
                   onPress={() => {
                     setShowMenu(false);
+                    setEditingContact(null);
                     setShowAddContactModal(true);
                   }}
                 >
                   <View style={styles.menuItemRow}>
-                    <PlusIcon size={18} color="#10b981" />
-                    <Text style={styles.dropdownText}>Add Contact</Text>
+                    <PlusIcon size={18} color={colors.success} />
+                    <Text style={styles.dropdownText}>{t('Add Contact')}</Text>
                   </View>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -1507,38 +1988,36 @@ export function StandardPhoneScreen({
                   }}
                 >
                   <View style={styles.menuItemRow}>
-                    <ContactsIcon size={18} color="#38bdf8" />
-                    <Text style={styles.dropdownText}>Sync Phone Contacts</Text>
+                    <ContactsIcon size={18} color={colors.brand} />
+                    <Text style={styles.dropdownText}>{t('Sync Phone Contacts')}</Text>
                   </View>
                 </TouchableOpacity>
               </>
             )}
             <TouchableOpacity
-              style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: '#27272a' }]}
+              style={[styles.dropdownItem, { borderTopWidth: 1, borderTopColor: colors.border }]}
               onPress={handleSignOutClick}
             >
               <View style={styles.menuItemRow}>
-                <LogoutIcon size={18} color="#ef4444" />
-                <Text style={[styles.dropdownText, { color: '#ef4444' }]}>Sign Out</Text>
+                <LogoutIcon size={18} color={colors.dangerText} />
+                <Text style={[styles.dropdownText, { color: colors.dangerText }]}>{t('Sign Out')}</Text>
               </View>
             </TouchableOpacity>
-          </View>
+          </Animated.View>
         </>
       )}
 
-      {/* Main Tab Views (Fluid Horizontal Swipeable Pager) */}
-      <ScrollView
-        ref={tabPagerRef}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        scrollEventThrottle={16}
-        bounces={false}
-        style={{ flex: 1 }}
-        contentContainerStyle={{ width: SCREEN_WIDTH * 3 }}
-        onMomentumScrollEnd={handleScrollEnd}
+      {/* Main Tab Views — direct render with a RTL-aware page transition */}
+      <Animated.View
+        style={{
+          flex: 1,
+          opacity: pageOpacity,
+          transform: [{ translateX: pageTranslateX }],
+        }}
+        {...tabSwipeResponder.panHandlers}
       >
-        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+        {activeTab === 'phone' && (
+        <View style={{ flex: 1, overflow: 'hidden' }}>
         <View style={styles.phoneTabContent}>
           {/* Top: All / Missed Calls Filter Segmented Switch */}
           <View style={styles.historyFilterRow}>
@@ -1557,7 +2036,7 @@ export function StandardPhoneScreen({
                     historyFilter === 'all' && styles.filterSegmentTextActive,
                   ]}
                 >
-                  All
+                  {t('All')}
                 </Text>
               </TouchableOpacity>
 
@@ -1575,148 +2054,123 @@ export function StandardPhoneScreen({
                     historyFilter === 'missed' && styles.filterSegmentTextActive,
                   ]}
                 >
-                  Missed
+                  {t('Missed')}
                 </Text>
               </TouchableOpacity>
             </View>
           </View>
 
-          {/* Recents History List */}
+          {/* Live contact matches while dialing, otherwise recents history */}
           <View style={styles.recentsSection}>
-            {displayedCalls.length === 0 ? (
+            {showDialSearch ? (
+              <View style={styles.dialMatchPanel}>
+                <Text style={styles.dialMatchHeader}>{t('Contacts')}</Text>
+                {dialSearchMatches.length === 0 ? (
+                  <Text style={styles.dialMatchEmpty}>{t('No contacts found')}</Text>
+                ) : (
+                  <FlatList
+                    data={dialSearchMatches}
+                    keyExtractor={contactKeyExtractor}
+                    style={styles.dialMatchList}
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator
+                    renderItem={({ item }) => (
+                      <TouchableOpacity
+                        style={styles.dialMatchRow}
+                        activeOpacity={0.7}
+                        delayPressIn={0}
+                        onPress={() => {
+                          onCall(item.extension);
+                          setDigits('');
+                          setCursorIndex(0);
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${t('Call')} ${item.name}, ${item.extension}`}
+                      >
+                        <View style={styles.dialMatchInfo}>
+                          <Text style={styles.dialMatchName} numberOfLines={1}>
+                            {item.name}
+                          </Text>
+                          <Text style={styles.dialMatchExt}>
+                            {item.extension}
+                          </Text>
+                        </View>
+                        <PhoneIcon size={16} color={colors.brand} />
+                      </TouchableOpacity>
+                    )}
+                  />
+                )}
+              </View>
+            ) : displayedCalls.length === 0 ? (
               <View style={styles.emptyHistory}>
                 <Text style={styles.emptyHistoryText}>
-                  {historyFilter === 'missed' ? 'No missed calls' : 'No recent calls'}
+                  {historyFilter === 'missed' ? t('No missed calls') : t('No recent calls')}
                 </Text>
               </View>
             ) : (
               <FlatList
-                data={displayedCalls.slice(0, 40)}
-                keyExtractor={(item) => item.id}
+                data={recentCalls}
+                keyExtractor={recentKeyExtractor}
                 showsVerticalScrollIndicator={false}
                 initialNumToRender={10}
                 maxToRenderPerBatch={10}
                 windowSize={5}
                 removeClippedSubviews={Platform.OS === 'android'}
-                renderItem={({ item }) => (
-                  <RecentCallRow
-                    item={item}
-                    onCall={onCall}
-                    onOpenDetails={handleOpenCallDetails}
-                  />
-                )}
+                contentContainerStyle={{ paddingBottom: isDialpadVisible ? dialpadKeysHeight : 0 }}
+                renderItem={renderRecentCall}
               />
             )}
           </View>
 
           {/* Lower Half: Dialpad Display & 3x4 Keypad */}
           <View style={styles.dialpadSection}>
-            <Animated.View
-              style={{
-                maxHeight: dialpadAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0, 420],
-                }),
-                opacity: dialpadAnim.interpolate({
-                  inputRange: [0, 0.35, 1],
-                  outputRange: [0, 0.2, 1],
-                }),
-                transform: [
-                  {
-                    translateY: dialpadAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [40, 0],
-                    }),
-                  },
-                ],
-                overflow: 'hidden',
-              }}
+            <View
+              pointerEvents={isDialpadVisible ? 'box-none' : 'none'}
+              style={[styles.dialpadKeysClip, { height: dialpadKeysHeight }]}
             >
-                {/* Number Display with inline Backspace & Movable Caret Indicator */}
+            <Animated.View
+              onLayout={(e) => setDialpadKeysHeight(e.nativeEvent.layout.height)}
+              pointerEvents={isDialpadVisible ? 'auto' : 'none'}
+              style={[
+                styles.dialpadKeysOverlay,
+                {
+                  opacity: dialpadAnim,
+                  transform: [
+                    {
+                      translateY: dialpadAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [dialpadKeysHeight, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
+                {/* Native input retains selection handles and copy/paste menu. */}
                 <View style={styles.numberRow}>
-                  {digits.length === 0 ? (
-                    <View style={styles.digitsWrapper}>
-                      <Animated.View
-                        style={[
-                          styles.cursorCaret,
-                          { opacity: cursorOpacity },
-                        ]}
-                      />
-                    </View>
-                  ) : (
-                    <View style={styles.digitsWrapper}>
-                      {/* Leading edge touch target */}
-                      <TouchableOpacity
-                        style={styles.cursorEdgeTouch}
-                        onPress={() => {
-                          cursorOpacity.setValue(1);
-                          setCursorIndex(0);
-                        }}
-                        hitSlop={{ top: 12, bottom: 12, left: 16, right: 4 }}
-                        activeOpacity={1}
-                      />
-
-                      {digits.split('').map((char, index) => {
-                        const isCaretHere = cursorIndex === index;
-                        return (
-                          <React.Fragment key={`${index}-${char}`}>
-                            {isCaretHere && (
-                              <Animated.View
-                                style={[
-                                  styles.cursorCaret,
-                                  { opacity: cursorOpacity },
-                                ]}
-                              />
-                            )}
-                            <TouchableOpacity
-                              style={styles.digitCharTouch}
-                              onPress={(e) => {
-                                cursorOpacity.setValue(1);
-                                const locX = e.nativeEvent.locationX;
-                                if (locX < 10) {
-                                  setCursorIndex(index);
-                                } else {
-                                  setCursorIndex(index + 1);
-                                }
-                              }}
-                              hitSlop={{ top: 10, bottom: 10, left: 2, right: 2 }}
-                              activeOpacity={1}
-                            >
-                              <Text style={styles.dialedDigits}>{char}</Text>
-                            </TouchableOpacity>
-                          </React.Fragment>
-                        );
-                      })}
-
-                      {/* Caret at trailing end */}
-                      {cursorIndex >= digits.length && (
-                        <Animated.View
-                          style={[
-                            styles.cursorCaret,
-                            { opacity: cursorOpacity },
-                          ]}
-                        />
-                      )}
-
-                      {/* Trailing edge touch target */}
-                      <TouchableOpacity
-                        style={styles.cursorEdgeTouch}
-                        onPress={() => {
-                          cursorOpacity.setValue(1);
-                          setCursorIndex(digits.length);
-                        }}
-                        hitSlop={{ top: 12, bottom: 12, left: 4, right: 16 }}
-                        activeOpacity={1}
-                      />
-                    </View>
-                  )}
+                  <TextInput
+                    testID="dial-number-input"
+                    accessibilityLabel={t('Enter number or ext…')}
+                    style={[styles.dialedDigits, { width: '100%', minHeight: 44, textAlign: 'center', writingDirection: 'ltr', paddingVertical: 0 }]}
+                    value={digits}
+                    onChangeText={setDigits}
+                    selection={dialSelection}
+                    onSelectionChange={(event) => setDialSelection(event.nativeEvent.selection)}
+                    showSoftInputOnFocus={false}
+                    contextMenuHidden={false}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                    keyboardType="phone-pad"
+                    selectionColor={colors.brand}
+                    underlineColorAndroid="transparent"
+                  />
 
                   {hasDigits ? (
                     <TouchableOpacity
                       style={styles.topBackspaceBtn}
                       onPress={handleBackspace}
                       onLongPress={() => {
-                        cursorOpacity.setValue(1);
                         setDigits('');
                         setCursorIndex(0);
                       }}
@@ -1725,7 +2179,7 @@ export function StandardPhoneScreen({
                       accessibilityRole="button"
                       accessibilityLabel="Delete digit (hold to clear)"
                     >
-                      <BackspaceIcon size={22} color="#a1a1aa" />
+                      <BackspaceIcon size={22} color={colors.textMuted} />
                     </TouchableOpacity>
                   ) : null}
                 </View>
@@ -1748,6 +2202,7 @@ export function StandardPhoneScreen({
                   })}
                 </View>
             </Animated.View>
+            </View>
 
             {/* Bottom Action Bar */}
             <View
@@ -1769,11 +2224,11 @@ export function StandardPhoneScreen({
                 }
               >
                 {hasDigits ? (
-                  <UserPlusIcon size={22} color="#38bdf8" />
+                  <UserPlusIcon size={22} color={colors.brand} />
                 ) : (
                   <RedialIcon
                     size={22}
-                    color={hasRedial ? '#a1a1aa' : '#52525b'}
+                    color={hasRedial ? colors.textMuted : colors.textFaint}
                   />
                 )}
               </TouchableOpacity>
@@ -1786,14 +2241,9 @@ export function StandardPhoneScreen({
                 onPress={handleDial}
                 disabled={!digits}
                 accessibilityRole="button"
-                accessibilityLabel={
-                  account ? `Call from extension ${account.extension}` : 'Place call'
-                }
+                accessibilityLabel={t('Call')}
               >
-                <PhoneIcon size={18} color="#000000" />
-                <Text style={styles.callPillText}>
-                  {account ? `Ext ${account.extension}` : 'Call'}
-                </Text>
+                <PhoneIcon size={24} color={colors.onBrand} />
               </TouchableOpacity>
 
               {/* Pull Down / Pull Up Dialpad Toggle Button */}
@@ -1817,7 +2267,7 @@ export function StandardPhoneScreen({
                     ],
                   }}
                 >
-                  <ChevronDownIcon size={24} color={isDialpadVisible ? '#a1a1aa' : '#38bdf8'} />
+                  <ChevronDownIcon size={24} color={isDialpadVisible ? colors.textMuted : colors.brand} />
                 </Animated.View>
               </TouchableOpacity>
             </View>
@@ -1825,70 +2275,69 @@ export function StandardPhoneScreen({
         </View>
         </View>
 
-        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+        )}
+        {activeTab === 'contacts' && (
+        <View style={{ flex: 1 }}>
         <View style={styles.contactsContent}>
           <View style={styles.contactsHeaderRow}>
             <TextInput
               style={styles.contactSearchInputFlex}
               value={contactSearch}
               onChangeText={setContactSearch}
-              placeholder="Search contacts…"
-              placeholderTextColor="#666"
+              placeholder={t('Search contacts…')}
+              placeholderTextColor={colors.textFaint}
             />
             <TouchableOpacity
               style={styles.syncContactsHeaderBtn}
-              onPress={handleSyncContacts}
-              disabled={isSyncingContacts}
+              onPress={() => {
+                setEditingContact(null);
+                setShowAddContactModal(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={t('Add Contact')}
             >
-              <ContactsIcon size={18} color="#38bdf8" />
+              <UserPlusIcon size={18} color={colors.brand} />
               <Text style={styles.syncContactsHeaderBtnText}>
-                {isSyncingContacts ? 'Syncing…' : 'Import'}
+                {t('Add Contact')}
               </Text>
             </TouchableOpacity>
           </View>
           <FlatList
             data={filteredContacts}
-            keyExtractor={(c) => c.id}
+            keyExtractor={contactKeyExtractor}
             initialNumToRender={12}
             maxToRenderPerBatch={12}
             windowSize={5}
             removeClippedSubviews={Platform.OS === 'android'}
-            renderItem={({ item }) => (
-              <ContactRow
-                item={item}
-                onToggleFavorite={onToggleFavorite}
-                onCall={onCall}
-              />
-            )}
+            contentContainerStyle={styles.contactsListContent}
+            renderItem={renderContact}
           />
         </View>
         </View>
 
-        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+        )}
+        {activeTab === 'favourites' && (
+        <View style={{ flex: 1 }}>
         <View style={styles.contactsContent}>
           <FlatList
             data={favoriteContacts}
-            keyExtractor={(c) => c.id}
+            keyExtractor={contactKeyExtractor}
             initialNumToRender={10}
             maxToRenderPerBatch={10}
             windowSize={5}
             removeClippedSubviews={Platform.OS === 'android'}
+            contentContainerStyle={styles.contactsListContent}
             ListEmptyComponent={
               <View style={styles.emptyHistory}>
-                <Text style={styles.emptyHistoryText}>No favourites yet. Star contacts to see them here.</Text>
+                <Text style={styles.emptyHistoryText}>{t('No favourites yet. Bookmark contacts to see them here.')}</Text>
               </View>
             }
-            renderItem={({ item }) => (
-              <ContactRow
-                item={item}
-                onToggleFavorite={onToggleFavorite}
-                onCall={onCall}
-              />
-            )}
+            renderItem={renderContact}
           />
         </View>
         </View>
-      </ScrollView>
+        )}
+      </Animated.View>
 
       {/* Bottom Navigation Bar */}
       <View style={styles.bottomNav}>
@@ -1900,11 +2349,17 @@ export function StandardPhoneScreen({
                 {
                   translateX: tabIndicatorAnim.interpolate({
                     inputRange: [0, 1, 2],
-                    outputRange: [
-                      (SCREEN_WIDTH / 3) * 0 + (SCREEN_WIDTH / 3 - 48) / 2,
-                      (SCREEN_WIDTH / 3) * 1 + (SCREEN_WIDTH / 3 - 48) / 2,
-                      (SCREEN_WIDTH / 3) * 2 + (SCREEN_WIDTH / 3 - 48) / 2,
-                    ],
+                    outputRange: I18nManager.isRTL
+                      ? [
+                          (SCREEN_WIDTH / 3) * 2 + (SCREEN_WIDTH / 3 - 48) / 2,
+                          (SCREEN_WIDTH / 3) * 1 + (SCREEN_WIDTH / 3 - 48) / 2,
+                          (SCREEN_WIDTH / 3) * 0 + (SCREEN_WIDTH / 3 - 48) / 2,
+                        ]
+                      : [
+                          (SCREEN_WIDTH / 3) * 0 + (SCREEN_WIDTH / 3 - 48) / 2,
+                          (SCREEN_WIDTH / 3) * 1 + (SCREEN_WIDTH / 3 - 48) / 2,
+                          (SCREEN_WIDTH / 3) * 2 + (SCREEN_WIDTH / 3 - 48) / 2,
+                        ],
                   }),
                 },
               ],
@@ -1915,24 +2370,24 @@ export function StandardPhoneScreen({
           style={styles.navItem}
           onPress={() => handleTabPress('phone')}
         >
-          <PhoneIcon size={20} color={activeTab === 'phone' ? '#38bdf8' : '#71717a'} />
-          <Text style={[styles.navLabel, activeTab === 'phone' && styles.navLabelActive]}>Phone</Text>
+          <PhoneIcon size={20} color={activeTab === 'phone' ? colors.brand : colors.textFaint} />
+          <Text style={[styles.navLabel, activeTab === 'phone' && styles.navLabelActive]}>{t('Phone')}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => handleTabPress('contacts')}
         >
-          <ContactsIcon size={20} color={activeTab === 'contacts' ? '#38bdf8' : '#71717a'} />
-          <Text style={[styles.navLabel, activeTab === 'contacts' && styles.navLabelActive]}>Contacts</Text>
+          <ContactsIcon size={20} color={activeTab === 'contacts' ? colors.brand : colors.textFaint} />
+          <Text style={[styles.navLabel, activeTab === 'contacts' && styles.navLabelActive]}>{t('Contacts')}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => handleTabPress('favourites')}
         >
-          <StarIcon size={20} color={activeTab === 'favourites' ? '#38bdf8' : '#71717a'} fill={activeTab === 'favourites' ? '#38bdf8' : 'none'} />
-          <Text style={[styles.navLabel, activeTab === 'favourites' && styles.navLabelActive]}>Favourites</Text>
+          <BookmarkIcon size={20} color={activeTab === 'favourites' ? colors.brand : colors.textFaint} fill={activeTab === 'favourites' ? colors.brand : 'none'} />
+          <Text style={[styles.navLabel, activeTab === 'favourites' && styles.navLabelActive]}>{t('Favourites')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -1951,35 +2406,35 @@ export function StandardPhoneScreen({
                 bounces={true}
                 overScrollMode="always"
               >
-                  <Text style={styles.settingsTitle}>PBX Server & Credentials</Text>
+                  <Text style={styles.settingsTitle}>{t('PBX Server & Credentials')}</Text>
 
-                  <Text style={styles.fieldLabel}>SIP EXTENSION</Text>
+                  <Text style={styles.fieldLabel}>{t('SIP EXTENSION')}</Text>
                   <TextInput
                     style={styles.settingsInput}
                     value={editExt}
                     onChangeText={setEditExt}
-                    placeholder="e.g. 150"
-                    placeholderTextColor="#666"
+                    placeholder="Extension"
+                    placeholderTextColor={colors.textFaint}
                     keyboardType="number-pad"
                   />
 
-                  <Text style={styles.fieldLabel}>SIP PASSWORD</Text>
+                  <Text style={styles.fieldLabel}>{t('SIP PASSWORD')}</Text>
                   <TextInput
                     style={styles.settingsInput}
                     value={editPass}
                     onChangeText={setEditPass}
                     placeholder="SIP Secret"
-                    placeholderTextColor="#666"
+                    placeholderTextColor={colors.textFaint}
                     secureTextEntry
                   />
 
-                  <Text style={styles.fieldLabel}>PBX SERVER HOST / IP</Text>
+                  <Text style={styles.fieldLabel}>{t('PBX SERVER HOST / IP')}</Text>
                   <TextInput
                     style={styles.settingsInput}
                     value={editHost}
                     onChangeText={setEditHost}
                     placeholder="e.g. pbx.yourcompany.com"
-                    placeholderTextColor="#666"
+                    placeholderTextColor={colors.textFaint}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
@@ -1990,16 +2445,16 @@ export function StandardPhoneScreen({
                     onPress={() => setEditTls(!editTls)}
                   >
                     <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>TLS / WSS Protocol</Text>
+                      <Text style={styles.switchLabel}>{t('TLS / WSS Protocol')}</Text>
                       <Text style={styles.switchSub}>
-                        {editTls ? 'Port 8089 (WSS)' : 'Port 8088 (Plain WS on LAN)'}
+                        {editTls ? t('Port 8089 (WSS)') : t('Port 8088 (Plain WS on LAN)')}
                       </Text>
                     </View>
                     <View pointerEvents="none">
                       <Switch
                         value={editTls}
-                        thumbColor={editTls ? '#38bdf8' : '#71717a'}
-                        trackColor={{ false: '#3f3f46', true: '#0369a1' }}
+                        thumbColor={editTls ? colors.onBrand : colors.textFaint}
+                        trackColor={{ false: colors.borderStrong, true: colors.brandFill }}
                       />
                     </View>
                   </TouchableOpacity>
@@ -2010,14 +2465,14 @@ export function StandardPhoneScreen({
                     onPress={() => setEditDnd(!editDnd)}
                   >
                     <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>Do Not Disturb (DND)</Text>
-                      <Text style={styles.switchSub}>Auto-reject incoming calls</Text>
+                      <Text style={styles.switchLabel}>{t('Do Not Disturb (DND)')}</Text>
+                      <Text style={styles.switchSub}>{t('Auto-reject incoming calls')}</Text>
                     </View>
                     <View pointerEvents="none">
                       <Switch
                         value={editDnd}
-                        thumbColor={editDnd ? '#ef4444' : '#71717a'}
-                        trackColor={{ false: '#3f3f46', true: '#991b1b' }}
+                        thumbColor={editDnd ? colors.onBrand : colors.textFaint}
+                        trackColor={{ false: colors.borderStrong, true: colors.dangerFill }}
                       />
                     </View>
                   </TouchableOpacity>
@@ -2028,21 +2483,47 @@ export function StandardPhoneScreen({
                     onPress={() => setEditAuto(!editAuto)}
                   >
                     <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>Auto-Answer</Text>
-                      <Text style={styles.switchSub}>Auto-accept incoming calls</Text>
+                      <Text style={styles.switchLabel}>{t('Auto-Answer')}</Text>
+                      <Text style={styles.switchSub}>{t('Auto-accept incoming calls')}</Text>
                     </View>
                     <View pointerEvents="none">
                       <Switch
                         value={editAuto}
-                        thumbColor={editAuto ? '#10b981' : '#71717a'}
-                        trackColor={{ false: '#3f3f46', true: '#065f46' }}
+                        thumbColor={editAuto ? colors.onBrand : colors.textFaint}
+                        trackColor={{ false: colors.borderStrong, true: colors.brandFill }}
                       />
                     </View>
                   </TouchableOpacity>
 
+                  <View style={styles.switchRow}>
+                    <View style={styles.switchTextCol}>
+                      <Text style={styles.switchLabel}>{t('Language')}</Text>
+                      <Text style={styles.switchSub}>English · العربية</Text>
+                    </View>
+                  </View>
+                  <View style={styles.languageRow}>
+                    <TouchableOpacity
+                      style={[styles.languagePill, lang === 'en' && styles.languagePillActive]}
+                      onPress={() => { void changeLanguage('en'); }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.languagePillText, lang === 'en' && styles.languagePillTextActive]}>
+                        English
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.languagePill, lang === 'ar' && styles.languagePillActive]}
+                      onPress={() => { void changeLanguage('ar'); }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.languagePillText, lang === 'ar' && styles.languagePillTextActive]}>
+                        العربية
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
 
                   <View style={styles.settingsSectionDivider} />
-                  <Text style={styles.settingsSectionTitle}>Preferred Audio Codec</Text>
+                  <Text style={styles.settingsSectionTitle}>{t('Preferred Audio Codec')}</Text>
                   <Text style={styles.settingsSectionSub}>
                     Select your preferred codec for voice calls. Opus delivers HD clarity; G.722 & PCMU offer legacy VoIP compatibility:
                   </Text>
@@ -2082,9 +2563,10 @@ export function StandardPhoneScreen({
                     onChangeSpeaker={handleSpeakerChange}
                     onChangeMic={handleMicChange}
                     onToggleSpeaker={onToggleSpeaker}
+                    showRouteControls={false}
                   />
                   <View style={styles.settingsSectionDivider} />
-                  <Text style={styles.settingsSectionTitle}>Speed Dial (Keys 1 – 9)</Text>
+                  <Text style={styles.settingsSectionTitle}>{t('Speed Dial (Keys 1 – 9)')}</Text>
                   <Text style={styles.settingsSectionSub}>
                     Hold down any key on the dialpad to directly call these numbers:
                   </Text>
@@ -2105,7 +2587,7 @@ export function StandardPhoneScreen({
                             setEditSpeedDial((prev) => ({ ...prev, [digit]: val }))
                           }
                           placeholder={isVmKey ? '*97 (Voicemail)' : `Speed dial ${digit} (empty)`}
-                          placeholderTextColor="#666"
+                          placeholderTextColor={colors.textFaint}
                           autoCapitalize="none"
                         />
                         {currentValue.trim() && !isVmKey ? (
@@ -2119,20 +2601,52 @@ export function StandardPhoneScreen({
                             }
                             style={styles.speedDialClearBtn}
                           >
-                            <CloseIcon size={14} color="#a1a1aa" />
+                            <CloseIcon size={14} color={colors.textMuted} />
                           </TouchableOpacity>
                         ) : null}
                       </View>
                     );
                   })}
+                  <View style={styles.settingsSectionDivider} />
+                  <Text style={styles.settingsSectionTitle}>{t('WhatsApp')}</Text>
+                  <Text style={styles.fieldLabel}>{t('WhatsApp country code')}</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editWhatsAppCountryCode}
+                    onChangeText={(value) =>
+                      setEditWhatsAppCountryCode(value.replace(/\D/g, '').slice(0, 4))
+                    }
+                    placeholder={t('e.g. 20')}
+                    placeholderTextColor={colors.textFaint}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                  />
+                  <TouchableOpacity
+                    style={styles.switchRow}
+                    activeOpacity={0.7}
+                    onPress={() => setEditWhatsAppPrompt(!editWhatsAppPrompt)}
+                  >
+                    <View style={styles.switchTextCol}>
+                      <Text style={styles.switchLabel}>{t('Ask for country code when needed')}</Text>
+                      <Text style={styles.switchSub}>{t('Prompt once for local numbers')}</Text>
+                    </View>
+                    <View pointerEvents="none">
+                      <Switch
+                        value={editWhatsAppPrompt}
+                        thumbColor={editWhatsAppPrompt ? colors.onBrand : colors.textFaint}
+                        trackColor={{ false: colors.borderStrong, true: colors.brandFill }}
+                      />
+                    </View>
+                  </TouchableOpacity>
+
                   <View style={styles.settingsActions}>
                     {account ? (
                       <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
-                        <Text style={styles.dialogCancelText}>Cancel</Text>
+                        <Text style={styles.dialogCancelText}>{t('Cancel')}</Text>
                       </TouchableOpacity>
                     ) : null}
                     <TouchableOpacity onPress={handleSaveSettings} style={styles.settingsSaveBtn}>
-                      <Text style={styles.settingsSaveText}>Save & Connect</Text>
+                      <Text style={styles.settingsSaveText}>{t('Save & Connect')}</Text>
                     </TouchableOpacity>
                   </View>
                 </ScrollView>
@@ -2140,14 +2654,16 @@ export function StandardPhoneScreen({
           </View>
       </Modal>
 
-      {/* Add Contact Modal (Click-Outside to Dismiss) */}
-      <Modal visible={showAddContactModal} transparent animationType="fade" onRequestClose={() => setShowAddContactModal(false)}>
+      {/* Add / Edit Contact Modal (Click-Outside to Dismiss) */}
+      <Modal visible={showAddContactModal} transparent animationType="fade" onRequestClose={closeContactModal}>
         <View style={styles.modalBackdrop}>
-          <TouchableWithoutFeedback onPress={() => setShowAddContactModal(false)}>
+          <TouchableWithoutFeedback onPress={closeContactModal}>
             <View style={StyleSheet.absoluteFill} />
           </TouchableWithoutFeedback>
           <View style={styles.dialogCard}>
-                <Text style={styles.dialogTitle}>Add New Contact</Text>
+                <Text style={styles.dialogTitle}>
+                  {editingContact ? t('Edit Contact') : t('Add New Contact')}
+                </Text>
 
                 <Text style={styles.fieldLabel}>NAME</Text>
                 <TextInput
@@ -2155,7 +2671,7 @@ export function StandardPhoneScreen({
                   value={newContactName}
                   onChangeText={setNewContactName}
                   placeholder="e.g. Support"
-                  placeholderTextColor="#666"
+                  placeholderTextColor={colors.textFaint}
                 />
 
                 <Text style={styles.fieldLabel}>EXTENSION / PHONE</Text>
@@ -2164,13 +2680,13 @@ export function StandardPhoneScreen({
                   value={newContactNumber}
                   onChangeText={setNewContactNumber}
                   placeholder="e.g. 101"
-                  placeholderTextColor="#666"
+                  placeholderTextColor={colors.textFaint}
                   keyboardType="phone-pad"
                 />
 
                 <View style={styles.dialogActions}>
-                  <TouchableOpacity onPress={() => setShowAddContactModal(false)} style={styles.dialogCancelBtn}>
-                    <Text style={styles.dialogCancelText}>Cancel</Text>
+                  <TouchableOpacity onPress={closeContactModal} style={styles.dialogCancelBtn}>
+                    <Text style={styles.dialogCancelText}>{t('Cancel')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={handleCreateContact} style={styles.dialogSubmitBtn}>
                     <Text style={styles.dialogSubmitText}>Save</Text>
@@ -2179,141 +2695,56 @@ export function StandardPhoneScreen({
               </View>
           </View>
       </Modal>
-      {/* Call Details & Quick Actions Sheet */}
-      <Modal
-        visible={showCallDetailsModal && Boolean(selectedCallRecord)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowCallDetailsModal(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <TouchableWithoutFeedback onPress={() => setShowCallDetailsModal(false)}>
-            <View style={StyleSheet.absoluteFill} />
-          </TouchableWithoutFeedback>
-          <View style={styles.callDetailsCard}>
-                <View style={styles.callDetailsHeaderRow}>
-                  <Text style={styles.dialogTitle}>Call Details</Text>
-                  <TouchableOpacity
-                    onPress={() => setShowCallDetailsModal(false)}
-                    style={styles.transferDismissBtn}
-                  >
-                    <CloseIcon size={18} color="#94a3b8" />
-                  </TouchableOpacity>
-                </View>
-
-                {selectedCallRecord && (
-                  <>
-                    {/* Caller Avatar & Name */}
-                    <View style={styles.callDetailsIdentity}>
-                      <View style={styles.callDetailsAvatar}>
-                        <UserIcon size={34} color="#38bdf8" />
-                      </View>
-                      <Text style={styles.callDetailsName} numberOfLines={1}>
-                        {selectedCallRecord.name || selectedCallRecord.number}
-                      </Text>
-                      <Text style={styles.callDetailsNumber}>
-                        {selectedCallRecord.name && selectedCallRecord.name !== selectedCallRecord.number
-                          ? `Ext ${selectedCallRecord.number} · VoIP`
-                          : 'VoIP Extension'}
-                      </Text>
-                    </View>
-
-                    {/* Quick Action Buttons Row */}
-                    <View style={styles.callDetailsActionsRow}>
-                      <TouchableOpacity
-                        style={styles.callDetailsActionPill}
-                        onPress={() => {
-                          const num = selectedCallRecord.number;
-                          setShowCallDetailsModal(false);
-                          onCall(num);
-                        }}
-                      >
-                        <PhoneIcon size={16} color="#000000" />
-                        <Text style={styles.callDetailsActionText}>Call</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.callDetailsActionSecondary}
-                        onPress={() => {
-                          const num = selectedCallRecord.number;
-                          const name =
-                            selectedCallRecord.name !== selectedCallRecord.number
-                              ? selectedCallRecord.name
-                              : '';
-                          setShowCallDetailsModal(false);
-                          setNewContactName(name);
-                          setNewContactNumber(num);
-                          setShowAddContactModal(true);
-                        }}
-                      >
-                        <UserPlusIcon size={16} color="#ffffff" />
-                        <Text style={styles.callDetailsSecondaryText}>Add Contact</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.callDetailsActionDanger}
-                        onPress={() => {
-                          if (onDeleteCallRecord) {
-                            onDeleteCallRecord(selectedCallRecord.id);
-                          }
-                          setShowCallDetailsModal(false);
-                        }}
-                      >
-                        <TrashIcon size={16} color="#ef4444" />
-                        <Text style={styles.callDetailsDangerText}>Delete</Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Detailed Metadata Card */}
-                    <View style={styles.callDetailsMetaCard}>
-                      <View style={styles.callDetailsMetaRow}>
-                        <Text style={styles.callDetailsMetaLabel}>Call Type</Text>
-                        <Text
-                          style={[
-                            styles.callDetailsMetaValue,
-                            selectedCallRecord.direction === 'missed' && { color: '#ef4444' },
-                          ]}
-                        >
-                          {selectedCallRecord.direction === 'inbound'
-                            ? 'Incoming (Answered)'
-                            : selectedCallRecord.direction === 'outbound'
-                            ? 'Outgoing Call'
-                            : 'Missed Call'}
-                        </Text>
-                      </View>
-
-                      <View style={styles.callDetailsMetaDivider} />
-
-                      <View style={styles.callDetailsMetaRow}>
-                        <Text style={styles.callDetailsMetaLabel}>Date & Time</Text>
-                        <Text style={styles.callDetailsMetaValue}>
-                          {formatExactDate(selectedCallRecord.timestamp)}
-                        </Text>
-                      </View>
-
-                      {selectedCallRecord.duration != null && selectedCallRecord.duration > 0 && (
-                        <>
-                          <View style={styles.callDetailsMetaDivider} />
-                          <View style={styles.callDetailsMetaRow}>
-                            <Text style={styles.callDetailsMetaLabel}>Duration</Text>
-                            <Text style={styles.callDetailsMetaValue}>
-                              {formatCallTime(selectedCallRecord.duration)}
-                            </Text>
-                          </View>
-                        </>
-                      )}
-                    </View>
-                  </>
-                )}
-              </View>
-          </View>
-      </Modal>
-      {renderVolumeModal()}
+      <CallerProfileModal
+        visible={profileNumber !== null}
+        number={profileNumber}
+        calls={callsHistory}
+        contacts={contacts}
+        whatsappCountryCode={whatsappPrefs.countryCode}
+        whatsappPromptEnabled={whatsappPrefs.promptEnabled}
+        onClose={() => setProfileNumber(null)}
+        onCall={(target) => {
+          setProfileNumber(null);
+          onCall(target);
+        }}
+        onAddContact={(name, target) => {
+          setProfileNumber(null);
+          setEditingContact(null);
+          setNewContactName(name);
+          setNewContactNumber(target);
+          setShowAddContactModal(true);
+        }}
+        onEditContact={(contact) => {
+          setProfileNumber(null);
+          setEditingContact(contact);
+          setNewContactName(contact.name);
+          setNewContactNumber(contact.extension);
+          setShowAddContactModal(true);
+        }}
+        onDeleteContact={onDeleteContact}
+        onToggleFavorite={onToggleFavorite}
+        onDeleteRecord={onDeleteCallRecord}
+        onSaveWhatsAppCountryCode={handleSaveWhatsAppCountryCode}
+      />
+      {showInCallVolumeModal && renderVolumeModal()}
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+export function StandardPhoneScreen(props: Props) {
+  const { colors } = useTheme();
+  const styles = useMemo(
+    () => themedStyles(rawStyles, colors, SCREEN_OVERRIDES),
+    [colors],
+  );
+  return (
+    <ScreenStylesContext.Provider value={styles}>
+      <StandardPhoneScreenInner {...props} />
+    </ScreenStylesContext.Provider>
+  );
+}
+
+const rawStyles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
@@ -2383,6 +2814,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 56,
     right: 20,
+    transformOrigin: 'right top',
     backgroundColor: '#18181b',
     borderRadius: 14,
     paddingVertical: 6,
@@ -2450,6 +2882,57 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     minHeight: 120,
   },
+  dialMatchPanel: {
+    maxHeight: 220,
+    marginTop: 2,
+    backgroundColor: '#18181b',
+    borderColor: '#27272a',
+    borderWidth: 1,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  dialMatchHeader: {
+    color: '#71717a',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    paddingHorizontal: 12,
+    paddingTop: 9,
+    paddingBottom: 3,
+  },
+  dialMatchList: {
+    maxHeight: 185,
+  },
+  dialMatchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderTopWidth: 1,
+    borderTopColor: '#27272a',
+  },
+  dialMatchInfo: {
+    flex: 1,
+    marginEnd: 10,
+  },
+  dialMatchName: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  dialMatchExt: {
+    color: '#71717a',
+    fontSize: 12,
+    marginTop: 1,
+  },
+  dialMatchEmpty: {
+    color: '#71717a',
+    fontSize: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    textAlign: 'center',
+  },
   emptyHistory: {
     flex: 1,
     alignItems: 'center',
@@ -2502,6 +2985,21 @@ const styles = StyleSheet.create({
   },
   dialpadSection: {
     backgroundColor: '#000000',
+    paddingTop: 0,
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+  },
+  dialpadKeysClip: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 60,
+    overflow: 'hidden',
+    zIndex: 5,
+    elevation: 5,
+  },
+  dialpadKeysOverlay: {
+    backgroundColor: '#000000',
     borderTopColor: '#27272a',
     borderTopWidth: 1,
     paddingTop: 8,
@@ -2515,6 +3013,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   numberRow: {
+    direction: 'ltr',
     minHeight: 44,
     justifyContent: 'center',
     alignItems: 'center',
@@ -2557,6 +3056,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 1.5,
   },
   keypadGrid: {
+    direction: 'ltr',
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
@@ -2629,14 +3129,12 @@ const styles = StyleSheet.create({
     opacity: 0.35,
   },
   mainCallPill: {
-    flexDirection: 'row',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#38bdf8',
-    paddingHorizontal: 28,
-    height: 50,
-    borderRadius: 25,
-    gap: 8,
   },
   mainCallPillDisabled: {
     opacity: 0.35,
@@ -2752,6 +3250,8 @@ const styles = StyleSheet.create({
   },
   contactsContent: {
     flex: 1,
+  },
+  contactsListContent: {
     paddingHorizontal: 20,
   },
   contactRow: {
@@ -2976,134 +3476,176 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  // Transfer mode selector
+  transferModeRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  transferModeBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: '#09090b',
+  },
+  transferModeBtnActive: {
+    backgroundColor: '#0284c7',
+  },
+  transferModeBtnText: {
+    color: '#71717a',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  transferModeBtnTextActive: {
+    color: '#ffffff',
+  },
+  transferActionBadgeWarm: {
+    backgroundColor: '#7c3aed',
+  },
+  // Warm transfer consultation card
+  consultCard: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    backgroundColor: '#18181b',
+    borderRadius: 14,
+    borderColor: '#7c3aed',
+    borderWidth: 1,
+    padding: 14,
+  },
+  consultHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 10,
+  },
+  consultBadge: {
+    backgroundColor: '#7c3aed',
+    borderRadius: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  consultBadgeText: {
+    color: '#ffffff',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  consultStatusText: {
+    color: '#a1a1aa',
+    fontSize: 12,
+    flex: 1,
+  },
+  consultLinesRow: {
+    flexDirection: 'row',
+    marginBottom: 10,
+    gap: 4,
+  },
+  consultLine: {
+    flex: 1,
+    backgroundColor: '#09090b',
+    borderRadius: 8,
+    padding: 10,
+    borderColor: '#27272a',
+    borderWidth: 1,
+  },
+  consultLineActive: {
+    borderColor: '#10b981',
+    backgroundColor: '#052016',
+  },
+  consultLineSep: {
+    width: 4,
+  },
+  consultLineLabel: {
+    color: '#71717a',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  consultLineTarget: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  consultLineIndicator: {
+    color: '#10b981',
+    fontSize: 9,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  consultErrorText: {
+    color: '#ef4444',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  consultGsmWarning: {
+    color: '#f59e0b',
+    fontSize: 11,
+    marginBottom: 8,
+    fontStyle: 'italic',
+  },
+  consultActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  consultActionBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  consultSwapBtn: {
+    backgroundColor: '#0284c7',
+  },
+  consultCompleteBtn: {
+    backgroundColor: '#10b981',
+  },
+  consultCancelBtn: {
+    backgroundColor: '#3f3f46',
+  },
+  consultBtnDisabled: {
+    opacity: 0.35,
+  },
+  consultActionBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  languageRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  languagePill: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    backgroundColor: '#09090b',
+    alignItems: 'center',
+  },
+  languagePillActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#0c2738',
+  },
+  languagePillText: {
+    color: '#a1a1aa',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  languagePillTextActive: {
+    color: '#38bdf8',
+  },
   settingsSectionDivider: {
     height: 1,
     backgroundColor: '#27272a',
     marginVertical: 16,
-  },
-  callDetailsCard: {
-    width: '100%',
-    backgroundColor: '#18181b',
-    borderRadius: 20,
-    padding: 22,
-    borderColor: '#27272a',
-    borderWidth: 1,
-  },
-  callDetailsHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  callDetailsIdentity: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  callDetailsAvatar: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: '#27272a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-    borderColor: '#38bdf8',
-    borderWidth: 1.5,
-  },
-  callDetailsName: {
-    color: '#ffffff',
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  callDetailsNumber: {
-    color: '#71717a',
-    fontSize: 14,
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  callDetailsActionsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 10,
-    marginBottom: 20,
-  },
-  callDetailsActionPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#38bdf8',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 24,
-  },
-  callDetailsActionText: {
-    color: '#000000',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  callDetailsActionSecondary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#27272a',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 24,
-    borderColor: '#3f3f46',
-    borderWidth: 1,
-  },
-  callDetailsSecondaryText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  callDetailsActionDanger: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#271b1d',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 24,
-    borderColor: '#7f1d1d',
-    borderWidth: 1,
-  },
-  callDetailsDangerText: {
-    color: '#ef4444',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  callDetailsMetaCard: {
-    backgroundColor: '#121215',
-    borderRadius: 12,
-    padding: 14,
-    borderColor: '#27272a',
-    borderWidth: 1,
-  },
-  callDetailsMetaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 6,
-  },
-  callDetailsMetaDivider: {
-    height: 1,
-    backgroundColor: '#27272a',
-    marginVertical: 4,
-  },
-  callDetailsMetaLabel: {
-    color: '#71717a',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  callDetailsMetaValue: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '600',
   },
   settingsSectionTitle: {
     color: '#ffffff',
@@ -3534,6 +4076,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    paddingHorizontal: 20,
     marginBottom: 12,
   },
   contactSearchInputFlex: {

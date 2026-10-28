@@ -2,10 +2,11 @@
  * Sokrat VOICE — Modern Incoming Call Ringing Screen.
  * Features fluid multi-ring radar waves, glassmorphic badges, and responsive action controls.
  */
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { COLORS } from '../theme';
+import { useTheme, themedStyles } from '../theme';
+import { useI18n } from '../i18n';
 import { PhoneAnswerIcon, PhoneDeclineIcon, PhoneIcon } from './Icons';
 import { startRingtone, stopRingtone } from '../calls/incall';
 type Props = {
@@ -16,6 +17,9 @@ type Props = {
 };
 
 export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Props) {
+  const { colors } = useTheme();
+  const { t } = useI18n();
+  const styles = useMemo(() => themedStyles(rawStyles, colors), [colors]);
   const ripple1 = useRef(new Animated.Value(0)).current;
   const ripple2 = useRef(new Animated.Value(0)).current;
   const ripple3 = useRef(new Animated.Value(0)).current;
@@ -99,7 +103,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
       <View style={styles.badgeWrapper}>
         <View style={styles.badgePill}>
           <View style={styles.badgeDot} />
-          <Text style={styles.badgeText}>INCOMING SOKRAT CALL</Text>
+          <Text style={styles.badgeText}>{t('INCOMING SOKRAT CALL')}</Text>
         </View>
       </View>
 
@@ -181,12 +185,12 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
         </Text>
 
         <View style={styles.extBadge}>
-          <PhoneIcon size={14} color="#38bdf8" />
-          <Text style={styles.extBadgeText}>Ext {displayExt}</Text>
+          <PhoneIcon size={14} color={colors.brand} />
+          <Text style={styles.extBadgeText}>{displayExt}</Text>
         </View>
 
         <Animated.Text style={[styles.ringingStatus, { opacity: textFadeAnim }]}>
-          {isAnswering ? 'Connecting audio…' : 'Ringing softphone…'}
+          {isAnswering ? t('Connecting audio…') : t('Ringing softphone…')}
         </Animated.Text>
       </View>
 
@@ -203,9 +207,9 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
             accessibilityRole="button"
             accessibilityLabel="Decline incoming call"
           >
-            <PhoneDeclineIcon size={32} color="#ffffff" />
+            <PhoneDeclineIcon size={32} color={colors.onBrand} />
           </TouchableOpacity>
-          <Text style={styles.actionLabel}>Decline</Text>
+          <Text style={styles.actionLabel}>{t('Decline')}</Text>
         </View>
 
         {/* Answer Action */}
@@ -234,17 +238,17 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
               accessibilityRole="button"
               accessibilityLabel="Answer incoming call"
             >
-              <PhoneAnswerIcon size={32} color="#ffffff" />
+              <PhoneAnswerIcon size={32} color={colors.onBrand} />
             </TouchableOpacity>
           </View>
-          <Text style={styles.actionLabel}>Answer</Text>
+          <Text style={styles.actionLabel}>{t('Answer')}</Text>
         </View>
       </View>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+const rawStyles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#09090b',

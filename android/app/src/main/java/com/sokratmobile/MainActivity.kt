@@ -44,16 +44,24 @@ class MainActivity : ReactActivity() {
     val action = intent?.getStringExtra("callAction")
     val isIncoming = action == "SHOW" || action == "ANSWER"
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-      setShowWhenLocked(true)
-      if (isIncoming) {
-        setTurnScreenOn(true)
-      }
+      setShowWhenLocked(isIncoming)
+      setTurnScreenOn(isIncoming)
     }
-    window.addFlags(
-      WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-    )
+    if (isIncoming) {
+      window.addFlags(
+        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+          WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+      )
+    } else {
+      window.clearFlags(
+        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+          WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+      )
+      // Keep the display awake while the app is in the foreground, but let the
+      // keyguard appear normally when the user leaves/locks the phone.
+      window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
   }
 
   companion object {

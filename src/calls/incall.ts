@@ -15,10 +15,12 @@ export interface AudioDeviceState {
   availableDevices: AudioRouteType[];
   selectedDevice: AudioRouteType;
   hasBluetooth: boolean;
+  bluetoothName?: string;
 }
 
 let cachedAudioDevices: AudioRouteType[] = ['EARPIECE', 'SPEAKER_PHONE'];
 let cachedSelectedDevice: AudioRouteType = 'EARPIECE';
+let cachedBluetoothName = '';
 
 function parseDeviceList(raw?: string): AudioRouteType[] {
   if (!raw) return ['EARPIECE', 'SPEAKER_PHONE'];
@@ -80,6 +82,12 @@ export function setSpeakerphone(on: boolean) {
   }
 }
 
+export function setCallWindowActive(active: boolean) {
+  if (Platform.OS === 'android' && CallNotificationNative?.setCallActive) {
+    void CallNotificationNative.setCallActive(active).catch?.(() => {});
+  }
+}
+
 export function setKeepScreenOn(on: boolean) {
   try {
     InCallManager.setKeepScreenOn(on);
@@ -116,6 +124,9 @@ export async function chooseAudioRoute(route: AudioRouteType): Promise<AudioDevi
       if (nativeRoutes?.selectedDevice) {
         cachedSelectedDevice = nativeRoutes.selectedDevice as AudioRouteType;
       }
+      if (nativeRoutes?.bluetoothName !== undefined) {
+        cachedBluetoothName = nativeRoutes.bluetoothName || '';
+      }
     }
   } catch (err) {
     console.warn('[incall] chooseAudioRoute error:', err);
@@ -124,6 +135,7 @@ export async function chooseAudioRoute(route: AudioRouteType): Promise<AudioDevi
     availableDevices: cachedAudioDevices,
     selectedDevice: cachedSelectedDevice,
     hasBluetooth: cachedAudioDevices.includes('BLUETOOTH'),
+    bluetoothName: cachedBluetoothName,
   };
 }
 
@@ -132,6 +144,7 @@ export function getAudioDeviceState(): AudioDeviceState {
     availableDevices: cachedAudioDevices,
     selectedDevice: cachedSelectedDevice,
     hasBluetooth: cachedAudioDevices.includes('BLUETOOTH'),
+    bluetoothName: cachedBluetoothName,
   };
 }
 
@@ -140,30 +153,36 @@ export function subscribeAudioDeviceChanges(
 ): () => void {
   listener(getAudioDeviceState());
   if (Platform.OS === 'android' && CallNotificationNative?.getAvailableAudioRoutes) {
-    void CallNotificationNative.getAvailableAudioRoutes().then((res: { availableDevices?: string[]; selectedDevice?: string; hasBluetooth?: boolean }) => {
+    void CallNotificationNative.getAvailableAudioRoutes().then((res: { availableDevices?: string[]; selectedDevice?: string; hasBluetooth?: boolean; bluetoothName?: string }) => {
       if (res?.availableDevices) cachedAudioDevices = res.availableDevices as AudioRouteType[];
       if (res?.selectedDevice) cachedSelectedDevice = res.selectedDevice as AudioRouteType;
+      if (res?.bluetoothName !== undefined) cachedBluetoothName = res.bluetoothName || '';
       listener({
         availableDevices: cachedAudioDevices,
         selectedDevice: cachedSelectedDevice,
         hasBluetooth: res?.hasBluetooth ?? cachedAudioDevices.includes('BLUETOOTH'),
+        bluetoothName: cachedBluetoothName,
       });
     }).catch(() => {});
   }
 
   const sub = DeviceEventEmitter.addListener(
     'onAudioDeviceChanged',
-    (data: { availableAudioDeviceList?: string; selectedAudioDevice?: string }) => {
+    (data: { availableAudioDeviceList?: string; selectedAudioDevice?: string; hasBluetooth?: boolean; bluetoothName?: string }) => {
       if (data?.availableAudioDeviceList) {
         cachedAudioDevices = parseDeviceList(data.availableAudioDeviceList);
       }
       if (data?.selectedAudioDevice) {
         cachedSelectedDevice = data.selectedAudioDevice as AudioRouteType;
       }
+      if (data?.bluetoothName !== undefined) {
+        cachedBluetoothName = data.bluetoothName || '';
+      }
       listener({
         availableDevices: cachedAudioDevices,
         selectedDevice: cachedSelectedDevice,
-        hasBluetooth: cachedAudioDevices.includes('BLUETOOTH'),
+        hasBluetooth: data?.hasBluetooth ?? cachedAudioDevices.includes('BLUETOOTH'),
+        bluetoothName: cachedBluetoothName,
       });
     }
   );

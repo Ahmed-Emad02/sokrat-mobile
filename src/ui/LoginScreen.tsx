@@ -2,7 +2,7 @@
  * Sokrat VOICE — Login / Authentication Screen.
  * Full-screen standalone sign-in view.
  */
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -11,17 +11,29 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { COLORS } from '../theme';
+import { useTheme, themedStyles } from '../theme';
+import { useI18n } from '../i18n';
 import { CONFIG } from '../config';
 import { SettingsIcon, PhoneIcon } from './Icons';
 
 type Props = {
   onLogin: (ext: string, password: string, serverHost: string) => void;
   state: string;
+  /** Optional status/error line (e.g. gateway approval pending). */
+  message?: string | null;
 };
 
-export function LoginScreen({ onLogin, state }: Props) {
-  const [extension, setExtension] = useState('150');
+const LOGIN_OVERRIDES = {
+  logoBadge: { borderColor: 'brand' as const },
+  logoSubtitle: { color: 'brand' as const },
+  buttonText: { color: 'onBrand' as const },
+};
+
+export function LoginScreen({ onLogin, state, message }: Props) {
+  const { colors } = useTheme();
+  const { t } = useI18n();
+  const styles = useMemo(() => themedStyles(rawStyles, colors, LOGIN_OVERRIDES), [colors]);
+  const [extension, setExtension] = useState('');
   const [password, setPassword] = useState('');
   const [serverHost, setServerHost] = useState(CONFIG.sipDomain || '');
   const [showAdvanced, setShowAdvanced] = useState(!CONFIG.sipDomain);
@@ -41,7 +53,7 @@ export function LoginScreen({ onLogin, state }: Props) {
         {/* Brand Header */}
         <View style={styles.brandContainer}>
           <View style={styles.logoBadge}>
-            <PhoneIcon size={28} color="#10b981" />
+            <PhoneIcon size={28} color={colors.brand} />
           </View>
           <Text style={styles.logoTitle}>SOKRAT</Text>
           <Text style={styles.logoSubtitle}>VOICE · PJSIP Mobile</Text>
@@ -49,23 +61,23 @@ export function LoginScreen({ onLogin, state }: Props) {
 
         {/* Form Card */}
         <View style={styles.card}>
-          <Text style={styles.label}>SIP EXTENSION</Text>
+          <Text style={styles.label}>{t('SIP EXTENSION')}</Text>
           <TextInput
             style={styles.input}
             value={extension}
             onChangeText={setExtension}
             placeholder="e.g. 150"
-            placeholderTextColor="#71717a"
+            placeholderTextColor={colors.textFaint}
             keyboardType="number-pad"
           />
 
-          <Text style={styles.label}>SIP PASSWORD</Text>
+          <Text style={styles.label}>{t('SIP PASSWORD')}</Text>
           <TextInput
             style={styles.input}
             value={password}
             onChangeText={setPassword}
             placeholder="SIP Secret"
-            placeholderTextColor="#71717a"
+            placeholderTextColor={colors.textFaint}
             secureTextEntry
           />
 
@@ -74,21 +86,21 @@ export function LoginScreen({ onLogin, state }: Props) {
             style={styles.advancedToggle}
             onPress={() => setShowAdvanced(!showAdvanced)}
           >
-            <SettingsIcon size={14} color="#38bdf8" />
+            <SettingsIcon size={14} color={colors.brand} />
             <Text style={styles.advancedToggleText}>
-              {showAdvanced ? 'Hide Server Settings' : (serverHost ? `Server: ${serverHost}` : 'Configure Server')}
+              {showAdvanced ? t('Hide Server Settings') : (serverHost ? `${t('Server:')} ${serverHost}` : t('Configure Server'))}
             </Text>
           </TouchableOpacity>
 
           {showAdvanced && (
             <View style={styles.advancedBox}>
-              <Text style={styles.label}>PBX HOST / IP ADDRESS</Text>
+              <Text style={styles.label}>{t('PBX HOST / IP ADDRESS')}</Text>
               <TextInput
                 style={styles.input}
                 value={serverHost}
                 onChangeText={setServerHost}
                 placeholder="e.g. pbx.yourcompany.com"
-                placeholderTextColor="#71717a"
+                placeholderTextColor={colors.textFaint}
                 autoCapitalize="none"
                 autoCorrect={false}
               />
@@ -102,22 +114,26 @@ export function LoginScreen({ onLogin, state }: Props) {
             disabled={state === 'connecting'}
           >
             <Text style={styles.buttonText}>
-              {state === 'connecting' ? 'CONNECTING…' : 'SIGN IN'}
+              {state === 'connecting' ? t('CONNECTING…') : t('SIGN IN')}
             </Text>
           </TouchableOpacity>
 
-          {state === 'failed' && (
-            <Text style={styles.errorText}>
-              Connection failed. Please check host and extension secret.
+          {message ? (
+            <Text style={[styles.errorText, state === 'connecting' && styles.statusText]}>
+              {t(message)}
             </Text>
-          )}
+          ) : state === 'failed' ? (
+            <Text style={styles.errorText}>
+              {t('Connection failed. Please check host and extension secret.')}
+            </Text>
+          ) : null}
         </View>
       </View>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+const rawStyles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
@@ -222,5 +238,8 @@ const styles = StyleSheet.create({
     marginTop: 12,
     textAlign: 'center',
     fontWeight: '600',
+  },
+  statusText: {
+    color: '#38bdf8',
   },
 });

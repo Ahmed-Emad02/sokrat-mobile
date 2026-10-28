@@ -1,7 +1,14 @@
 package com.sokratmobile
 
+import android.bluetooth.BluetoothA2dp
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.Context
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
@@ -21,6 +28,7 @@ import kotlin.math.roundToInt
 import android.media.AudioManager
 import android.media.AudioDeviceInfo
 import android.os.Build
+import android.view.WindowManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -40,17 +48,20 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     private var telephonyCallback: Any? = null
     private var phoneStateListener: PhoneStateListener? = null
     private var lastGsmState: String = "IDLE"
+    private var bluetoothReceiver: BroadcastReceiver? = null
 
     override fun initialize() {
         super.initialize()
         instance = this
         registerNetworkCallback()
         registerTelephonyListener()
+        registerBluetoothReceiver()
     }
 
     override fun invalidate() {
         unregisterNetworkCallback()
         unregisterTelephonyListener()
+        unregisterBluetoothReceiver()
         instance = null
         super.invalidate()
     }
@@ -274,20 +285,43 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val targetDevice = when (route.uppercase()) {
-                    "BLUETOOTH" -> audioManager.availableCommunicationDevices.firstOrNull {
-                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                        it.type == AudioDeviceInfo.TYPE_HEARING_AID ||
-                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                val btCommTypes = setOf(
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    AudioDeviceInfo.TYPE_HEARING_AID
+                )
+                if (route.uppercase() == "BLUETOOTH" &&
+                    audioManager.availableCommunicationDevices.none { it.type in btCommTypes }) {
+                    // The headset is paired and connected but the SCO link has
+                    // not been started yet, so wake it before enumerating.
+                    try {
+                        @Suppress("DEPRECATION")
+                        audioManager.startBluetoothSco()
+                        @Suppress("DEPRECATION")
+                        audioManager.isBluetoothScoOn = true
+                    } catch (_: Exception) {
                     }
-                    "SPEAKER_PHONE" -> audioManager.availableCommunicationDevices.firstOrNull {
+                }
+
+                val routeCandidates = ArrayList<AudioDeviceInfo>()
+                try {
+                    routeCandidates.addAll(audioManager.availableCommunicationDevices)
+                } catch (_: Exception) {
+                }
+                try {
+                    audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).forEach { routeCandidates.add(it) }
+                } catch (_: Exception) {
+                }
+
+                val targetDevice = when (route.uppercase()) {
+                    "BLUETOOTH" -> routeCandidates.firstOrNull { it.type in btCommTypes }
+                    "SPEAKER_PHONE" -> routeCandidates.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                     }
-                    "EARPIECE" -> audioManager.availableCommunicationDevices.firstOrNull {
+                    "EARPIECE" -> routeCandidates.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
                     }
-                    "WIRED_HEADSET" -> audioManager.availableCommunicationDevices.firstOrNull {
+                    "WIRED_HEADSET" -> routeCandidates.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                         it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
                         it.type == AudioDeviceInfo.TYPE_USB_HEADSET
@@ -314,60 +348,184 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         }
     }
 
+    private data class AudioRouteSnapshot(
+        val devices: List<String>,
+        val selected: String,
+        val hasBluetooth: Boolean,
+        val bluetoothName: String?
+    )
+
+    private fun mapAudioDeviceType(type: Int): String? = when (type) {
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        AudioDeviceInfo.TYPE_HEARING_AID,
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BLUETOOTH"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER_PHONE"
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "EARPIECE"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_USB_HEADSET -> "WIRED_HEADSET"
+        else -> null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun buildAudioRouteSnapshot(): AudioRouteSnapshot {
+        val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val devices = LinkedHashSet<String>()
+        var hasBluetooth = false
+        var bluetoothName: String? = null
+        var selected = "EARPIECE"
+
+        fun note(dev: AudioDeviceInfo) {
+            val mapped = mapAudioDeviceType(dev.type) ?: return
+            devices.add(mapped)
+            if (mapped == "BLUETOOTH") {
+                hasBluetooth = true
+                val name = dev.productName?.toString()?.trim()
+                if (!name.isNullOrEmpty() && bluetoothName.isNullOrEmpty()) {
+                    bluetoothName = name
+                }
+            }
+        }
+
+        if (audioManager != null) {
+            // Connected output devices are visible even while the phone is idle
+            // (A2DP headsets are not part of availableCommunicationDevices then).
+            try {
+                audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).forEach { note(it) }
+            } catch (_: Exception) {
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    audioManager.availableCommunicationDevices.forEach { note(it) }
+                    audioManager.communicationDevice?.let {
+                        selected = mapAudioDeviceType(it.type) ?: "EARPIECE"
+                    }
+                } catch (_: Exception) {
+                }
+            } else {
+                selected = if (audioManager.isSpeakerphoneOn) "SPEAKER_PHONE" else "EARPIECE"
+            }
+            if (audioManager.isBluetoothScoOn) {
+                selected = "BLUETOOTH"
+            }
+        }
+
+        // The Bluetooth profiles remain connected even when the audio stack has
+        // not exposed the headset as an output yet.
+        try {
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            if (adapter != null && adapter.isEnabled) {
+                val headset = adapter.getProfileConnectionState(BluetoothProfile.HEADSET)
+                val a2dp = adapter.getProfileConnectionState(BluetoothProfile.A2DP)
+                if (headset == BluetoothProfile.STATE_CONNECTED || a2dp == BluetoothProfile.STATE_CONNECTED) {
+                    hasBluetooth = true
+                    devices.add("BLUETOOTH")
+                }
+            }
+        } catch (_: SecurityException) {
+        } catch (_: Exception) {
+        }
+
+        devices.add("EARPIECE")
+        devices.add("SPEAKER_PHONE")
+        return AudioRouteSnapshot(devices.toList(), selected, hasBluetooth, bluetoothName)
+    }
+
+    private fun registerBluetoothReceiver() {
+        if (bluetoothReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED,
+                    BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED,
+                    BluetoothDevice.ACTION_ACL_CONNECTED,
+                    BluetoothDevice.ACTION_ACL_DISCONNECTED,
+                    AudioManager.ACTION_HEADSET_PLUG,
+                    AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
+                        val snapshot = buildAudioRouteSnapshot()
+                        emitEvent("onAudioDeviceChanged", Arguments.createMap().apply {
+                            putString("availableAudioDeviceList", org.json.JSONArray(snapshot.devices).toString())
+                            putString("selectedAudioDevice", snapshot.selected)
+                            putBoolean("hasBluetooth", snapshot.hasBluetooth)
+                            putString("bluetoothName", snapshot.bluetoothName ?: "")
+                        })
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            addAction(AudioManager.ACTION_HEADSET_PLUG)
+            addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                reactApplicationContext.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                reactApplicationContext.registerReceiver(receiver, filter)
+            }
+            bluetoothReceiver = receiver
+        } catch (e: Exception) {
+            android.util.Log.w("CallNotificationModule", "Bluetooth receiver registration failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterBluetoothReceiver() {
+        bluetoothReceiver?.let {
+            try {
+                reactApplicationContext.unregisterReceiver(it)
+            } catch (_: Exception) {
+            }
+        }
+        bluetoothReceiver = null
+    }
+
+    @ReactMethod
+    fun setCallActive(active: Boolean, promise: Promise) {
+        val activity = reactApplicationContext.currentActivity
+        if (activity == null) {
+            promise.resolve(false)
+            return
+        }
+        activity.runOnUiThread {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    activity.setShowWhenLocked(active)
+                    activity.setTurnScreenOn(active)
+                }
+                if (active) {
+                    activity.window.addFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    )
+                } else {
+                    activity.window.clearFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    )
+                }
+                promise.resolve(true)
+            } catch (e: Exception) {
+                promise.reject("CALL_WINDOW_ERROR", e.message, e)
+            }
+        }
+    }
+
     @ReactMethod
     fun getAvailableAudioRoutes(promise: Promise) {
         try {
-            val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val snapshot = buildAudioRouteSnapshot()
             val list = com.facebook.react.bridge.Arguments.createArray()
-            val map = com.facebook.react.bridge.Arguments.createMap()
-            var currentSelected = "EARPIECE"
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && audioManager != null) {
-                val commDevice = audioManager.communicationDevice
-                val devices = audioManager.availableCommunicationDevices
-                var hasBt = false
-                for (dev in devices) {
-                    val typeName = when (dev.type) {
-                        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                        AudioDeviceInfo.TYPE_BLE_HEADSET,
-                        AudioDeviceInfo.TYPE_HEARING_AID,
-                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> {
-                            hasBt = true
-                            "BLUETOOTH"
-                        }
-                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER_PHONE"
-                        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "EARPIECE"
-                        AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                        AudioDeviceInfo.TYPE_USB_HEADSET -> "WIRED_HEADSET"
-                        else -> null
-                    }
-                    if (typeName != null) {
-                        list.pushString(typeName)
-                    }
-                }
-                if (commDevice != null) {
-                    currentSelected = when (commDevice.type) {
-                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER_PHONE"
-                        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                        AudioDeviceInfo.TYPE_BLE_HEADSET,
-                        AudioDeviceInfo.TYPE_HEARING_AID,
-                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BLUETOOTH"
-                        AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                        AudioDeviceInfo.TYPE_USB_HEADSET -> "WIRED_HEADSET"
-                        else -> "EARPIECE"
-                    }
-                }
-                map.putArray("availableDevices", list)
-                map.putString("selectedDevice", currentSelected)
-                map.putBoolean("hasBluetooth", hasBt)
-            } else {
-                list.pushString("EARPIECE")
-                list.pushString("SPEAKER_PHONE")
-                map.putArray("availableDevices", list)
-                map.putString("selectedDevice", if (audioManager?.isSpeakerphoneOn == true) "SPEAKER_PHONE" else "EARPIECE")
-                map.putBoolean("hasBluetooth", false)
+            snapshot.devices.forEach { list.pushString(it) }
+            val map = com.facebook.react.bridge.Arguments.createMap().apply {
+                putArray("availableDevices", list)
+                putString("selectedDevice", snapshot.selected)
+                putBoolean("hasBluetooth", snapshot.hasBluetooth)
+                putString("bluetoothName", snapshot.bluetoothName ?: "")
             }
             promise.resolve(map)
         } catch (e: Exception) {

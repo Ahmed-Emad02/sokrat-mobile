@@ -64,6 +64,21 @@ export function StarIcon({ size = 20, color = '#ffffff', fill = 'none' }: IconPr
   );
 }
 
+export function BookmarkIcon({ size = 20, color = '#ffffff', fill = 'none' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M6.5 3.75A1.75 1.75 0 0 1 8.25 2h7.5A1.75 1.75 0 0 1 17.5 3.75V21l-5.5-3.5L6.5 21V3.75Z"
+        fill={fill}
+        stroke={color}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
 export function SettingsIcon({ size = 20, color = '#ffffff' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
@@ -366,7 +381,7 @@ export function CallIncomingIcon({ size = 16, color = '#10b981' }: IconProps) {
   );
 }
 
-export function CallOutgoingIcon({ size = 16, color = '#38bdf8' }: IconProps) {
+export function CallOutgoingIcon({ size = 16, color = '#EB1235' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Polyline points="14 2 22 2 22 10" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -403,7 +418,7 @@ export function ZapIcon({ size = 20, color = '#f59e0b' }: IconProps) {
   );
 }
 
-export function BluetoothIcon({ size = 20, color = '#38bdf8' }: IconProps) {
+export function BluetoothIcon({ size = 20, color = '#EB1235' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Polyline points="6.5 6.5 17.5 17.5 12 23 12 1 17.5 6.5 6.5 17.5" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -411,7 +426,7 @@ export function BluetoothIcon({ size = 20, color = '#38bdf8' }: IconProps) {
   );
 }
 
-export function HeadphoneIcon({ size = 20, color = '#38bdf8' }: IconProps) {
+export function HeadphoneIcon({ size = 20, color = '#EB1235' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path d="M3 18v-6a9 9 0 0 1 18 0v6" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -425,6 +440,77 @@ export function EarpieceIcon({ size = 20, color = '#ffffff' }: IconProps) {
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Rect x="5" y="2" width="14" height="20" rx="3" stroke={color} strokeWidth="2.2" />
       <Line x1="10" y1="6" x2="14" y2="6" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+export function CopyIcon({ size = 16, color = '#ffffff' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Rect
+        x="9"
+        y="9"
+        width="13"
+        height="13"
+        rx="2"
+        stroke={color}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+        stroke={color}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+export function EditIcon({ size = 16, color = '#ffffff' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M12 20h9"
+        stroke={color}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"
+        stroke={color}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+export function BackIcon({ size = 22, color = '#ffffff' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Polyline
+        points="15 18 9 12 15 6"
+        stroke={color}
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+export function WhatsAppIcon({ size = 18, color = '#25D366' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M20.52 3.45A11.9 11.9 0 0 0 12.05 0C5.46 0 .1 5.33.1 11.9c0 2.1.55 4.14 1.6 5.95L0 24l6.33-1.65a11.9 11.9 0 0 0 5.71 1.45h.01c6.58 0 11.94-5.33 11.94-11.9 0-3.18-1.24-6.17-3.47-8.45zM12.05 21.8h-.01a9.9 9.9 0 0 1-5.05-1.38l-.36-.22-3.76.98 1-3.66-.24-.37a9.86 9.86 0 0 1-1.51-5.25c0-5.45 4.45-9.88 9.93-9.88 2.65 0 5.14 1.03 7.01 2.9a9.82 9.82 0 0 1 2.91 6.99c0 5.45-4.46 9.9-9.93 9.9zm5.45-7.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.64.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.61-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48s1.06 2.88 1.21 3.08c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.62.71.23 1.36.2 1.87.12.57-.09 1.76-.72 2.01-1.41.25-.7.25-1.29.17-1.41-.07-.12-.27-.2-.57-.35z"
+        fill={color}
+      />
     </Svg>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import {
   Animated,
   StyleSheet,
@@ -6,7 +6,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { COLORS } from '../theme';
+import { useTheme, themedStyles, ThemeColors } from '../theme';
+import { useI18n } from '../i18n';
 import {
   AlertTriangleIcon,
   ZapIcon,
@@ -36,23 +37,28 @@ export function hideToast() {
   listeners.forEach((listener) => listener(null));
 }
 
-const BORDER_BY_TYPE: Record<ToastType, string> = {
-  error: COLORS.danger,
-  warning: COLORS.warn,
-  success: COLORS.accent,
-  info: COLORS.info,
-};
-
-function renderToastIcon(type: ToastType) {
+function borderByType(type: ToastType, colors: ThemeColors) {
   switch (type) {
-    case 'error': return <AlertTriangleIcon size={22} color={COLORS.danger} />;
-    case 'warning': return <ZapIcon size={22} color={COLORS.warn} />;
-    case 'success': return <CheckIcon size={22} color={COLORS.accent} />;
-    default: return <InfoIcon size={22} color={COLORS.info} />;
+    case 'error': return colors.danger;
+    case 'warning': return colors.warning;
+    case 'success': return colors.success;
+    default: return colors.brand;
+  }
+}
+
+function renderToastIcon(type: ToastType, colors: ThemeColors) {
+  switch (type) {
+    case 'error': return <AlertTriangleIcon size={22} color={colors.dangerText} />;
+    case 'warning': return <ZapIcon size={22} color={colors.warningText} />;
+    case 'success': return <CheckIcon size={22} color={colors.successText} />;
+    default: return <InfoIcon size={22} color={colors.brand} />;
   }
 }
 
 export function ToastContainer() {
+  const { colors } = useTheme();
+  const { t } = useI18n();
+  const styles = useMemo(() => themedStyles(rawStyles, colors), [colors]);
   const [current, setCurrent] = useState<ToastMessage | null>(null);
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(-50)).current;
@@ -114,7 +120,7 @@ export function ToastContainer() {
         {
           opacity,
           transform: [{ translateY }],
-          borderColor: BORDER_BY_TYPE[current.type] || COLORS.info,
+          borderColor: borderByType(current.type, colors),
         },
       ]}
       pointerEvents="box-none"
@@ -124,20 +130,20 @@ export function ToastContainer() {
         onPress={hideToast}
         style={styles.inner}
       >
-        <View style={styles.iconWrap}>{renderToastIcon(current.type)}</View>
+        <View style={styles.iconWrap}>{renderToastIcon(current.type, colors)}</View>
         <View style={styles.textContainer}>
-          <Text style={styles.title}>{current.title}</Text>
+          <Text style={styles.title}>{t(current.title)}</Text>
           {current.message ? (
-            <Text style={styles.message}>{current.message}</Text>
+            <Text style={styles.message}>{t(current.message)}</Text>
           ) : null}
         </View>
-        <View style={styles.closeWrap}><CloseIcon size={14} color="#94a3b8" /></View>
+        <View style={styles.closeWrap}><CloseIcon size={14} color={colors.textDim} /></View>
       </TouchableOpacity>
     </Animated.View>
   );
 }
 
-const styles = StyleSheet.create({
+const rawStyles = StyleSheet.create({
   container: {
     position: 'absolute',
     top: 48,

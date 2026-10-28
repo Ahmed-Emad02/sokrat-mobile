@@ -36,6 +36,16 @@ export interface Contact {
 
 export type SpeedDialMap = Record<string, string>;
 
+export interface WhatsAppPrefs {
+  countryCode: string;
+  promptEnabled: boolean;
+}
+
+export const DEFAULT_WHATSAPP_PREFS: WhatsAppPrefs = {
+  countryCode: '',
+  promptEnabled: true,
+};
+
 export const DEFAULT_SPEED_DIAL: SpeedDialMap = {
   '1': '*97',
 };
@@ -45,6 +55,7 @@ const KEYS = {
   CALLS: '@sokrat_calls_history',
   CONTACTS: '@sokrat_contacts',
   SPEED_DIAL: '@sokrat_speed_dial',
+  WHATSAPP: '@sokrat_whatsapp_prefs',
 };
 export const StorageService = {
   async getAccount(): Promise<SavedAccount | null> {
@@ -152,6 +163,34 @@ export const StorageService = {
       await AsyncStorage.setItem(KEYS.SPEED_DIAL, JSON.stringify(speedDial));
     } catch (err) {
       console.warn('[storage] saveSpeedDial failed:', err);
+    }
+  },
+
+  async getWhatsAppPrefs(): Promise<WhatsAppPrefs> {
+    try {
+      const data = await AsyncStorage.getItem(KEYS.WHATSAPP);
+      if (!data) return { ...DEFAULT_WHATSAPP_PREFS };
+      const parsed = JSON.parse(data) as Partial<WhatsAppPrefs>;
+      return {
+        countryCode: typeof parsed.countryCode === 'string' ? parsed.countryCode : '',
+        promptEnabled: parsed.promptEnabled !== false,
+      };
+    } catch {
+      return { ...DEFAULT_WHATSAPP_PREFS };
+    }
+  },
+
+  async saveWhatsAppPrefs(prefs: WhatsAppPrefs): Promise<void> {
+    try {
+      await AsyncStorage.setItem(
+        KEYS.WHATSAPP,
+        JSON.stringify({
+          countryCode: prefs.countryCode.trim(),
+          promptEnabled: prefs.promptEnabled !== false,
+        }),
+      );
+    } catch (err) {
+      console.warn('[storage] saveWhatsAppPrefs failed:', err);
     }
   },
 };

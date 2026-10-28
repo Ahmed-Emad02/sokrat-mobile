@@ -146,7 +146,7 @@ object IncomingCallNotificationHelper {
 
         val notification = NotificationCompat.Builder(context, ONGOING_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_call)
-            .setColor(0xFF0284C7.toInt())
+            .setColor(0xFFEB1235.toInt())
             .setContentTitle(title.ifBlank { "Active Call" })
             .setContentText(subtitle.ifBlank { "Call in progress" })
             .setContentIntent(openPendingIntent)
@@ -246,7 +246,7 @@ object IncomingCallNotificationHelper {
         val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_call)
-            .setColor(0xFF0284C7.toInt())
+            .setColor(0xFFEB1235.toInt())
             .setContentTitle(title)
             .setContentText(subtitle)
             .setPriority(NotificationCompat.PRIORITY_MAX)

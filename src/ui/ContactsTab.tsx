@@ -107,7 +107,7 @@ export function ContactsTab({
                 onPress={() => onCallContact(item.extension)}
               >
                 <Text style={styles.contactName}>{item.name}</Text>
-                <Text style={styles.contactExt}>Ext: {item.extension}</Text>
+                <Text style={styles.contactExt}>{item.extension}</Text>
               </TouchableOpacity>
 
               <View style={styles.actionsRow}>

@@ -139,6 +139,12 @@ export async function reportIncomingCall(
   }
 }
 
+/** Enrich an already-presented call without presenting it a second time. */
+export function updateIncomingCaller(callUUID: string, callerId: string, callerName: string): void {
+  if (Platform.OS !== 'ios') return;
+  RNCallKeep.updateDisplay(callUUID, callerName, callerId);
+}
+
 /** A fresh UUID per incoming event so CallKit can hold several. */
 export function generateUUID(): string {
   return (

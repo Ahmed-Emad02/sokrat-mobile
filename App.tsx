@@ -4,13 +4,16 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
-import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus, Permission } from 'react-native';
-import { COLORS } from './src/theme';
+import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus, Permission, Linking } from 'react-native';
+import { useTheme, applySystemBars } from './src/theme';
+import { initI18n } from './src/i18n';
+import { resolveCallerName } from './src/calls/callerNameResolver';
 import {
   JsSipService,
   getSharedJsSipService,
   SipState,
   ActiveCall,
+  AttendedTransferState,
   IncomingCallInfo,
   CallEndDetails,
 } from './src/sip/JsSipService';
@@ -23,9 +26,13 @@ import {
   unregisterCurrentDevice,
 } from './src/push/pushHandler';
 import { CONFIG, getSipWss, getPushGateway } from './src/config';
+import { prepareLogin, PENDING_APPROVAL_MESSAGE } from './src/gateway/enrollment';
+import { describeEnrollmentError } from './src/gateway/errors';
+import { getPersistedGatewayRecord, resetGatewaySession } from './src/gateway/session';
 import {
   setupCallKeep,
   reportIncomingCall,
+  updateIncomingCaller,
   reportEnded,
   answerIncoming,
 } from './src/calls/callKit';
@@ -45,12 +52,14 @@ import {
 } from './src/calls/nativeCallNotification';
 import {
   startCallManagers,
+  setCallWindowActive,
   stopCallManagers,
   startRingtone,
   stopRingtone,
   setSpeakerphone,
   setMicrophoneMute,
   chooseAudioRoute,
+  getAudioDeviceState,
   subscribeAudioDeviceChanges,
   AudioDeviceState,
   AudioRouteType,
@@ -105,6 +114,13 @@ function formatCallFailureReason(cause?: string, details?: CallEndDetails): { ti
   }
 }
 export default function App() {
+  const { colors, isDark } = useTheme();
+  useEffect(() => {
+    applySystemBars(isDark);
+  }, [isDark]);
+  useEffect(() => {
+    void initI18n();
+  }, []);
   const sipRef = useRef<JsSipService | null>(null);
   const incomingRef = useRef<IncomingCallInfo | null>(null);
   const activeCallUUIDRef = useRef<string | null>(null);
@@ -148,6 +164,8 @@ export default function App() {
     return () => sub.remove();
   }, []);
   const [uiState, setUiState] = useState<SipState>('disconnected');
+  /** Login-screen status line (gateway approval pending/rejected etc.). */
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [callsHistory, setCallsHistory] = useState<CallRecord[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
 
@@ -155,12 +173,21 @@ export default function App() {
   const [incoming, setIncoming] = useState<IncomingCallInfo | null>(null);
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  const [attendedTransferState, setAttendedTransferState] = useState<AttendedTransferState | null>(null);
+  const attendedTransferStateRef = useRef<AttendedTransferState | null>(null);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
+  // Last route explicitly chosen by the user. Kept across the ringing ->
+  // established transition, where startCallManagers() resets to earpiece.
+  const desiredRouteRef = useRef<AudioRouteType>('EARPIECE');
   const [audioDeviceState, setAudioDeviceState] = useState<AudioDeviceState>({
     availableDevices: ['EARPIECE', 'SPEAKER_PHONE'],
     selectedDevice: 'EARPIECE',
     hasBluetooth: false,
   });
+
+  useEffect(() => {
+    setCallWindowActive(Boolean(activeCall || incoming));
+  }, [activeCall, incoming]);
 
   useEffect(() => {
     const unsubAudio = subscribeAudioDeviceChanges((s) => {
@@ -176,25 +203,37 @@ export default function App() {
     });
     const unsubGsm = subscribeGsmCallState((gsmState: GsmCallState) => {
       console.log('[app] GSM cellular call state updated:', gsmState);
-      const current = activeCallRef.current;
-      if (!current) return;
+      // Use service.activeCall as authoritative source — it tracks selected line.
+      const serviceCall = sipRef.current?.activeCall;
+      if (!serviceCall) return;
 
       if (gsmState === 'RINGING' || gsmState === 'OFFHOOK') {
-        if (current.status === 'active' && !current.isHeld) {
-          console.log('[app] auto-holding VoIP call due to GSM cellular preemption');
-          sipRef.current?.setHold(true);
-          updateActiveCall({
-            ...current,
-            isHeld: true,
-            isGsmInterrupted: true,
-          });
+        // Only auto-hold if the selected line is currently active and not already held.
+        // Do not auto-hold during warm transfer actions (service handles its own lines).
+        if (serviceCall.status === 'active' && !serviceCall.isHeld) {
+          const xferStatus = attendedTransferStateRef.current?.status;
+          const inMidTransfer =
+            xferStatus === 'swapping' ||
+            xferStatus === 'transferring' ||
+            xferStatus === 'recovering';
+          if (!inMidTransfer) {
+            console.log('[app] auto-holding VoIP call due to GSM cellular preemption');
+            sipRef.current?.setHold(true);
+            updateActiveCall({
+              ...serviceCall,
+              isHeld: true,
+              isGsmInterrupted: true,
+            });
+          }
         }
       } else if (gsmState === 'IDLE') {
-        if (current.isGsmInterrupted) {
+        // Auto-resume only if the service's selected line carries isGsmInterrupted.
+        // This avoids resuming the wrong line after a swap.
+        if (serviceCall.isGsmInterrupted) {
           console.log('[app] GSM cellular call ended; auto-resuming VoIP call');
           sipRef.current?.setHold(false);
           updateActiveCall({
-            ...current,
+            ...serviceCall,
             isHeld: false,
             isGsmInterrupted: false,
           });
@@ -209,8 +248,27 @@ export default function App() {
   }, []);
 
   const updateIncoming = (value: IncomingCallInfo | null) => {
-    incomingRef.current = value;
-    setIncoming(value);
+    const initial = value ? { ...value, callerName: 'Unknown' } : null;
+    incomingRef.current = initial;
+    setIncoming(initial);
+    if (value) {
+      const lookupAccount = accountRef.current;
+      void resolveCallerName(value.callerId, lookupAccount).then(name => {
+        if (incomingRef.current !== initial) return;
+        if (accountRef.current !== lookupAccount) return;
+        const resolved = { ...value, callerName: name };
+        incomingRef.current = resolved;
+        setIncoming(resolved);
+        const call = sipRef.current?.activeCall;
+        if (call?.id === value.callId) call.targetName = name;
+        if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+          showIncomingCallNotification(value.callId, value.callerId, name, value.extension, value.timestamp);
+        }
+        if (Platform.OS === 'ios' && value.nativePresented) {
+          updateIncomingCaller(value.callId, value.callerId, name);
+        }
+      });
+    }
   };
 
   const updateCallUUID = (value: string | null) => {
@@ -222,14 +280,36 @@ export default function App() {
     activeCallRef.current = value;
     setActiveCall(value);
   };
+  const updateAttendedTransferState = (value: AttendedTransferState | null) => {
+    attendedTransferStateRef.current = value;
+    setAttendedTransferState(value);
+  };
+
 
   const answerSipCall = async (callId: string): Promise<boolean> => {
     pendingAnswerUUIDRef.current = callId;
     stopRingtone();
     recordNativeCallAction(callId, 'ANSWER');
     startCallManagers();
-    const answered = await sipRef.current?.answer(callId);
-    if (!answered) return false;
+    let answered = false;
+    try {
+      answered = await sipRef.current?.answer(callId) ?? false;
+    } catch (error) {
+      console.error(`[app][callId=${callId}] answer action failed:`, error);
+      pendingAnswerUUIDRef.current = null;
+      stopCallManagers();
+      Alert.alert('Call failed', error instanceof Error ? error.message : 'Unable to answer this call.');
+      return false;
+    }
+    if (!answered) {
+      // Retain intent only when waiting for the matching SIP INVITE after a
+      // native push answer. A failed attempt on an existing session may retry.
+      if (sipRef.current?.activeCall?.id === callId) {
+        pendingAnswerUUIDRef.current = null;
+        stopCallManagers();
+      }
+      return false;
+    }
     pendingAnswerUUIDRef.current = null;
     acknowledgeNativeCallAction(callId, 'ANSWER');
     if (sipRef.current?.activeCall) {
@@ -338,11 +418,20 @@ export default function App() {
       onCallEstablished: (call) => {
         updateActiveCall(call);
         updateCallUUID(call.id);
+        updateIncoming(null);
         pendingAnswerUUIDRef.current = null;
         acknowledgeNativeCallAction(call.id, 'ANSWER');
         dismissNativeCallNotification(call.id);
         void clearPendingIncomingCall(call.id);
         startCallManagers();
+        // Re-apply the user's route choice (speaker/Bluetooth) after the audio
+        // session initialisation, which otherwise forces the earpiece.
+        if (desiredRouteRef.current !== 'EARPIECE') {
+          void chooseAudioRoute(desiredRouteRef.current).then((state) => {
+            setAudioDeviceState(state);
+            setIsSpeakerOn(state.selectedDevice === 'SPEAKER_PHONE');
+          });
+        }
         if (AppState.currentState === 'background' || AppState.currentState === 'inactive') {
           showOngoingCallNotification(
             call.id,
@@ -413,6 +502,7 @@ export default function App() {
         updateCallUUID(null);
         updateIncoming(null);
         setIsSpeakerOn(false);
+        desiredRouteRef.current = 'EARPIECE';
         stopCallManagers();
 
         if (currentCall) {
@@ -435,6 +525,7 @@ export default function App() {
           }).then(setCallsHistory);
         }
         updateActiveCall(null);
+        updateAttendedTransferState(null);
         clearNativeCallWindow();
       },
       onCallHoldChange: (isHeld) => {
@@ -459,10 +550,18 @@ export default function App() {
         }
         setMicrophoneMute(isMuted);
       },
+      onAttendedTransferChange: (state) => {
+        updateAttendedTransferState(state);
+        // When transfer completes or is cancelled, audio managers follow activeCall lifecycle;
+        // no extra action needed here — service fires onCallEnded for final teardown.
+      },
+      onTransferError: (message) => {
+        showToast({ type: 'error', title: 'Transfer Failed', message });
+      },
     });
     sipRef.current = sip;
 
-    StorageService.getAccount().then((storedAccount) => {
+    StorageService.getAccount().then(async (storedAccount) => {
       if (!storedAccount || !storedAccount.serverHost || !storedAccount.password) {
         setIsAuthLoaded(true);
         return;
@@ -478,6 +577,26 @@ export default function App() {
         micVolume: Math.min(storedAccount?.micVolume ?? 50, 50),
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
+      // A gateway-enrolled device without an approved assignment must stay on
+      // the login screen; it must never fall back to a direct PBX socket.
+      try {
+        const gatewayRecord = await getPersistedGatewayRecord(
+          activeAccount.serverHost,
+          activeAccount.extension,
+        );
+        if (gatewayRecord && !gatewayRecord.assignment) {
+          setLoginMessage(
+            gatewayRecord.status === 'rejected' || gatewayRecord.status === 'revoked'
+              ? 'This device has been revoked. Contact your administrator.'
+              : PENDING_APPROVAL_MESSAGE,
+          );
+          setIsAuthLoaded(true);
+          return;
+        }
+      } catch (recordErr) {
+        console.warn('[app] gateway record check failed:', recordErr);
+      }
+      setLoginMessage(null);
       sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
       sip.setMicVolume(activeAccount.micVolume ?? 50);
       sip.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
@@ -600,9 +719,45 @@ export default function App() {
   }, []);
 
   // --- Actions ---
+  const ensureCallPermissions = async (): Promise<boolean> => {
+    if (Platform.OS !== 'android') return true;
+
+    const perms: Permission[] = [
+      PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+    ];
+    if (Platform.Version >= 31 && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
+      perms.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
+    }
+
+    try {
+      const result = await PermissionsAndroid.requestMultiple(perms);
+      if (result[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] ===
+          PermissionsAndroid.RESULTS.GRANTED) {
+        return true;
+      }
+    } catch (error) {
+      console.warn('[app] call permission request failed:', error);
+    }
+
+    Alert.alert(
+      'Microphone Permission Needed',
+      'Sokrat VOICE needs microphone access to place calls. Enable it in Settings.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+      ],
+    );
+    return false;
+  };
+
   const handleOutboundCall = async (target: string) => {
     const destination = target.trim();
     if (!destination) return;
+
+    const permissionsGranted = await ensureCallPermissions();
+    if (!permissionsGranted) return;
+
     console.log('[app] handleOutboundCall requested target=' + destination);
 
     try {
@@ -684,6 +839,43 @@ export default function App() {
     updateCallUUID(null);
     clearNativeCallWindow();
   };
+
+  const handleStartWarmTransfer = async (target: string): Promise<void> => {
+    try {
+      await sipRef.current?.startAttendedTransfer(target);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast({ type: 'error', title: 'Transfer Failed', message: msg });
+    }
+  };
+
+  const handleCompleteTransfer = async (): Promise<void> => {
+    try {
+      await sipRef.current?.completeAttendedTransfer();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast({ type: 'error', title: 'Transfer Failed', message: msg });
+    }
+  };
+
+  const handleCancelTransfer = async (): Promise<void> => {
+    try {
+      await sipRef.current?.cancelAttendedTransfer();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast({ type: 'error', title: 'Transfer Failed', message: msg });
+    }
+  };
+
+  const handleSwapLines = async (): Promise<void> => {
+    try {
+      await sipRef.current?.swapAttendedLines();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast({ type: 'error', title: 'Swap Failed', message: msg });
+    }
+  };
+
   const handleSaveAccount = async (newAcc: SavedAccount) => {
     setAccount(newAcc);
     await StorageService.saveAccount(newAcc);
@@ -700,7 +892,9 @@ export default function App() {
   const handleLogout = async () => {
     await unregisterCurrentDevice();
     sipRef.current?.disconnect();
+    resetGatewaySession();
     setAccount(null);
+    setLoginMessage(null);
     updateActiveCall(null);
     updateIncoming(null);
     updateCallUUID(null);
@@ -751,8 +945,8 @@ export default function App() {
   // 1. Storage Authentication Initializing (prevents flash of login screen)
   if (!isAuthLoaded) {
     return (
-      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
-        <StatusBar barStyle="light-content" />
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={[styles.root, { backgroundColor: colors.bg }]}>
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <ToastContainer />
       </SafeAreaProvider>
     );
@@ -761,8 +955,8 @@ export default function App() {
   // 2. Incoming Call Overlay (Ringing Screen takes precedence over login)
   if (incoming) {
     return (
-      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
-        <StatusBar barStyle="light-content" />
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={[styles.root, { backgroundColor: colors.bg }]}>
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <ToastContainer />
         <RingingScreen
           callerId={incoming.callerId}
@@ -777,30 +971,50 @@ export default function App() {
   // 3. Not Logged In -> Show Full Dedicated Login Screen
   if (!account) {
     return (
-      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
-        <StatusBar barStyle="light-content" />
+      <SafeAreaProvider initialMetrics={initialWindowMetrics} style={[styles.root, { backgroundColor: colors.bg }]}>
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <ToastContainer />
         <LoginScreen
           onLogin={async (ext, password, serverHost) => {
-            const newAcc: SavedAccount = {
-              extension: ext,
-              password,
-              serverHost: serverHost || '',
-              useTls: false,
-              dnd: false,
-              autoAnswer: false,
-            };
-            await handleSaveAccount(newAcc);
+            setLoginMessage(null);
+            setUiState('connecting');
+            try {
+              // Gateway deployments enroll/await approval before any SIP work;
+              // non-gateway hosts resolve to the existing direct-PBX login.
+              const prepared = await prepareLogin({
+                host: serverHost,
+                extension: ext,
+                password,
+                onProgress: (progress) => {
+                  if (progress.message) setLoginMessage(progress.message);
+                },
+              });
+              const newAcc: SavedAccount = {
+                extension: prepared.extension || ext,
+                password,
+                serverHost: serverHost || '',
+                useTls: false,
+                dnd: false,
+                autoAnswer: false,
+              };
+              await handleSaveAccount(newAcc);
+              setLoginMessage(null);
+            } catch (err) {
+              console.error('[app] login failed:', err);
+              setUiState('failed');
+              setLoginMessage(describeEnrollmentError(err));
+            }
           }}
           state={uiState}
+          message={loginMessage}
         />
       </SafeAreaProvider>
     );
   }
   // Standard Phone Application View
   return (
-    <SafeAreaProvider initialMetrics={initialWindowMetrics} style={styles.root}>
-      <StatusBar barStyle="light-content" />
+    <SafeAreaProvider initialMetrics={initialWindowMetrics} style={[styles.root, { backgroundColor: colors.bg }]}>
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
       <ToastContainer />
       <StandardPhoneScreen
         account={account}
@@ -837,6 +1051,9 @@ export default function App() {
           } else {
             nextRoute = audioDeviceState.selectedDevice === 'SPEAKER_PHONE' ? 'EARPIECE' : 'SPEAKER_PHONE';
           }
+          desiredRouteRef.current = nextRoute;
+          setAudioDeviceState({ ...audioDeviceState, selectedDevice: nextRoute });
+          setIsSpeakerOn(nextRoute === 'SPEAKER_PHONE');
           const newState = await chooseAudioRoute(nextRoute);
           setAudioDeviceState(newState);
           setIsSpeakerOn(newState.selectedDevice === 'SPEAKER_PHONE');
@@ -847,13 +1064,29 @@ export default function App() {
         }}
         audioDeviceState={audioDeviceState}
         onChooseAudioRoute={async (route: AudioRouteType) => {
+          // Changing the communication device outside a call would push the
+          // audio stack into MODE_IN_COMMUNICATION and steal media audio.
+          if (!activeCallRef.current) {
+            return getAudioDeviceState();
+          }
+          desiredRouteRef.current = route;
+          setAudioDeviceState({ ...audioDeviceState, selectedDevice: route });
+          setIsSpeakerOn(route === 'SPEAKER_PHONE');
           const newState = await chooseAudioRoute(route);
           setAudioDeviceState(newState);
           setIsSpeakerOn(route === 'SPEAKER_PHONE');
           return newState;
         }}
         onSendDtmf={(d: string) => sipRef.current?.sendDTMF(d)}
-        onTransfer={(t: string) => sipRef.current?.blindTransfer(t)}
+        onBlindTransfer={(t: string) => {
+          showToast({ type: 'info', title: 'Transferring…', message: `Transferring to ${t}` });
+          sipRef.current?.blindTransfer(t);
+        }}
+        attendedTransferState={attendedTransferState}
+        onStartWarmTransfer={handleStartWarmTransfer}
+        onCompleteTransfer={handleCompleteTransfer}
+        onCancelTransfer={handleCancelTransfer}
+        onSwapLines={handleSwapLines}
         onSaveAccount={handleSaveAccount}
         onLogout={handleLogout}
         onClearHistory={handleClearHistory}

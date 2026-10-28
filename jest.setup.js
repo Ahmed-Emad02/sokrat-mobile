@@ -19,6 +19,8 @@ jest.mock('react-native-callkeep', () => {
     __esModule: true,
     default: {
       setup: jest.fn(() => Promise.resolve(true)),
+      getInitialEvents: jest.fn(() => Promise.resolve([])),
+      clearInitialEvents: jest.fn(),
       setAvailable: jest.fn(),
       addEventListener: jest.fn(),
       removeEventListener: jest.fn(),
@@ -55,7 +57,12 @@ jest.mock('react-native-incall-manager', () => {
       start: jest.fn(),
       stop: jest.fn(),
       setForceSpeakerphoneOn: jest.fn(),
+      setSpeakerphoneOn: jest.fn(),
       setKeepScreenOn: jest.fn(),
+      setMicrophoneMute: jest.fn(),
+      startRingtone: jest.fn(),
+      stopRingtone: jest.fn(),
+      chooseAudioRoute: jest.fn(() => Promise.resolve('EARPIECE')),
     },
   };
 });

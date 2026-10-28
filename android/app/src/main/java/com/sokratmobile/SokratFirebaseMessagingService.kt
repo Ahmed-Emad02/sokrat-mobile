@@ -23,7 +23,8 @@ class SokratFirebaseMessagingService : FirebaseMessagingService() {
 
         val canonicalCallId = callId!!
         val callerId = data["callerId"] ?: "Unknown"
-        val callerName = data["callerName"] ?: callerId
+        // A push display label can be a trunk name. JS resolves the address book.
+        val callerName = "Unknown"
         val extension = data["extension"] ?: ""
         val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 

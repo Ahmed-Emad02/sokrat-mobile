@@ -60,7 +60,7 @@ export function Header({
             <Text style={styles.badge}>VOICE</Text>
           </View>
           <Text style={styles.subtext}>
-            Ext {extension} · {serverHost}
+            {extension} · {serverHost}
           </Text>
         </View>
 

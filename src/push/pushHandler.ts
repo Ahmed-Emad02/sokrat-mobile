@@ -14,6 +14,14 @@ import {
   requestPermission,
 } from '@react-native-firebase/messaging';
 import { CONFIG } from '../config';
+import { getDeviceUuid, UUID_PATTERN } from '../storage/deviceId';
+import {
+  getOrLoadGatewaySession,
+  getPersistedGatewayRecord,
+  registerGatewayPushToken,
+  removeGatewayPushToken,
+} from '../gateway/session';
+import type { GatewaySession } from '../gateway/types';
 
 export type PushPayload = {
   type: 'incoming-call';
@@ -31,10 +39,7 @@ type RawPushPayload = Partial<PushPayload> & { msg?: string };
 type PushHandler = (payload: PushPayload) => void;
 
 const PENDING_CALLS_KEY = '@sokrat/pending-incoming-calls';
-const DEVICE_UUID_KEY = '@sokrat/device-uuid';
 const MAX_PENDING_AGE_MS = 90_000;
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 let onIncoming: PushHandler | null = null;
 let currentExtension = '';
@@ -42,28 +47,6 @@ let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
 let pendingAndroidPayload: PushPayload | null = null;
 let lastDeliveredCallId = '';
-let deviceUuidPromise: Promise<string> | null = null;
-
-function createInstallUuid(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
-    const random = (Math.random() * 16) | 0;
-    const value = char === 'x' ? random : (random & 0x3) | 0x8;
-    return value.toString(16);
-  });
-}
-
-async function getDeviceUuid(): Promise<string> {
-  if (!deviceUuidPromise) {
-    deviceUuidPromise = (async () => {
-      const stored = await AsyncStorage.getItem(DEVICE_UUID_KEY);
-      if (stored && UUID_PATTERN.test(stored)) return stored;
-      const created = createInstallUuid();
-      await AsyncStorage.setItem(DEVICE_UUID_KEY, created);
-      return created;
-    })();
-  }
-  return deviceUuidPromise;
-}
 
 function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
   if (data.msg !== 'incoming-call' || !data.callId || !UUID_PATTERN.test(data.callId)) {
@@ -74,7 +57,7 @@ function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
     type: 'incoming-call',
     msg: 'incoming-call',
     callerId: data.callerId || 'Unknown',
-    callerName: data.callerName || data.callerId || 'Incoming Call',
+    callerName: 'Unknown',
     extension: data.extension || '',
     timestamp: data.timestamp || String(Date.now()),
     sipWss: data.sipWss,
@@ -160,6 +143,10 @@ if (Platform.OS === 'android') {
           const { getSharedJsSipService } = require('../sip/JsSipService');
           const storedAccount = await StorageService.getAccount();
           if (storedAccount) {
+            // Hydrate the approved gateway assignment first: a gateway-enrolled
+            // device must wake through the ticket/relay path, never the direct
+            // PBX socket. Pending/revoked records throw and abort the bootstrap.
+            await getOrLoadGatewaySession(storedAccount.serverHost, storedAccount.extension);
             console.log(
               `[push][callId=${payload.callId}] headless bootstrapping SIP for ext=${storedAccount.extension}`
             );
@@ -249,6 +236,35 @@ export function bindExtension(extension: string) {
   if (fcmTokenCache) void sendTokenToGateway('android', fcmTokenCache, null, extension);
 }
 
+/**
+ * Resolve the approved gateway session for push traffic.
+ *
+ * Returns `undefined` when this host never enrolled with a gateway (legacy
+ * `/api/push/*` endpoint) and `null` when a gateway is known but the device is
+ * not approved yet (skip registration, never bypass).
+ */
+async function resolvePushGateway(
+  host: string,
+  extension: string,
+): Promise<GatewaySession | null | undefined> {
+  if (!host) return undefined;
+  try {
+    const record = await getPersistedGatewayRecord(host, extension);
+    if (!record) return undefined;
+    if (!record.assignment) {
+      console.warn('[push] device approval pending; token registration skipped');
+      return null;
+    }
+    return await getOrLoadGatewaySession(host, extension);
+  } catch (error) {
+    console.warn(
+      '[push] gateway session unavailable:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
+}
+
 export async function sendTokenToGateway(
   platform: 'ios' | 'android',
   token: string,
@@ -258,14 +274,24 @@ export async function sendTokenToGateway(
   const ext = extension || currentExtension;
   if (!ext) return;
   try {
+    const deviceUuid = await getDeviceUuid();
+    const gateway = await resolvePushGateway(CONFIG.sipDomain, ext);
+    if (gateway === null) return;
+
     const body: Record<string, string> = {
-      extension: ext,
+      extension: gateway?.assignment.extension || ext,
       platform,
       token,
-      deviceUuid: await getDeviceUuid(),
+      deviceUuid,
       appVersion: CONFIG.appVersion,
     };
     if (platform === 'ios' && voipToken) body.voipToken = voipToken;
+
+    if (gateway) {
+      await registerGatewayPushToken(gateway, body);
+      return;
+    }
+
     const response = await fetch(`${CONFIG.pushGateway}/api/push/register-device`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -283,14 +309,24 @@ export async function sendTokenToGateway(
 export async function unregisterCurrentDevice(): Promise<void> {
   if (!currentExtension) return;
   try {
+    const deviceUuid = await getDeviceUuid();
+    const gateway = await resolvePushGateway(CONFIG.sipDomain, currentExtension);
+    const body: Record<string, string> = {
+      extension: gateway?.assignment.extension || currentExtension,
+      platform: Platform.OS,
+      deviceUuid,
+    };
+
+    if (gateway === null) return;
+    if (gateway) {
+      await removeGatewayPushToken(gateway, body);
+      return;
+    }
+
     await fetch(`${CONFIG.pushGateway}/api/push/remove-device`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        extension: currentExtension,
-        platform: Platform.OS,
-        deviceUuid: await getDeviceUuid(),
-      }),
+      body: JSON.stringify(body),
     });
   } catch (error) {
     console.warn('[push] device removal failed:', error);
