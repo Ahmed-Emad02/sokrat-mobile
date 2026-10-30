@@ -1,0 +1,332 @@
+diff --git a/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallManagerModule.java b/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallManagerModule.java
+index 625276a..90d3d80
+--- a/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallManagerModule.java
++++ b/node_modules/react-native-incall-manager/android/src/main/java/com/zxcpoiu/incallmanager/InCallManagerModule.java
+@@ -109,6 +109,8 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+     private Uri bundleBusytoneUri;
+     private Map<String, Uri> audioUriMap;
+     private MyPlayerInterface mRingtone;
++    private final Object ringtoneLock = new Object();
++    private long ringtoneGeneration = 0;
+     private MyPlayerInterface mRingback;
+     private MyPlayerInterface mBusytone;
+     private Handler mRingtoneCountDownHandler;
+@@ -550,16 +552,16 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+         }
+         automatic = auto;
+         if (!audioManagerActivated) {
+-            synchronized (audioSetupLock) {
+-                audioManagerActivated = true;
++            synchronized (ringtoneLock) {
++                synchronized (audioSetupLock) {
++                    audioManagerActivated = true;
++                }
++                // Also cancel a ringtone still preparing; isPlaying() is not a lifecycle guard.
++                stopRingtone();
+             }
+ 
+             Log.d(TAG, "start audioRouteManager");
+             wakeLockUtils.acquirePartialWakeLock();
+-            if (mRingtone != null && mRingtone.isPlaying()) {
+-                Log.d(TAG, "stop ringtone");
+-                stopRingtone(); // --- use brandnew instance
+-            }
+             storeOriginalAudioSetup();
+             requestAudioFocus();
+             startEvents();
+@@ -1047,75 +1049,94 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+ 
+     @ReactMethod
+     public void startRingtone(final String ringtoneUriType, final int seconds) {
++        final long generation;
++        synchronized (ringtoneLock) {
++            generation = ++ringtoneGeneration;
++        }
+         Thread thread = new Thread() {
+             @Override
+             public void run() {
+                 try {
+                     Looper.prepare();
+ 
+-                    Log.d(TAG, "startRingtone(): UriType=" + ringtoneUriType);
+-                    if (mRingtone != null) {
+-                        if (mRingtone.isPlaying()) {
+-                            Log.d(TAG, "startRingtone(): is already playing");
+-                            return;
+-                        } else {
+-                            stopRingtone(); // --- use brandnew instance
++                    synchronized (ringtoneLock) {
++                        if (generation != ringtoneGeneration) {
++                            return; // Answer/stop cancelled this queued start.
++                        }
++                        if (audioManagerActivated) {
++                            return; // A late ringtone must not tear down answered call audio.
++                        }
++                        Log.d(TAG, "startRingtone(): UriType=" + ringtoneUriType);
++                        if (mRingtone != null) {
++                            if (mRingtone.isPlaying()) {
++                                Log.d(TAG, "startRingtone(): is already playing");
++                                return;
++                            } else {
++                                stopRingtone(); // --- use brandnew instance
++                            }
+                         }
+-                    }
+-
+-                    //if (!audioManager.isStreamMute(AudioManager.STREAM_RING)) {
+-                    //if (origRingerMode == AudioManager.RINGER_MODE_NORMAL) {
+-                    if (audioManager.getStreamVolume(AudioManager.STREAM_RING) == 0) {
+-                        Log.d(TAG, "startRingtone(): ringer is silent. leave without play.");
+-                        return;
+-                    }
+-
+-                    // --- there is no _DTMF_ option in startRingtone()
+-                    Uri ringtoneUri = getRingtoneUri(ringtoneUriType);
+-                    if (ringtoneUri == null) {
+-                        Log.d(TAG, "startRingtone(): no available media");
+-                        return;
+-                    }
+ 
+-                    if (audioManagerActivated) {
+-                        InCallManagerModule.this.stop();
+-                    }
++                        //if (!audioManager.isStreamMute(AudioManager.STREAM_RING)) {
++                        //if (origRingerMode == AudioManager.RINGER_MODE_NORMAL) {
++                        if (audioManager.getStreamVolume(AudioManager.STREAM_RING) == 0) {
++                            Log.d(TAG, "startRingtone(): ringer is silent. leave without play.");
++                            return;
++                        }
+ 
+-                    wakeLockUtils.acquirePartialWakeLock();
++                        // --- there is no _DTMF_ option in startRingtone()
++                        Uri ringtoneUri = getRingtoneUri(ringtoneUriType);
++                        if (ringtoneUri == null) {
++                            Log.d(TAG, "startRingtone(): no available media");
++                            return;
++                        }
+ 
+-                    storeOriginalAudioSetup();
+-                    Map data = new HashMap<String, Object>();
+-                    mRingtone = new myMediaPlayer();
++                        wakeLockUtils.acquirePartialWakeLock();
+ 
+-                    data.put("name", "mRingtone");
+-                    data.put("sourceUri", ringtoneUri);
+-                    data.put("setLooping", true);
++                        storeOriginalAudioSetup();
++                        Map data = new HashMap<String, Object>();
++                        mRingtone = new myMediaPlayer();
+ 
+-                    //data.put("audioStream", AudioManager.STREAM_RING); // --- lagacy
+-                    data.put("audioUsage", AudioAttributes.USAGE_NOTIFICATION_RINGTONE); // --- USAGE_NOTIFICATION_COMMUNICATION_REQUEST?
+-                    data.put("audioContentType", AudioAttributes.CONTENT_TYPE_MUSIC);
++                        data.put("name", "mRingtone");
++                        data.put("sourceUri", ringtoneUri);
++                        data.put("setLooping", true);
+ 
+-                    setMediaPlayerEvents((MediaPlayer) mRingtone, "mRingtone");
++                        //data.put("audioStream", AudioManager.STREAM_RING); // --- lagacy
++                        data.put("audioUsage", AudioAttributes.USAGE_NOTIFICATION_RINGTONE); // --- USAGE_NOTIFICATION_COMMUNICATION_REQUEST?
++                        data.put("audioContentType", AudioAttributes.CONTENT_TYPE_MUSIC);
+ 
+-                    mRingtone.startPlay(data);
++                        setMediaPlayerEvents((MediaPlayer) mRingtone, "mRingtone");
+ 
+-                    if (seconds > 0) {
++                        // Keep a handle even without a timeout so stop can end this Looper.
+                         mRingtoneCountDownHandler = new Handler();
+-                        mRingtoneCountDownHandler.postDelayed(new Runnable() {
+-                            public void run() {
+-                                try {
+-                                    Log.d(TAG, String.format("mRingtoneCountDownHandler.stopRingtone() timeout after %d seconds", seconds));
+-                                    stopRingtone();
+-                                } catch(Exception e) {
+-                                    Log.d(TAG, "mRingtoneCountDownHandler.stopRingtone() failed.");
++                        mRingtone.startPlay(data);
++                        final MyPlayerInterface ringtone = mRingtone;
++
++                        if (seconds > 0) {
++                            mRingtoneCountDownHandler.postDelayed(new Runnable() {
++                                public void run() {
++                                    try {
++                                        synchronized (ringtoneLock) {
++                                            if (mRingtone != ringtone) {
++                                                return; // An old timeout must not stop a replacement.
++                                            }
++                                            Log.d(TAG, String.format("mRingtoneCountDownHandler.stopRingtone() timeout after %d seconds", seconds));
++                                            stopRingtone();
++                                        }
++                                    } catch(Exception e) {
++                                        Log.d(TAG, "mRingtoneCountDownHandler.stopRingtone() failed.");
++                                    }
+                                 }
+-                            }
+-                        }, seconds * 1000);
++                            }, seconds * 1000);
++                        }
+                     }
+ 
+                     Looper.loop();
+                 } catch(Exception e) {
+-                    wakeLockUtils.releasePartialWakeLock();
++                    synchronized (ringtoneLock) {
++                        if (generation == ringtoneGeneration) {
++                            stopRingtone();
++                        }
++                    }
+                     Log.e(TAG, "startRingtone() failed", e);
+                 }
+             }
+@@ -1126,33 +1147,35 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+ 
+     @ReactMethod
+     public void stopRingtone() {
+-        Thread thread = new Thread() {
+-            @Override
+-            public void run() {
+-                try {
+-                    if (mRingtone != null) {
+-                        mRingtone.stopPlay();
+-                        mRingtone = null;
+-                        synchronized (audioSetupLock) {
+-                            if (!audioManagerActivated) {
+-                                restoreOriginalAudioSetup();
+-                            } else {
+-                                Log.d(TAG, "stopRingtone(): skip audio restore while call audio is active");
+-                            }
++        // Detach and release before returning to Answer, not on a competing worker.
++        synchronized (ringtoneLock) {
++            ++ringtoneGeneration;
++            final MyPlayerInterface ringtone = mRingtone;
++            mRingtone = null;
++            if (mRingtoneCountDownHandler != null) {
++                mRingtoneCountDownHandler.removeCallbacksAndMessages(null);
++                mRingtoneCountDownHandler.getLooper().quitSafely();
++                mRingtoneCountDownHandler = null;
++            }
++            try {
++                if (ringtone != null) {
++                    ringtone.stopPlay();
++                    synchronized (audioSetupLock) {
++                        if (!audioManagerActivated) {
++                            restoreOriginalAudioSetup();
++                        } else {
++                            Log.d(TAG, "stopRingtone(): skip audio restore while call audio is active");
+                         }
+                     }
+-                    if (mRingtoneCountDownHandler != null) {
+-                        mRingtoneCountDownHandler.removeCallbacksAndMessages(null);
+-                        mRingtoneCountDownHandler = null;
+-                    }
+-                } catch (Exception e) {
+-                    Log.d(TAG, "stopRingtone() failed");
+                 }
+-                wakeLockUtils.releasePartialWakeLock();
++            } catch (Exception e) {
++                Log.d(TAG, "stopRingtone() failed", e);
++            } finally {
++                if (!audioManagerActivated) {
++                    wakeLockUtils.releasePartialWakeLock();
++                }
+             }
+-        };
+-
+-        thread.start();
++        }
+     }
+ 
+     private void setMediaPlayerEvents(MediaPlayer mp, final String name) {
+@@ -1182,16 +1205,27 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+         mp.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+             @Override
+             public void onPrepared(MediaPlayer mp) {
+-                Log.d(TAG, String.format("MediaPlayer %s onPrepared(), start play, isSpeakerPhoneOn %b", name, audioManager.isSpeakerphoneOn()));
+-                if (name.equals("mBusytone")) {
+-                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+-                } else if (name.equals("mRingback")) {
+-                    audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+-                } else if (name.equals("mRingtone")) {
+-                    audioManager.setMode(AudioManager.MODE_RINGTONE);
++                // A queued prepare callback can race Answer/stopRingtone on another thread.
++                synchronized (mp) {
++                    if (((myMediaPlayer) mp).released) {
++                        return;
++                    }
++                    try {
++                        Log.d(TAG, String.format("MediaPlayer %s onPrepared(), start play, isSpeakerPhoneOn %b", name, audioManager.isSpeakerphoneOn()));
++                        if (name.equals("mBusytone")) {
++                            audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
++                        } else if (name.equals("mRingback")) {
++                            audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
++                        } else if (name.equals("mRingtone")) {
++                            audioManager.setMode(AudioManager.MODE_RINGTONE);
++                        }
++                        updateAudioRoute();
++                        mp.start();
++                    } catch (IllegalStateException e) {
++                        Log.d(TAG, "onPrepared() player no longer ready", e);
++                        ((myMediaPlayer) mp).stopPlay();
++                    }
+                 }
+-                updateAudioRoute();
+-                mp.start();
+             }
+         });
+ 
+@@ -1485,16 +1519,26 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+     }
+ 
+     private class myMediaPlayer extends MediaPlayer implements MyPlayerInterface {
++        // Guard every player operation against asynchronous prepare/release races.
++        // Access only while holding this player's monitor (including onPrepared).
++        private boolean released = false;
+ 
+         @Override
+-        public void stopPlay() {
+-            stop();
+-            reset();
+-            release();
++        public synchronized void stopPlay() {
++            if (released) {
++                return;
++            }
++            released = true;
++            // release() is valid while preparing or in error. stop()/reset() are
++            // unnecessary and can throw before release, leaking the native player.
++            super.release();
+         }
+ 
+         @Override
+-        public void startPlay(final Map data) {
++        public synchronized void startPlay(final Map data) {
++            if (released) {
++                return;
++            }
+             try {
+                 ReactContext reactContext = getReactApplicationContext();
+ 
+@@ -1514,12 +1558,22 @@ public class InCallManagerModule extends ReactContextBaseJavaModule implements L
+                 prepareAsync();
+             } catch (Exception e) {
+                 Log.d(TAG, "startPlay() failed", e);
++                stopPlay();
+             }
+         }
+ 
+         @Override
+-        public boolean isPlaying() {
+-            return super.isPlaying();
++        public synchronized boolean isPlaying() {
++            if (released) {
++                return false;
++            }
++            try {
++                return super.isPlaying();
++            } catch (IllegalStateException e) {
++                Log.d(TAG, "isPlaying() player no longer ready", e);
++                stopPlay();
++                return false;
++            }
+         }
+     }
+ // ===== Internal Classes End =====

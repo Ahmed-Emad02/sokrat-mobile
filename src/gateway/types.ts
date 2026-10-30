@@ -37,6 +37,10 @@ export type EnrollmentRecord = {
   /** 256-bit client secret, persisted per host+extension; the gateway credential. */
   claimSecret: string;
   deviceId?: string;
+  /** Stable physical installation identity used for claim and push-token binding. */
+  deviceUuid?: string;
+  /** Legacy alias accepted when upgrading accounts created by older app builds. */
+  enrollmentUuid?: string;
   status: EnrollmentStatus | 'unclaimed';
   gatewayMode: boolean;
   assignment?: GatewayAssignment;

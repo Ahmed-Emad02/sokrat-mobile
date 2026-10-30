@@ -23,7 +23,7 @@ import type { GatewayAssignment } from '../src/gateway/types';
 
 /** Public host exactly as the user types it in the login screen. */
 const HOST = 'gw.sokrat.example';
-const PUBLIC_WS = 'ws://gw.sokrat.example:8088/ws';
+const PUBLIC_WS = 'wss://gw.sokrat.example:8089/ws';
 
 function assignmentWith(wsURL: string): GatewayAssignment {
   return {
@@ -76,9 +76,17 @@ describe('gateway signalling URL derivation', () => {
     expect(resolveGatewaySipWebSocketUrl('GW.Sokrat.Example', PUBLIC_WS)).toBe(PUBLIC_WS);
   });
 
-  test('derives the same public WS endpoint as the legacy transport helper', () => {
-    expect(resolveGatewaySipWebSocketUrl(HOST)).toBe(getSipWss(HOST));
+  test('requires WSS even when an older saved account has TLS disabled', () => {
+    expect(resolveGatewaySipWebSocketUrl(HOST, getSipWss(HOST, false))).toBe(PUBLIC_WS);
+    expect(resolveGatewaySipWebSocketUrl(HOST)).toBe(getSipWss(HOST, true));
     expect(resolveGatewaySipWebSocketUrl(HOST)).toBe(PUBLIC_WS);
+  });
+
+  test('preserves private gateway transports and separates API port from WSS port', () => {
+    expect(resolveGatewaySipWebSocketUrl('192.168.1.5')).toBe('ws://192.168.1.5:8088/ws');
+    expect(resolveGatewaySipWebSocketUrl('192.168.1.5', 'wss://192.168.1.5:8089/ws')).toBe('wss://192.168.1.5:8089/ws');
+    expect(resolveGatewaySipWebSocketUrl(`${HOST}:8443`)).toBe(PUBLIC_WS);
+    expect(resolveGatewaySipWebSocketUrl(HOST, 'wss://other.example:8089/ws')).toBe(PUBLIC_WS);
   });
 
   test('fails closed when no gateway host is known', () => {
@@ -160,7 +168,7 @@ describe('ticket freshness across reconnects', () => {
     expect(new Set(urls).size).toBe(3);
     expect(calls).toHaveLength(3);
     for (const call of calls) {
-      expect(call.url).toBe(`http://${HOST}/api/gateway/sip-ticket`);
+      expect(call.url).toBe(`https://${HOST}/api/gateway/sip-ticket`);
       expect(call.init.method).toBe('POST');
       expect(headerOf(call.init, 'Authorization')).toBe('Bearer secret-1');
       expect(headerOf(call.init, 'X-Sokrat-Device')).toBe('dev-1');
@@ -196,7 +204,7 @@ describe('gateway API origin', () => {
   test('never adopts the PBX apiURL as the gateway origin', () => {
     const session = sessionWithPrivatePbxApi();
 
-    expect(session.apiURL).toBe(`http://${HOST}`);
+    expect(session.apiURL).toBe(`https://${HOST}`);
     expect(session.apiURL).not.toContain('100.98.185.86');
     expect(session.apiURL).not.toBe(PBX_API);
   });
@@ -208,7 +216,7 @@ describe('gateway API origin', () => {
 
   test('honours an explicit port in the configured host', () => {
     expect(sessionWithPrivatePbxApi('gw.sokrat.example:8443').apiURL).toBe(
-      'http://gw.sokrat.example:8443',
+      'https://gw.sokrat.example:8443',
     );
   });
 
@@ -245,7 +253,7 @@ describe('gateway API origin', () => {
       '/api/gateway/remove-device',
     ]);
     for (const call of calls) {
-      expect(call.url.startsWith(`http://${HOST}/`)).toBe(true);
+      expect(call.url.startsWith(`https://${HOST}/`)).toBe(true);
       expect(call.url).not.toContain('100.98.185.86:8080');
       expect(headerOf(call.init, 'Authorization')).toBe('Bearer secret-1');
       expect(headerOf(call.init, 'X-Sokrat-Device')).toBe('dev-1');

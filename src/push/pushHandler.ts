@@ -3,7 +3,7 @@
  * module only persists canonical payloads, bootstraps SIP, and registers the
  * device token.
  */
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getMessaging,
@@ -14,6 +14,7 @@ import {
   requestPermission,
 } from '@react-native-firebase/messaging';
 import { CONFIG } from '../config';
+import { callDisplayName } from '../calls/callerName';
 import { getDeviceUuid, UUID_PATTERN } from '../storage/deviceId';
 import {
   getOrLoadGatewaySession,
@@ -22,6 +23,7 @@ import {
   removeGatewayPushToken,
 } from '../gateway/session';
 import type { GatewaySession } from '../gateway/types';
+import { createRegistrationRetry } from './registrationRetry';
 
 export type PushPayload = {
   type: 'incoming-call';
@@ -35,18 +37,53 @@ export type PushPayload = {
   nativePresented: '1';
 };
 
-type RawPushPayload = Partial<PushPayload> & { msg?: string };
+export type CancelPayload = {
+  type: 'cancel-call';
+  callId: string;
+};
+
+type RawPushPayload = Omit<Partial<PushPayload>, 'msg'> & { msg?: string };
 type PushHandler = (payload: PushPayload) => void;
+type CancelHandler = (payload: CancelPayload) => void;
 
 const PENDING_CALLS_KEY = '@sokrat/pending-incoming-calls';
 const MAX_PENDING_AGE_MS = 90_000;
 
 let onIncoming: PushHandler | null = null;
+let onCancel: CancelHandler | null = null;
 let currentExtension = '';
 let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
 let pendingAndroidPayload: PushPayload | null = null;
 let lastDeliveredCallId = '';
+const registrationRetry = createRegistrationRetry();
+const tokenRetry = createRegistrationRetry();
+let tokenListenersInitialized = false;
+
+function registerCachedToken() {
+  const extension = currentExtension;
+  const host = CONFIG.sipDomain;
+  const token = Platform.OS === 'ios' ? voipTokenCache : fcmTokenCache;
+  if (!extension || !host || !token) return;
+  const platform = Platform.OS === 'ios' ? 'ios' : 'android';
+  registrationRetry.start(() =>
+    sendTokenToGateway(platform, token, platform === 'ios' ? token : null, extension, host),
+  );
+}
+
+function refreshAndroidToken() {
+  if (Platform.OS !== 'android' || !currentExtension) return;
+  tokenRetry.start(async () => {
+    try {
+      fcmTokenCache = await getToken(getMessaging());
+      registerCachedToken();
+      return true;
+    } catch {
+      console.warn('[push] FCM token unavailable; retry scheduled');
+      return false;
+    }
+  });
+}
 
 function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
   if (data.msg !== 'incoming-call' || !data.callId || !UUID_PATTERN.test(data.callId)) {
@@ -57,13 +94,20 @@ function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
     type: 'incoming-call',
     msg: 'incoming-call',
     callerId: data.callerId || 'Unknown',
-    callerName: 'Unknown',
+    callerName: callDisplayName(data.callerId || ''),
     extension: data.extension || '',
     timestamp: data.timestamp || String(Date.now()),
     sipWss: data.sipWss,
     callId: data.callId,
     nativePresented: '1',
   };
+}
+
+export function normalizeCancelPayload(data: RawPushPayload): CancelPayload | null {
+  if (data.msg !== 'cancel-call' || !data.callId || !UUID_PATTERN.test(data.callId)) {
+    return null;
+  }
+  return { type: 'cancel-call', callId: data.callId };
 }
 
 function isFresh(payload: PushPayload): boolean {
@@ -106,10 +150,13 @@ async function loadNewestPendingCall(): Promise<PushPayload | null> {
 
 function deliverIncomingCall(payload: PushPayload) {
   if (payload.callId === lastDeliveredCallId) return;
+  if (!onIncoming) {
+    pendingAndroidPayload = payload;
+    return;
+  }
   lastDeliveredCallId = payload.callId;
   console.log(`[push][callId=${payload.callId}] delivered to call state machine`);
-  if (onIncoming) onIncoming(payload);
-  else pendingAndroidPayload = payload;
+  onIncoming(payload);
 }
 
 export async function clearPendingIncomingCall(callId?: string): Promise<void> {
@@ -130,8 +177,24 @@ if (Platform.OS === 'android') {
   try {
     const messaging = getMessaging();
     setBackgroundMessageHandler(messaging, async (remoteMessage) => {
-      const payload = normalizeIncomingPayload((remoteMessage?.data || {}) as RawPushPayload);
+      const rawData = (remoteMessage?.data || {}) as RawPushPayload;
+      const cancelPayload = normalizeCancelPayload(rawData);
+      if (cancelPayload) {
+        console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (background)`);
+        await clearPendingIncomingCall(cancelPayload.callId);
+        if (onCancel) onCancel(cancelPayload);
+        return;
+      }
+      const payload = normalizeIncomingPayload(rawData);
       if (!payload) return;
+      // FCM delivery can lag behind account switching. Never persist/present a
+      // queued JS call for the previous extension or wake SIP under a new login.
+      const { StorageService } = require('../storage/store');
+      const storedAccount = await StorageService.getAccount();
+      if (!storedAccount || payload.extension !== storedAccount.extension) {
+        console.warn('[push] stale account payload ignored');
+        return;
+      }
       await persistPendingCall(payload);
       console.log(`[push][callId=${payload.callId}] headless payload persisted`);
       deliverIncomingCall(payload);
@@ -139,9 +202,7 @@ if (Platform.OS === 'android') {
       // If App.tsx is not mounted (cold wake / killed state), bootstrap SIP directly in Headless JS
       if (!onIncoming) {
         try {
-          const { StorageService } = require('../storage/store');
           const { getSharedJsSipService } = require('../sip/JsSipService');
-          const storedAccount = await StorageService.getAccount();
           if (storedAccount) {
             // Hydrate the approved gateway assignment first: a gateway-enrolled
             // device must wake through the ticket/relay path, never the direct
@@ -170,10 +231,12 @@ if (Platform.OS === 'android') {
   }
 }
 
-export function initPush(onIncomingCall: PushHandler) {
+export function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandler) {
   onIncoming = onIncomingCall;
+  onCancel = onCancelCall || null;
 
-  if (Platform.OS === 'ios') {
+  if (Platform.OS === 'ios' && !tokenListenersInitialized) {
+    tokenListenersInitialized = true;
     const VoipPushNotification =
       require('react-native-voip-push-notification').default ||
       require('react-native-voip-push-notification');
@@ -184,7 +247,7 @@ export function initPush(onIncomingCall: PushHandler) {
     VoipPushNotification.registerVoipToken();
     VoipPushNotification.addEventListener('register', (token: string) => {
       voipTokenCache = token;
-      setTimeout(() => sendTokenToGateway('ios', token, token, currentExtension));
+      registerCachedToken();
     });
     VoipPushNotification.addEventListener(
       'notification',
@@ -196,29 +259,40 @@ export function initPush(onIncomingCall: PushHandler) {
       },
     );
     PushNotificationIOS.addEventListener('register', (token: string) => {
-      setTimeout(() => sendTokenToGateway('ios', token, null, currentExtension));
+      void sendTokenToGateway('ios', token, null, currentExtension);
     });
   }
 
-  if (Platform.OS === 'android') {
+  if (Platform.OS === 'android' && !tokenListenersInitialized) {
     try {
       const messaging = getMessaging();
       const handleToken = (token: string) => {
         fcmTokenCache = token;
-        setTimeout(() => sendTokenToGateway('android', token, null, currentExtension));
+        registerCachedToken();
       };
-      getToken(messaging).then(handleToken).catch((error) => {
-        console.warn('[push] getToken failed:', error);
-      });
       onTokenRefresh(messaging, handleToken);
       onMessage(messaging, async (remoteMessage) => {
-        const payload = normalizeIncomingPayload(
-          (remoteMessage?.data || {}) as RawPushPayload,
-        );
+        const rawData = (remoteMessage?.data || {}) as RawPushPayload;
+        const cancelPayload = normalizeCancelPayload(rawData);
+        if (cancelPayload) {
+          console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (foreground)`);
+          await clearPendingIncomingCall(cancelPayload.callId);
+          if (onCancel) onCancel(cancelPayload);
+          return;
+        }
+        const payload = normalizeIncomingPayload(rawData);
         if (!payload) return;
         await persistPendingCall(payload);
         deliverIncomingCall(payload);
       });
+      AppState.addEventListener('change', (state) => {
+        if (state === 'active' && currentExtension) {
+          registerCachedToken();
+          refreshAndroidToken();
+        }
+      });
+      tokenListenersInitialized = true;
+      refreshAndroidToken();
       void (async () => {
         const payload = pendingAndroidPayload || await loadNewestPendingCall();
         pendingAndroidPayload = null;
@@ -231,9 +305,11 @@ export function initPush(onIncomingCall: PushHandler) {
 }
 
 export function bindExtension(extension: string) {
+  registrationRetry.stop();
+  tokenRetry.stop();
   currentExtension = extension;
-  if (voipTokenCache) void sendTokenToGateway('ios', voipTokenCache, voipTokenCache, extension);
-  if (fcmTokenCache) void sendTokenToGateway('android', fcmTokenCache, null, extension);
+  registerCachedToken();
+  if (!fcmTokenCache) refreshAndroidToken();
 }
 
 /**
@@ -270,13 +346,16 @@ export async function sendTokenToGateway(
   token: string,
   voipToken: string | null,
   extension?: string,
-) {
+  host = CONFIG.sipDomain,
+): Promise<boolean> {
   const ext = extension || currentExtension;
-  if (!ext) return;
+  if (!ext || !host) return false;
   try {
     const deviceUuid = await getDeviceUuid();
-    const gateway = await resolvePushGateway(CONFIG.sipDomain, ext);
-    if (gateway === null) return;
+    const gateway = await resolvePushGateway(host, ext);
+    if (gateway === null) return false;
+    // Never register a stale request against a newly selected account.
+    if (currentExtension !== ext || CONFIG.sipDomain !== host) return false;
 
     const body: Record<string, string> = {
       extension: gateway?.assignment.extension || ext,
@@ -289,30 +368,49 @@ export async function sendTokenToGateway(
 
     if (gateway) {
       await registerGatewayPushToken(gateway, body);
-      return;
+      console.log('[push] tenant token registration confirmed');
+      return true;
     }
 
-    const response = await fetch(`${CONFIG.pushGateway}/api/push/register-device`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const json = await response.json();
-    if (!response.ok || !json.success) {
-      console.warn('[push] gateway registration failed:', json.error || response.status);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(`${CONFIG.pushGateway}/api/push/register-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const json = await response.json();
+      if (!response.ok || !json.success) {
+        console.warn('[push] gateway registration failed; retry scheduled, HTTP', response.status);
+        return false;
+      }
+    } finally {
+      clearTimeout(timer);
     }
+    console.log('[push] token registration confirmed');
+    return true;
   } catch (error) {
-    console.warn('[push] gateway unreachable:', error);
+    const status = (error as { status?: unknown } | null)?.status;
+    console.warn('[push] token registration failed; retry scheduled, HTTP',
+      typeof status === 'number' ? status : 0);
+    return false;
   }
 }
 
 export async function unregisterCurrentDevice(): Promise<void> {
+  const settled = registrationRetry.stop();
+  tokenRetry.stop();
   if (!currentExtension) return;
+  const extension = currentExtension;
+  currentExtension = '';
+  await settled;
   try {
     const deviceUuid = await getDeviceUuid();
-    const gateway = await resolvePushGateway(CONFIG.sipDomain, currentExtension);
+    const gateway = await resolvePushGateway(CONFIG.sipDomain, extension);
     const body: Record<string, string> = {
-      extension: gateway?.assignment.extension || currentExtension,
+      extension: gateway?.assignment.extension || extension,
       platform: Platform.OS,
       deviceUuid,
     };

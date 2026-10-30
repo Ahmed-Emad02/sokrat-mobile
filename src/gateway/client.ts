@@ -172,6 +172,9 @@ export class GatewayClient {
       });
     } catch (error) {
       if (error instanceof GatewayError && error.kind === 'network') {
+        // A TLS/connectivity failure must not downgrade a public gateway to
+        // plaintext APIs or direct SIP. Private legacy discovery is unchanged.
+        if (this.baseUrl.startsWith('https://')) throw error;
         console.log('[gateway] capability probe unreachable; using direct PBX mode');
         return null;
       }
@@ -275,6 +278,7 @@ export class GatewayClient {
     if (status === 401 || status === 403) {
       throw new GatewayError('unauthorized', 'Gateway rejected the relay request', { status });
     }
+    if (status === 409 || status === 410) throw new GatewayError('pbx_disabled', 'PBX is no longer available', { status });
     if (status !== 200) {
       throw new GatewayError('invalid', `Relay configuration failed (HTTP ${status})`, { status });
     }
@@ -296,6 +300,7 @@ export class GatewayClient {
     if (status === 401 || status === 403) {
       throw new GatewayError('unauthorized', 'Gateway rejected the SIP ticket request', { status });
     }
+    if (status === 409 || status === 410) throw new GatewayError('pbx_disabled', 'PBX is no longer available', { status });
     if (status !== 200) {
       throw new GatewayError('invalid', `SIP ticket failed (HTTP ${status})`, { status });
     }
@@ -310,6 +315,10 @@ export class GatewayClient {
       headers: this.tenantHeaders(true),
       body: JSON.stringify(body),
     });
+    if (status === 401 || status === 403) throw new GatewayError('unauthorized', 'Gateway rejected the device credential', { status });
+    // 409 is a token ownership conflict, not evidence of PBX retirement.
+    if (status === 409) throw new GatewayError('invalid', 'Push token is already registered', { status });
+    if (status === 410) throw new GatewayError('pbx_disabled', 'PBX is no longer available', { status });
     if (status !== 200 && status !== 201 && status !== 202) {
       throw new GatewayError('invalid', `Device registration failed (HTTP ${status})`, { status });
     }

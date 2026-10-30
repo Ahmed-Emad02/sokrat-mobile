@@ -541,7 +541,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         timestamp: String
     ) {
         val canonicalCallId = if (IncomingCallStore.isValidCallId(callId)) callId else java.util.UUID.randomUUID().toString()
-        IncomingCallStore.upsertIncoming(
+        val record = IncomingCallStore.upsertIncoming(
             reactApplicationContext,
             canonicalCallId,
             callerId,
@@ -549,6 +549,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             extension,
             timestamp.toLongOrNull() ?: System.currentTimeMillis()
         )
+        if (record.action == "ANSWER" || record.action == "DECLINE") return
         IncomingCallNotificationHelper.showCallNotification(
             reactApplicationContext,
             canonicalCallId,
@@ -557,6 +558,12 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             extension,
             timestamp
         )
+    }
+
+    @ReactMethod
+    fun silenceCallNotification(callId: String) {
+        // Unlike dismissal, retain the action for cold-start/INVITE replay.
+        IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, callId)
     }
 
     @ReactMethod

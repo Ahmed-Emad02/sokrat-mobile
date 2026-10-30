@@ -16,15 +16,54 @@
  * gateway enrollment record, SIP/media must go through the gateway even if the
  * assignment is missing (pending/revoked) — never the direct PBX path.
  */
-import type { MediaConfiguration } from '../network';
+import { isPrivateHost, splitHost, type MediaConfiguration } from '../network';
 import { getSipWss } from '../config';
 import { GatewayClient } from './client';
 import { GatewayError, failClosed } from './errors';
-import { loadEnrollmentRecord } from './storage';
+import { isKnownGatewayHost, loadEnrollmentRecord, saveEnrollmentRecord } from './storage';
 import type { EnrollmentRecord, GatewayAssignment, GatewaySession } from './types';
 import { appendQuery, gatewayBaseUrl, normalizeServerHost } from './urls';
 
 let activeSession: GatewaySession | null = null;
+let sessionGeneration = 0;
+const generations = new WeakMap<GatewaySession, number>();
+
+export function getGatewaySessionGeneration(): number {
+  return sessionGeneration;
+}
+
+export function assertGatewaySessionGeneration(generation: number): void {
+  if (generation !== sessionGeneration) throw new GatewayError('aborted', 'Gateway account changed');
+}
+
+function assertCurrentSession(session: GatewaySession): void {
+  assertGatewaySessionGeneration(generations.get(session) ?? -1);
+  if (activeSession && (activeSession.host !== session.host || activeSession.extension !== session.extension || activeSession.deviceId !== session.deviceId)) {
+    throw new GatewayError('aborted', 'Gateway account changed');
+  }
+}
+
+async function invalidateSession(session: GatewaySession, error: unknown): Promise<void> {
+  if (!(error instanceof GatewayError) || !['unauthorized', 'revoked', 'rejected', 'expired', 'pbx_disabled'].includes(error.kind)) return;
+  assertCurrentSession(session);
+  resetGatewaySession();
+  const record = await loadEnrollmentRecord(session.host, session.extension);
+  if (record && record.deviceId === session.deviceId) {
+    await saveEnrollmentRecord({ ...record, status: error.kind === 'pbx_disabled' ? 'pbx_disabled' : 'revoked', assignment: undefined });
+  }
+}
+
+async function sessionRequest<T>(session: GatewaySession, request: () => Promise<T>): Promise<T> {
+  assertCurrentSession(session);
+  try {
+    const result = await request();
+    assertCurrentSession(session);
+    return result;
+  } catch (error) {
+    await invalidateSession(session, error);
+    throw error;
+  }
+}
 
 export function createGatewaySession(
   host: string,
@@ -32,7 +71,7 @@ export function createGatewaySession(
   deviceId: string,
   assignment: GatewayAssignment,
 ): GatewaySession {
-  return {
+  const session: GatewaySession = {
     host: normalizeServerHost(host),
     extension: assignment.extension,
     deviceId,
@@ -45,13 +84,17 @@ export function createGatewaySession(
     // wrong server (404/401), so it is deliberately ignored here.
     apiURL: gatewayBaseUrl(host),
   };
+  generations.set(session, sessionGeneration);
+  return session;
 }
 
 export function setActiveGatewaySession(session: GatewaySession | null): void {
+  if (session) assertCurrentSession(session);
   activeSession = session;
 }
 
 export function resetGatewaySession(): void {
+  sessionGeneration += 1;
   activeSession = null;
 }
 
@@ -66,7 +109,7 @@ export function getActiveGatewaySession(
 }
 
 function sessionFromRecord(record: EnrollmentRecord): GatewaySession {
-  if (!record.assignment) {
+  if (record.status !== 'approved' || !record.assignment || record.assignment.extension !== record.extension) {
     throw failClosed('Device approval is still pending; direct PBX fallback is disabled');
   }
   if (!record.deviceId) {
@@ -86,16 +129,33 @@ export async function getOrLoadGatewaySession(
   host: string,
   extension: string,
 ): Promise<GatewaySession | null> {
-  const cached = getActiveGatewaySession(host, extension);
-  if (cached) return cached;
-
+  const generation = sessionGeneration;
   const record = await loadEnrollmentRecord(host, extension);
-  if (!record || !record.gatewayMode) return null;
+  assertGatewaySessionGeneration(generation);
+  if (!record || !record.gatewayMode) {
+    if (getActiveGatewaySession(host, extension)) throw failClosed('Gateway enrollment record is unavailable');
+    const known = await isKnownGatewayHost(host);
+    assertGatewaySessionGeneration(generation);
+    if (known) throw failClosed('This gateway account requires enrollment');
+    return null;
+  }
   if (record.status === 'rejected' || record.status === 'revoked') {
+    resetGatewaySession();
     throw new GatewayError(record.status, 'Device enrollment is no longer valid');
   }
 
   const session = sessionFromRecord(record);
+  // Approval is mutable: a cached assignment is not evidence that its PBX or
+  // device is still active. Revalidate before every SIP registration/restore.
+  const client = new GatewayClient({ baseUrl: session.apiURL, deviceId: session.deviceId, claimSecret: session.claimSecret });
+  const claim = await sessionRequest(session, () => client.claim(session.deviceId));
+  assertGatewaySessionGeneration(generation);
+  if (claim.status !== 'approved' || claim.assignment.extension !== extension.trim()) {
+    await saveEnrollmentRecord({ ...record, status: claim.status, assignment: undefined });
+    resetGatewaySession();
+    throw failClosed('Gateway approval is required for this account');
+  }
+  session.assignment = claim.assignment;
   activeSession = session;
   return session;
 }
@@ -106,7 +166,9 @@ export async function getPersistedGatewayRecord(
   extension: string,
 ): Promise<EnrollmentRecord | null> {
   const record = await loadEnrollmentRecord(host, extension);
-  return record?.gatewayMode ? record : null;
+  if (record?.gatewayMode) return record;
+  if (await isKnownGatewayHost(host)) throw failClosed('This gateway account requires enrollment');
+  return null;
 }
 
 /**
@@ -121,11 +183,18 @@ export async function getPersistedGatewayRecord(
  * builds for the legacy path.
  *
  * @param host        configured server host (scheme/path tolerated)
- * @param fallbackUrl URL already derived by the caller from that host; wins
- *                    over the local derivation so the caller keeps control of
- *                    the transport scheme (ws vs wss).
+ * Public enrolled accounts always use WSS, including older saved accounts
+ * whose TLS toggle is off. Private/direct-PBX transport policy is unchanged.
  */
 export function resolveGatewaySipWebSocketUrl(host: string, fallbackUrl?: string): string {
+  const { hostname } = splitHost(host);
+  if (!hostname) throw failClosed('Gateway WebSocket URL is not configured');
+  if (!isPrivateHost(hostname)) {
+    const authority = hostname.includes(':') ? `[${hostname}]` : hostname.toLowerCase();
+    const secure = getSipWss(authority, true);
+    // Retain caller query parameters only on this exact secure gateway URL.
+    return fallbackUrl?.startsWith(`${secure}?`) ? fallbackUrl : secure;
+  }
   const derived = fallbackUrl || getSipWss(normalizeServerHost(host), false);
   if (!derived) throw failClosed('Gateway WebSocket URL is not configured');
   return derived;
@@ -145,7 +214,7 @@ export async function buildGatewaySipWebSocketUrl(
     deviceId: session.deviceId,
     claimSecret: session.claimSecret,
   });
-  const { ticket } = await client.sipTicket();
+  const { ticket } = await sessionRequest(session, () => client.sipTicket());
   return appendQuery(base, { ticket });
 }
 
@@ -158,7 +227,7 @@ export async function gatewayMediaConfiguration(
     deviceId: session.deviceId,
     claimSecret: session.claimSecret,
   });
-  return client.iceServers();
+  return sessionRequest(session, () => client.iceServers());
 }
 
 /** Authenticated push token registration through the gateway. */
@@ -171,7 +240,7 @@ export async function registerGatewayPushToken(
     deviceId: session.deviceId,
     claimSecret: session.claimSecret,
   });
-  await client.registerDevice(body);
+  await sessionRequest(session, () => client.registerDevice(body));
 }
 
 /** Authenticated device removal on logout. */

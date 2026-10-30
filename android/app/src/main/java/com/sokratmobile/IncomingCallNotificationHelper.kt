@@ -132,7 +132,7 @@ object IncomingCallNotificationHelper {
         )
 
         val hangupIntent = Intent(context, CallActionReceiver::class.java).apply {
-            action = "com.sokratmobile.ACTION_DECLINE_CALL"
+            action = "com.sokratmobile.ACTION_END_CALL"
             putExtra("callId", callId)
         }
         val hangupPendingIntent = PendingIntent.getBroadcast(
@@ -196,8 +196,8 @@ object IncomingCallNotificationHelper {
     ) {
         acquireScreenWakeLock(context)
         createNotificationChannel(context)
-        val title = callerName.ifBlank { callerId.ifBlank { "Incoming Call" } }
-        val subtitle = if (callerId.isNotBlank() && callerId != callerName) {
+        val title = CallerDisplayName.resolve(callerId, callerName)
+        val subtitle = if (callerId.isNotBlank() && callerId != title) {
             "Incoming call from $callerId"
         } else {
             "Incoming Sokrat VOICE call"

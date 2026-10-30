@@ -89,6 +89,7 @@ import { AudioDeviceState, AudioRouteType } from '../calls/incall';
 import { fetchDeviceContacts, getNativeSpeakerVolume, SpeakerVolumeState } from '../calls/nativeCallNotification';
 import { searchContacts } from '../utils/dialSearch';
 import { nameCallRecords } from '../utils/callLog';
+import { callDisplayName } from '../calls/callerName';
 import { editDialInput, type DialSelection } from '../utils/dialInput';
 
 function VolumeSlider({
@@ -473,7 +474,7 @@ const RecentCallRow = React.memo(function RecentCallRow({
             ]}
             numberOfLines={1}
           >
-            {item.name || item.number}
+            {callDisplayName(item.number, item.name)}
           </Text>
           <Text style={styles.recentSub}>
             {item.direction === 'missed' ? t('Missed call') : t('VoIP')}
@@ -490,7 +491,7 @@ const RecentCallRow = React.memo(function RecentCallRow({
         activeOpacity={0.6}
         delayPressIn={0}
         accessibilityRole="button"
-        accessibilityLabel={`View profile for ${item.name || item.number}`}
+        accessibilityLabel={`View profile for ${callDisplayName(item.number, item.name)}`}
       >
         <InfoIcon size={20} color={colors.brand} />
       </TouchableOpacity>
@@ -1374,6 +1375,7 @@ function StandardPhoneScreenInner({
 
   // --- Active In-Call View ---
   if (activeCall) {
+    const displayName = callDisplayName(activeCall.target, activeCall.targetName);
     const isCallingState = activeCall.status === 'calling';
     const isRingingState = activeCall.status === 'ringing';
     const isHeldState = activeCall.isHeld;
@@ -1410,12 +1412,12 @@ function StandardPhoneScreenInner({
           <InCallTimerDisplay startTime={activeCall.startTime} status={activeCall.status} />
           <View style={styles.inCallAvatar}>
             <Text style={styles.inCallAvatarText}>
-              {(activeCall.targetName || activeCall.target || '?').charAt(0).toUpperCase()}
+              {displayName.charAt(0).toUpperCase()}
             </Text>
           </View>
 
           <Text style={styles.inCallName} numberOfLines={1}>
-            {activeCall.targetName || activeCall.target || 'Active Call'}
+            {displayName}
           </Text>
           <View style={styles.inCallNumberBadge}>
             <PhoneIcon size={12} color={colors.brand} />

@@ -10,9 +10,9 @@ import { Platform } from 'react-native';
 import { CONFIG } from '../config';
 import { getDeviceUuid } from '../storage/deviceId';
 import { DEFAULT_BUSY_RETRY_MS, DEFAULT_CLAIM_POLL_MS, GatewayClient } from './client';
-import { GatewayError } from './errors';
-import { createGatewaySession, setActiveGatewaySession } from './session';
-import { clearEnrollmentRecord, getOrCreateEnrollmentRecord, saveEnrollmentRecord } from './storage';
+import { GatewayError, failClosed } from './errors';
+import { assertGatewaySessionGeneration, createGatewaySession, getGatewaySessionGeneration, resetGatewaySession, setActiveGatewaySession } from './session';
+import { getOrCreateEnrollmentRecord, isKnownGatewayHost, loadEnrollmentRecord, rememberGatewayHost, saveEnrollmentRecord } from './storage';
 import type { EnrollmentRecord, GatewaySession } from './types';
 import { gatewayBaseUrl, normalizeServerHost } from './urls';
 
@@ -98,6 +98,16 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   if (!host) throw new GatewayError('invalid', 'Server host is not configured');
   const extension = options.extension.trim();
   if (!extension) throw new GatewayError('invalid', 'Extension is not configured');
+  resetGatewaySession();
+  const generation = getGatewaySessionGeneration();
+  const checkCurrent = () => {
+    throwIfAborted(options.signal);
+    assertGatewaySessionGeneration(generation);
+  };
+  checkCurrent();
+  const existing = await loadEnrollmentRecord(host, extension);
+  const knownGateway = existing?.gatewayMode || await isKnownGatewayHost(host);
+  checkCurrent();
 
   const baseUrl = gatewayBaseUrl(host);
   const fetcher = options.fetcher;
@@ -106,35 +116,36 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
 
   options.onProgress?.({ phase: 'detecting', message: 'Checking server…' });
   const capabilities = await probe.capabilities();
+  checkCurrent();
 
   // No gateway (404/unreachable) or approval disabled → keep direct-PBX login.
   if (!capabilities || !capabilities.deviceApproval) {
+    if (knownGateway) throw failClosed('Known gateway cannot be bypassed');
     options.onProgress?.({ phase: 'legacy', message: '' });
     return { mode: 'legacy', extension };
   }
-
-  let record: EnrollmentRecord = await getOrCreateEnrollmentRecord(host, extension);
-  throwIfAborted(options.signal);
-
-  if (record.assignment && record.deviceId && record.status === 'approved') {
-    const session = createGatewaySession(host, record.claimSecret, record.deviceId, record.assignment);
-    setActiveGatewaySession(session);
-    return { mode: 'gateway', extension: record.assignment.extension || extension, session };
-  }
+  await rememberGatewayHost(host);
+  checkCurrent();
 
   const deviceUuid = await getDeviceUuid();
+  checkCurrent();
+  let record: EnrollmentRecord = await getOrCreateEnrollmentRecord(host, extension, deviceUuid);
+  checkCurrent();
   const platform = options.platform ?? (Platform.OS === 'ios' ? 'ios' : 'android');
   const deviceName = options.deviceName ?? defaultDeviceName(platform, deviceUuid);
   const appVersion = options.appVersion ?? CONFIG.appVersion;
   const pollIntervalMs = clampWait(options.pollIntervalMs, DEFAULT_CLAIM_POLL_MS);
   let networkBackoffMs = Math.max(pollIntervalMs, 50);
   let expiredReenrolls = 0;
+  let enrollmentRequested = false;
 
   while (true) {
-    throwIfAborted(options.signal);
+    checkCurrent();
 
-    if (!record.deviceId) {
-      // Enroll failures are terminal for this login attempt (fail closed).
+    // Only unclaimed/pending records need an enroll mutation. A changed
+    // extension is migrated to pending by storage, so it reaches this path and
+    // the gateway revokes the previous authorization before awaiting approval.
+    if (!enrollmentRequested && (!record.deviceId || record.status === 'pending' || record.status === 'unclaimed' || record.status === 'expired')) {
       const enrolled = await probe.enroll({
         claimSecret: record.claimSecret,
         platform,
@@ -143,6 +154,7 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
         deviceName,
         appVersion,
       });
+      checkCurrent();
       record = {
         ...record,
         deviceId: enrolled.deviceId,
@@ -150,6 +162,8 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
         updatedAt: Date.now(),
       };
       await saveEnrollmentRecord(record);
+      checkCurrent();
+      enrollmentRequested = true;
     }
 
     const deviceId = record.deviceId;
@@ -168,16 +182,13 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
 
     try {
       const claim = await tenant.claim(deviceId);
+      checkCurrent();
       if (claim.status === 'approved') {
         const assignment = claim.assignment;
         const assignedDeviceId = assignment.deviceId || deviceId;
         const assignedExtension = assignment.extension || extension;
         if (assignedExtension !== record.extension) {
-          // The gateway may assign a different extension; move the record so a
-          // restart hydrates the approved device instead of falling back to the
-          // direct PBX path.
-          await clearEnrollmentRecord(record.host, record.extension);
-          record = { ...record, extension: assignedExtension };
+          throw failClosed('Gateway assignment does not match the requested account');
         }
         record = {
           ...record,
@@ -187,6 +198,7 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
           updatedAt: Date.now(),
         };
         await saveEnrollmentRecord(record);
+        checkCurrent();
         const session = createGatewaySession(
           host,
           record.claimSecret,
@@ -214,13 +226,15 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
       await delay(waitMs, options.signal);
       networkBackoffMs = Math.max(pollIntervalMs, 50);
     } catch (error) {
+      checkCurrent();
       if (!(error instanceof GatewayError)) throw error;
 
       if (error.kind === 'expired') {
         expiredReenrolls += 1;
         if (expiredReenrolls > MAX_EXPIRED_REENROLLS) throw error;
         // Same claim secret, new enrollment request.
-        record = { ...record, deviceId: undefined, status: 'expired', updatedAt: Date.now() };
+        record = { ...record, deviceId: undefined, assignment: undefined, status: 'expired', updatedAt: Date.now() };
+        enrollmentRequested = false;
         await saveEnrollmentRecord(record);
         options.onProgress?.({ phase: 'pending', message: 'Enrollment expired. Re-requesting approval…' });
         continue;
@@ -249,10 +263,10 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
         continue;
       }
 
-      if (error.kind === 'rejected' || error.kind === 'revoked') {
+      if (error.kind === 'rejected' || error.kind === 'revoked' || error.kind === 'unauthorized') {
         record = {
           ...record,
-          status: error.kind,
+          status: error.kind === 'unauthorized' ? 'revoked' : error.kind,
           assignment: undefined,
           updatedAt: Date.now(),
         };

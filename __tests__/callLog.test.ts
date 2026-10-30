@@ -32,6 +32,19 @@ describe('call log helpers', () => {
     const calls = [record({ id: 'server', number: '204', name: 'PBX colleague', timestamp: 1000 })];
     expect(nameCallRecords(calls, [])[0].name).toBe('PBX colleague');
   });
+  test('old Unknown recents display their original number without rewriting history', () => {
+    const calls = [record({ id: 'unknown', number: '*43', name: 'Unknown', timestamp: 1000 })];
+    expect(nameCallRecords(calls, [])[0]).toMatchObject({ name: '*43', number: '*43' });
+    expect(calls[0].name).toBe('Unknown');
+    expect(buildCallerProfile('*43', calls, []).displayName).toBe('*43');
+  });
+  test('profile skips placeholder history labels to retain a previously resolved PBX name', () => {
+    const calls = [
+      record({ id: 'new', number: '204', name: 'Unknown', timestamp: 2000 }),
+      record({ id: 'old', number: '204', name: 'PBX colleague', timestamp: 1000 }),
+    ];
+    expect(buildCallerProfile('204', calls, []).displayName).toBe('PBX colleague');
+  });
   test('normalizes separators without changing feature codes', () => {
     expect(normalizeNumber(' 0106 512-1791 ')).toBe('01065121791');
     expect(normalizeNumber('*43')).toBe('*43');

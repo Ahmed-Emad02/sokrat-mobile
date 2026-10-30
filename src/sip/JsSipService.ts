@@ -15,6 +15,7 @@ import { startCallManagers, stopCallManagers, setMicrophoneMute } from '../calls
 import { dismissNativeCallNotification } from '../calls/nativeCallNotification';
 import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
+import { callDisplayName } from '../calls/callerName';
 import { getDeviceUuid } from '../storage/deviceId';
 
 const CALL_ID_PATTERN =
@@ -374,7 +375,7 @@ export class JsSipService {
     }
     this.gatewaySession = gatewaySession;
 
-    console.log(`[sip] connecting via JsSIP to ${wsUrl} as sip:${extension}@${domain}`);
+    console.log(`[sip] connecting via JsSIP to ${wsUrl.replace(/([?&]ticket=)[^&]+/g, '$1[redacted]')} as sip:${extension}@${domain}`);
 
     try {
       const socket = new JsSIP.WebSocketInterface(wsUrl);
@@ -461,7 +462,7 @@ export class JsSipService {
     ua.on('disconnected', () => {
       if (this.ua !== ua) return;
       console.log('[sip] WebSocket disconnected');
-      if (this.state === 'registered') {
+      if (this.state === 'registered' || this.state === 'connecting') {
         this.setState('disconnected');
       }
       this.scheduleReconnect();
@@ -504,7 +505,7 @@ export class JsSipService {
 
     const remoteId = session.remote_identity;
     const target = remoteId?.uri?.user || 'Unknown';
-    const targetName = session.direction === 'incoming' ? 'Unknown' : (remoteId?.display_name || target);
+    const targetName = callDisplayName(target);
 
     // ------------------------------------------------------------------
     // Consultation session routing: if we are waiting for a consult dial
@@ -546,6 +547,7 @@ export class JsSipService {
     // Normal (primary) session path
     // ------------------------------------------------------------------
     this.currentSession = session;
+    this.answerDispatchedSession = null;
 
     const call: ActiveCall = {
       id: callId,
@@ -564,14 +566,14 @@ export class JsSipService {
     if (session.direction === 'outgoing') {
       startCallManagers();
       // Publish the call immediately; contact/network lookup never delays dialing.
-      call.targetName = 'Unknown';
+      call.targetName = callDisplayName(target);
       this.events.onCallStatusChange?.(call);
       void resolveCallerName(target, {
         extension: this.extension, password: this.password, serverHost: this.serverHost,
         useTls: this.useTls, dnd: false, autoAnswer: false,
       }).then(name => {
         if (this.currentSession !== session || this.activeCall !== call) return;
-        call.targetName = name;
+        call.targetName = callDisplayName(target, name);
         this.events.onCallStatusChange?.(call);
       });
     }
@@ -658,6 +660,45 @@ export class JsSipService {
     });
 
     // Attach session-level listeners
+    // Keep diagnostics independent of JsSIP's verbose debug mode: that mode
+    // includes authentication headers and full SDP. Only record lifecycle fields.
+    const logTermination = (event: 'ended' | 'failed', payload: unknown) => {
+      const data = payload as {
+        originator?: string;
+        cause?: string;
+        message?: { status_code?: number; method?: string };
+      } | null;
+      const connection = session.connection as {
+        iceGatheringState?: string;
+        iceConnectionState?: string;
+        connectionState?: string;
+      } | undefined;
+      console.warn(`[sip][callId=${call.id}] session ${event} ${JSON.stringify({
+        originator: data?.originator,
+        cause: data?.cause,
+        statusCode: data?.message?.status_code,
+        method: data?.message?.method,
+        answerDispatched: this.answerDispatchedSession === session,
+        currentSession: this.currentSession === session,
+        callStatus: call.status,
+        iceGatheringState: connection?.iceGatheringState,
+        iceConnectionState: connection?.iceConnectionState,
+        connectionState: connection?.connectionState,
+      })}`);
+    };
+    for (const event of [
+      'getusermediafailed',
+      'peerconnection:createofferfailed',
+      'peerconnection:createanswerfailed',
+      'peerconnection:setlocaldescriptionfailed',
+      'peerconnection:setremotedescriptionfailed',
+    ]) {
+      session.on(event, (error: unknown) => {
+        const name = (error as { name?: string } | null)?.name;
+        // Error messages can contain entire SDP descriptions; never dump them.
+        console.warn(`[sip][callId=${call.id}] media operation failed ${JSON.stringify({ event, name })}`);
+      });
+    }
     session.on('progress', () => {
       if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'ringing';
@@ -684,6 +725,9 @@ export class JsSipService {
     });
 
     session.on('ended', (evt: unknown) => {
+      logTermination('ended', evt);
+      if (this.currentSession !== session) return;
+      if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
       const cause = (evt as { cause?: string })?.cause || 'NORMAL_CLEARING';
       if (this.attendedTransfer) {
         // Primary session ended during consultation (e.g. remote hung up)
@@ -698,7 +742,7 @@ export class JsSipService {
         return;
       }
       stopCallManagers();
-      const endedCallId = this.activeCall?.id || '';
+      const endedCallId = call.id;
       dismissNativeCallNotification(endedCallId);
       this.releaseLocalStream();
       this.activeCall = null;
@@ -707,6 +751,9 @@ export class JsSipService {
       this.events.onCallEnded(endedCallId, cause);
     });
     session.on('failed', (evt: unknown) => {
+      logTermination('failed', evt);
+      if (this.currentSession !== session) return;
+      if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
       const e = evt as {
         cause?: string;
         originator?: string;
@@ -729,7 +776,7 @@ export class JsSipService {
         return;
       }
       stopCallManagers();
-      const failedCallId = this.activeCall?.id || '';
+      const failedCallId = call.id;
       dismissNativeCallNotification(failedCallId);
       this.releaseLocalStream();
       this.activeCall = null;
@@ -1539,13 +1586,20 @@ export class JsSipService {
    * Answer incoming call session.
    */
   private answerAttempt: { session: unknown; promise: Promise<boolean> } | null = null;
+  private answerDispatchedSession: unknown = null;
 
   answer(callId: string): Promise<boolean> {
     const session = this.currentSession;
+    const call = this.activeCall;
+    // A delayed native action must never rename/answer an unrelated SIP leg.
+    if (!session || !call || call.direction !== 'inbound' ||
+        (call.id !== callId && (session as { id?: string }).id !== callId)) {
+      return Promise.resolve(false);
+    }
     const pending = this.answerAttempt;
     if (pending && pending.session === session) return pending.promise;
-    if (this.activeCall?.direction === 'inbound' && this.activeCall.status === 'active') {
-      return Promise.resolve(this.activeCall.id === callId);
+    if (this.answerDispatchedSession === session || call.status === 'active') {
+      return Promise.resolve(true);
     }
     const promise = this.answerSession(callId);
     const attempt = { session, promise };
@@ -1569,11 +1623,6 @@ export class JsSipService {
       return false;
     }
 
-    const isMatch = !callId || activeCall.id === callId || session.id === callId;
-    if (!isMatch) {
-      console.log(`[sip] correlating incoming answer callId=${callId} with active session=${activeCall.id}`);
-      activeCall.id = callId || activeCall.id;
-    }
     const stillCurrent = () => this.currentSession === session && this.activeCall === activeCall;
     const localStream = await this.getLocalAudioStream();
     if (!localStream) {
@@ -1617,8 +1666,10 @@ export class JsSipService {
     // emitted synchronously while JsSIP creates the answer.
     this.attachIceGathering(session as unknown as IceGatheringSession, callId);
     try {
+      this.answerDispatchedSession = session;
       session.answer(options);
     } catch (error) {
+      if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
       this.mediaRelayRequired = false;
       this.releaseLocalStream();
       console.error(`[sip][callId=${callId}] answer failed:`, error);
@@ -1626,39 +1677,41 @@ export class JsSipService {
     }
     if (!stillCurrent()) return false;
     startCallManagers();
-    dismissNativeCallNotification(callId);
-    activeCall.status = 'active';
-    if (!activeCall.startTime) activeCall.startTime = Date.now();
-    console.log(`[sip][callId=${callId}] answer dispatched -> active call established`);
-    this.events.onCallEstablished(activeCall);
-    void this.setLiveMicGain(this.micGainDb, activeCall.id);
-    this.setSpeakerVolume(this.speakerVolume);
+    // answer() starts asynchronous SDP/ICE work. Only `confirmed` may publish
+    // establishment; otherwise the UI disappears while the caller still rings.
+    console.log(`[sip][callId=${callId}] answer dispatched; waiting for SIP confirmation`);
     return true;
   }
 
   /**
    * Terminate/hangup active call.
    */
-  async hangup(): Promise<void> {
+  async hangup(callId?: string): Promise<boolean> {
+    if (!this.activeCall || (callId && this.activeCall.id !== callId)) return false;
+    console.log(`[sip][callId=${this.activeCall.id}] local hangup requested (status=${this.activeCall.status}, answerDispatched=${this.answerDispatchedSession === this.currentSession})`);
     if (this.activeCall?.status === 'ringing' && this.activeCall?.direction === 'inbound') {
-      await this.decline(this.activeCall.id);
-      return;
+      return this.decline(this.activeCall.id);
     }
-    if (this.localStream) {
-      this.releaseLocalStream();
-    }
-    this.mediaRelayRequired = false;
-    stopCallManagers();
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
-    dismissNativeCallNotification(this.activeCall?.id || '');
-    if (session && typeof session.terminate === 'function') {
-      try { session.terminate(); } catch {}
+    if (!session || typeof session.terminate !== 'function') return false;
+    try {
+      session.terminate();
+    } catch (error) {
+      console.warn('[sip] hangup dispatch failed:', error);
+      return false;
     }
-    if (this.attendedTransfer) {
+    if (this.currentSession === session && this.attendedTransfer) {
       this._cleanupAttendedTransfer(false);
     }
-    this.currentSession = null;
-    this.activeCall = null;
+    if (this.currentSession === session) {
+      this.releaseLocalStream();
+      this.mediaRelayRequired = false;
+      stopCallManagers();
+      dismissNativeCallNotification(callId || this.activeCall?.id || '');
+      this.currentSession = null;
+      this.activeCall = null;
+    }
+    return true;
   }
 
   /**
@@ -1670,25 +1723,27 @@ export class JsSipService {
         this.activeCall.direction !== 'inbound') {
       return false;
     }
-    if (this.localStream) {
-      this.releaseLocalStream();
-    }
-    this.mediaRelayRequired = false;
+    const declinedCall = this.activeCall;
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
     if (!session || typeof session.terminate !== 'function') return false;
+    console.log(`[sip][callId=${declinedCall.id}] local decline requested (answerDispatched=${this.answerDispatchedSession === session})`);
     try {
       session.terminate({
         status_code: 603,
         reason_phrase: 'Decline',
       });
-      console.log(`[sip][callId=${this.activeCall.id}] decline dispatched`);
-      dismissNativeCallNotification(callId || this.activeCall?.id || '');
+      console.log('[sip] decline dispatched');
+      dismissNativeCallNotification(declinedCall.id);
     } catch (error) {
-      console.warn(`[sip][callId=${this.activeCall.id}] decline failed:`, error);
+      console.warn('[sip] decline failed:', error);
       return false;
     }
-    this.currentSession = null;
-    this.activeCall = null;
+    if (this.currentSession === session) {
+      this.releaseLocalStream();
+      this.mediaRelayRequired = false;
+      this.currentSession = null;
+      this.activeCall = null;
+    }
     return true;
   }
 
@@ -1881,9 +1936,11 @@ export class JsSipService {
     this.reconnectTimer = null;
 
     this.disconnect(false);
+    const generation = this.connectionGeneration;
     this.setState('connecting');
 
     setTimeout(() => {
+      if (generation !== this.connectionGeneration) return;
       void this.connect(ext, pwd, host, tls, true);
     }, 200);
   }
@@ -1916,6 +1973,7 @@ export class JsSipService {
   }
 
   disconnect(notifyState = true) {
+    this.answerDispatchedSession = null;
     clearTimeout(this.liveGainTimer ?? undefined);
     this.liveGainTimer = null;
     this.liveGainResolve?.(false);

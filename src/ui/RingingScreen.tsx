@@ -9,14 +9,16 @@ import { useTheme, themedStyles } from '../theme';
 import { useI18n } from '../i18n';
 import { PhoneAnswerIcon, PhoneDeclineIcon, PhoneIcon } from './Icons';
 import { startRingtone, stopRingtone } from '../calls/incall';
+import { callDisplayName } from '../calls/callerName';
 type Props = {
   callerId: string;
   callerName: string;
   onAnswer: () => void;
   onDecline: () => void;
+  answerRequested?: boolean;
 };
 
-export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Props) {
+export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answerRequested = false }: Props) {
   const { colors } = useTheme();
   const { t } = useI18n();
   const styles = useMemo(() => themedStyles(rawStyles, colors), [colors]);
@@ -62,7 +64,6 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
     const r1 = createRipple(ripple1, 0);
     const r2 = createRipple(ripple2, 800);
     const r3 = createRipple(ripple3, 1600);
-    startRingtone();
     r1.start();
     r2.start();
     r3.start();
@@ -70,7 +71,6 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
     textBreath.start();
 
     return () => {
-      stopRingtone();
       r1.stop();
       r2.stop();
       r3.stop();
@@ -78,10 +78,15 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
       textBreath.stop();
     };
   }, [ripple1, ripple2, ripple3, bounceAnim, textFadeAnim]);
+  useEffect(() => {
+    if (answerRequested) stopRingtone();
+    else startRingtone();
+    return () => stopRingtone();
+  }, [answerRequested]);
   const [isAnswering, setIsAnswering] = useState(false);
 
   const handleAnswerPress = () => {
-    if (isAnswering) return;
+    if (isAnswering || answerRequested) return;
     setIsAnswering(true);
     stopRingtone();
     setTimeout(() => {
@@ -94,7 +99,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
     onDecline();
   };
 
-  const displayName = callerName.trim() || callerId.trim() || 'Unknown Caller';
+  const displayName = callDisplayName(callerId, callerName);
   const displayExt = callerId.trim() || callerName.trim();
   const initial = displayName.charAt(0).toUpperCase() || '?';
   return (
@@ -190,7 +195,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
         </View>
 
         <Animated.Text style={[styles.ringingStatus, { opacity: textFadeAnim }]}>
-          {isAnswering ? t('Connecting audio…') : t('Ringing softphone…')}
+          {isAnswering || answerRequested ? t('Connecting audio…') : t('Ringing softphone…')}
         </Animated.Text>
       </View>
 
@@ -229,12 +234,12 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline }: Pro
               pointerEvents="none"
             />
             <TouchableOpacity
-              style={[styles.actionBtn, styles.answerBtn, isAnswering && { opacity: 0.6 }]}
+              style={[styles.actionBtn, styles.answerBtn, (isAnswering || answerRequested) && { opacity: 0.6 }]}
               onPress={handleAnswerPress}
               delayPressIn={0}
               hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
               activeOpacity={0.7}
-              disabled={isAnswering}
+              disabled={isAnswering || answerRequested}
               accessibilityRole="button"
               accessibilityLabel="Answer incoming call"
             >

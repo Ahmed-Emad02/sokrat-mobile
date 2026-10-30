@@ -1,11 +1,12 @@
 import type { CallRecord, Contact } from '../storage/store';
-import { callerNameFromContacts, normalizeCallerNumber } from '../calls/callerName';
+import { callDisplayName, callerNameFromContacts, normalizeCallerNumber } from '../calls/callerName';
 
 /** Resolve at display time so saving/renaming a contact also fixes older recents. */
 export function nameCallRecords(records: CallRecord[], contacts: Contact[]): CallRecord[] {
   return records.map(record => {
     const localName = callerNameFromContacts(record.number, contacts);
-    return localName === 'Unknown' ? record : { ...record, name: localName };
+    const name = callDisplayName(record.number, localName === 'Unknown' ? record.name : localName);
+    return name === record.name ? record : { ...record, name };
   });
 }
 
@@ -67,9 +68,9 @@ export function buildCallerProfile(
 
   const recordName = matching
     .map((record) => record.name?.trim())
-    .find((name) => Boolean(name) && name !== number) ?? '';
+    .find((name) => callDisplayName('', name) !== 'Unknown' && name !== number) ?? '';
 
-  const displayName = contact?.name?.trim() || recordName || number;
+  const displayName = callDisplayName(number, contact?.name?.trim() || recordName);
 
   return {
     number,

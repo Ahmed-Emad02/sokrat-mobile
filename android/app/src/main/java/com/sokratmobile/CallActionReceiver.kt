@@ -12,21 +12,25 @@ class CallActionReceiver : BroadcastReceiver() {
             CallNotificationModule.simulateGsmState(state)
             return
         }
-        if (intent.action != "com.sokratmobile.ACTION_DECLINE_CALL") return
+        val ongoing = intent.action == "com.sokratmobile.ACTION_END_CALL"
+        if (!ongoing && intent.action != "com.sokratmobile.ACTION_DECLINE_CALL") return
         val callId = intent.getStringExtra("callId")
-        if (callId.isNullOrBlank()) return
+        if (!IncomingCallStore.isValidCallId(callId)) return
 
-        val canonicalCallId = callId
-        if (IncomingCallStore.isValidCallId(canonicalCallId)) {
-            IncomingCallStore.setAction(context, canonicalCallId, "DECLINE")
+        val canonicalCallId = callId!!
+        val action = if (ongoing) "END" else "DECLINE"
+        if (ongoing && IncomingCallStore.pending(context).none { it.callId == canonicalCallId }) {
+            IncomingCallStore.upsertIncoming(context, canonicalCallId, "", "", "", System.currentTimeMillis())
+        }
+        IncomingCallStore.setAction(context, canonicalCallId, action)
+        if (!ongoing) {
             IncomingCallNotificationHelper.dismissCallNotification(context, canonicalCallId)
         }
-        IncomingCallNotificationHelper.dismissOngoingCallNotification(context)
         CallNotificationModule.emitPersistedAction(context, canonicalCallId)
         val activityIntent = Intent(context, MainActivity::class.java).apply {
-            action = "com.sokratmobile.ACTION_DECLINE_CALL"
+            this.action = intent.action
             putExtras(intent.extras ?: android.os.Bundle())
-            putExtra("callAction", "DECLINE")
+            putExtra("callAction", action)
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or

@@ -17,9 +17,10 @@ describe('push gateway endpoint policy', () => {
     expect(getPushGateway('100.98.185.86')).toBe('http://100.98.185.86:8095');
   });
 
-  test('public hosts use HTTP port 80', () => {
-    expect(getPushGateway('pbx.example.com')).toBe('http://pbx.example.com');
-    expect(getPushGateway('8.8.8.8')).toBe('http://8.8.8.8');
+  test('public hosts require HTTPS without changing the configured host', () => {
+    expect(getPushGateway('pbx.example.com')).toBe('https://pbx.example.com');
+    expect(getPushGateway('203.0.113.25')).toBe('https://203.0.113.25');
+    expect(getPushGateway('http://PBX.Example.com:8443/login')).toBe('https://pbx.example.com:8443');
   });
 
   test('returns empty for an unset host', () => {

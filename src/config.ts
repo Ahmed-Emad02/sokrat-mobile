@@ -7,7 +7,7 @@
  * pushGateway : The sokrat-push-gateway base URL (used for token registration).
  * account     : SIP extension login (set by the user in Settings).
  */
-import { isPrivateHost } from './network';
+import { gatewayBaseUrl } from './gateway/urls';
 
 export const getSipWss = (host: string, useTls = false): string => {
   if (!host) return '';
@@ -15,8 +15,7 @@ export const getSipWss = (host: string, useTls = false): string => {
 };
 
 export const getPushGateway = (host: string): string => {
-  if (!host) return '';
-  return `http://${host}${isPrivateHost(host) ? ':8095' : ''}`;
+  return gatewayBaseUrl(host);
 };
 
 export const CONFIG = {

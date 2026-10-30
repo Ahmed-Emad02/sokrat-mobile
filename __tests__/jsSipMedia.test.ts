@@ -71,6 +71,7 @@ import { getDeviceUuid, UUID_PATTERN } from '../src/storage/deviceId';
 import { resolveCallerName } from '../src/calls/callerNameResolver';
 jest.mock('../src/calls/callerNameResolver', () => ({ resolveCallerName: jest.fn(async () => 'Unknown') }));
 import { createGatewaySession, resetGatewaySession, setActiveGatewaySession } from '../src/gateway/session';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const mockMediaConfiguration = getMediaConfiguration as jest.MockedFunction<typeof getMediaConfiguration>;
 
@@ -203,6 +204,45 @@ describe('JsSipService media + instance id', () => {
     activeServices.length = 0;
   });
 
+  test('decline handles JsSIP synchronous failed event without reporting failure', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    session.terminate.mockImplementation(() => session.emit('failed', { cause: 'Terminated' }));
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    expect(await service.decline(session.id)).toBe(true);
+    expect(session.terminate).toHaveBeenCalledWith({ status_code: 603, reason_phrase: 'Decline' });
+    expect(events.onCallEnded).toHaveBeenCalledWith(session.id, 'Terminated', expect.anything());
+  });
+
+  test('outbound hangup dispatches termination and retains a leg when dispatch throws', async () => {
+    const service = createService();
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('outgoing');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    session.terminate.mockImplementationOnce(() => { throw new Error('transport'); });
+    expect(await service.hangup(session.id)).toBe(false);
+    expect(service.activeCall?.id).toBe(session.id);
+    expect(await service.hangup('other-call')).toBe(false);
+    expect(await service.hangup(session.id)).toBe(true);
+    expect(session.terminate).toHaveBeenCalledTimes(2);
+  });
+
+  test('late termination event from old leg does not clear a newer leg', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const first = createSession('outgoing');
+    mockUaInstances[0].emit('newRTCSession', { session: first, request: {} });
+    await service.hangup(first.id);
+    const second = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session: second, request: {} });
+    first.emit('ended');
+    expect(service.activeCall?.id).toBe(second.id);
+    expect(events.onCallEnded).not.toHaveBeenCalled();
+  });
+
   test('outgoing call name resolves without delaying the initial calling event', async () => {
     let finish!: (name: string) => void;
     (resolveCallerName as jest.Mock).mockReturnValue(new Promise<string>(resolve => { finish = resolve; }));
@@ -211,12 +251,33 @@ describe('JsSipService media + instance id', () => {
     await service.connect('160', 'pw', 'pbx.example.com', false);
     const session = createSession('outgoing');
     mockUaInstances[0].emit('newRTCSession', { session, request: {} });
-    expect(service.activeCall?.targetName).toBe('Unknown');
+    expect(service.activeCall?.targetName).toBe('102');
     expect(events.onCallStatusChange).toHaveBeenCalled();
     finish('Saved customer');
     await Promise.resolve();
     expect(service.activeCall?.targetName).toBe('Saved customer');
     expect(service.activeCall?.target).toBe('102');
+  });
+
+  test('outgoing lookup miss keeps the dialed number visible', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('outgoing');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    await Promise.resolve();
+    expect(service.activeCall?.targetName).toBe('102');
+    expect(service.activeCall?.target).toBe('102');
+  });
+
+  test('incoming call publishes its number before contact lookup or Answer', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    expect(service.activeCall?.targetName).toBe('102');
+    expect(events.onIncomingCall).toHaveBeenCalledWith(expect.objectContaining({ callerId: '102', callerName: '102' }));
   });
 
   test('outgoing name lookup cannot update an ended session', async () => {
@@ -674,7 +735,88 @@ describe('JsSipService media + instance id', () => {
     await expect(service.answer('session-incoming')).resolves.toBe(true);
     expect(session.answer).toHaveBeenCalledTimes(1);
     expect((session.answer.mock.calls[0][0] as any).pcConfig).toMatchObject(relayConfiguration);
-    expect(events.onCallEstablished).toHaveBeenCalled();
+    expect(events.onCallEstablished).not.toHaveBeenCalled();
+    expect(service.activeCall?.status).toBe('ringing');
+    session.emit('accepted', {});
+    expect(events.onCallEstablished).not.toHaveBeenCalled();
+    session.emit('confirmed', {});
+    expect(events.onCallEstablished).toHaveBeenCalledTimes(1);
+    expect(service.activeCall?.status).toBe('active');
+  });
+
+  test('asynchronous SDP failure after answer dispatch is never reported as established', async () => {
+    mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+    const { stream, track } = createStream();
+    (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(stream);
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    await expect(service.answer(session.id)).resolves.toBe(true);
+    session.emit('failed', { cause: 'Bad Media Description' });
+    expect(events.onCallEstablished).not.toHaveBeenCalled();
+    expect(events.onCallEnded).toHaveBeenCalledWith(session.id, 'Bad Media Description', expect.anything());
+    expect(service.activeCall).toBeNull();
+    expect(track.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('answer failure diagnostics identify SIP cancellation without dumping SIP headers or SDP', async () => {
+    mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+    const { stream } = createStream();
+    (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(stream);
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    await service.answer(session.id);
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      session.emit('failed', {
+        originator: 'remote', cause: 'Canceled',
+        message: { method: 'CANCEL', body: 'private-sdp', headers: { Authorization: 'private-secret' } },
+      });
+      const line = warning.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(line).toContain('session failed');
+      expect(line).toContain('"originator":"remote"');
+      expect(line).toContain('"method":"CANCEL"');
+      expect(line).toContain('"answerDispatched":true');
+      expect(line).not.toContain('private-sdp');
+      expect(line).not.toContain('private-secret');
+      expect(events.onCallEstablished).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  test('WebRTC operation failures are logged even when JsSIP has already closed the session', async () => {
+    const service = createService();
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      session.emit('failed', { cause: 'WebRTC Error' });
+      session.emit('peerconnection:setremotedescriptionfailed', { name: 'OperationError', message: 'private-sdp' });
+      const line = warning.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(line).toContain('peerconnection:setremotedescriptionfailed');
+      expect(line).toContain('OperationError');
+      expect(line).not.toContain('private-sdp');
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  test('stale native Answer cannot rename or answer another inbound call', async () => {
+    const service = createService();
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    await expect(service.answer('older-push-call')).resolves.toBe(false);
+    expect(service.activeCall?.id).toBe(session.id);
+    expect(session.answer).not.toHaveBeenCalled();
+    expect(mediaDevices.getUserMedia).not.toHaveBeenCalled();
   });
 
   test('answers on runtimes without Promise.withResolvers', async () => {
@@ -736,21 +878,25 @@ describe('JsSipService media + instance id', () => {
 
   test('enrolled devices register through a gateway ticket and use gateway relay ICE', async () => {
     resetGatewaySession();
+    const assignment = {
+      deviceId: 'dev-1', pbxId: 'pbx-1', pbxName: 'Sokrat Lab', extension: '160',
+      wsURL: 'ws://gateway.example.com:8088/ws', apiURL: 'http://gateway.example.com:8095', mediaIps: [],
+    };
     setActiveGatewaySession(
-      createGatewaySession('gateway.example.com', 'secret-1', 'dev-1', {
-        deviceId: 'dev-1',
-        pbxId: 'pbx-1',
-        pbxName: 'Sokrat Lab',
-        extension: '160',
-        wsURL: 'ws://gateway.example.com:8088/ws',
-        apiURL: 'http://gateway.example.com:8095',
-        mediaIps: [],
-      }),
+      createGatewaySession('gateway.example.com', 'a'.repeat(64), 'dev-1', assignment),
     );
+    (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) =>
+      key.includes('/gateway/v1/') ? JSON.stringify({
+        host: 'gateway.example.com', extension: '160', claimSecret: 'a'.repeat(64),
+        deviceId: 'dev-1', status: 'approved', gatewayMode: true, assignment,
+      }) : null);
     const { stream } = createStream();
     (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(stream);
 
     const fetchMock = jest.fn(async (url: string) => {
+      if (String(url).endsWith('/api/gateway/enrollment/claim')) {
+        return { ok: true, status: 200, json: async () => ({ status: 'approved', assignment }) };
+      }
       if (String(url).endsWith('/api/gateway/sip-ticket')) {
         return { ok: true, status: 200, json: async () => ({ ticket: 'ticket-1', expiresIn: 30 }) };
       }
@@ -773,14 +919,14 @@ describe('JsSipService media + instance id', () => {
 
       const ua = mockUaInstances[0];
       expect(ua.configuration.sockets[0].url).toBe(
-        'ws://gateway.example.com:8088/ws?ticket=ticket-1',
+        'wss://gateway.example.com:8089/ws?ticket=ticket-1',
       );
       expect(fetchMock).toHaveBeenCalledWith(
-        'http://gateway.example.com/api/gateway/sip-ticket',
+        'https://gateway.example.com/api/gateway/sip-ticket',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            Authorization: 'Bearer secret-1',
+            Authorization: `Bearer ${'a'.repeat(64)}`,
             'X-Sokrat-Device': 'dev-1',
           }),
         }),
@@ -794,6 +940,7 @@ describe('JsSipService media + instance id', () => {
       expect(mockMediaConfiguration).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = previousFetch;
+      (AsyncStorage.getItem as jest.Mock).mockReset().mockResolvedValue(null);
       resetGatewaySession();
     }
   });

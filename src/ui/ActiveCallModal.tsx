@@ -10,6 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import { ActiveCall } from '../sip/JsSipService';
+import { callDisplayName } from '../calls/callerName';
 import {
   MicIcon,
   MicOffIcon,
@@ -70,6 +71,7 @@ export function ActiveCallModal({
   }, [call?.status, call?.startTime]);
 
   if (!call) return null;
+  const displayName = callDisplayName(call.target, call.targetName);
 
   const formatTimer = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -105,12 +107,12 @@ export function ActiveCallModal({
 
           <View style={styles.avatarCircle}>
             <Text style={styles.avatarLetter}>
-              {call.targetName.charAt(0) || call.target.charAt(0) || '?'}
+              {displayName.charAt(0)}
             </Text>
           </View>
 
           <Text style={styles.targetName} numberOfLines={1}>
-            {call.targetName}
+            {displayName}
           </Text>
           <Text style={styles.targetNumber}>{call.target}</Text>
         </View>
@@ -230,7 +232,7 @@ export function ActiveCallModal({
             <View style={styles.transferCard}>
               <Text style={styles.transferTitle}>Transfer Call</Text>
               <Text style={styles.transferSub}>
-                Transfer {call.targetName || call.target} to another extension:
+                Transfer {displayName} to another extension:
               </Text>
 
               <TextInput

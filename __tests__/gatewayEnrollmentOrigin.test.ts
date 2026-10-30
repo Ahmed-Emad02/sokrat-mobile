@@ -29,7 +29,8 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { prepareLogin } from '../src/gateway/enrollment';
 import { randomHex } from '../src/gateway/entropy';
-import { saveEnrollmentRecord } from '../src/gateway/storage';
+import { loadEnrollmentRecord, saveEnrollmentRecord } from '../src/gateway/storage';
+import { buildGatewaySipWebSocketUrl, getOrLoadGatewaySession, registerGatewayPushToken, resetGatewaySession } from '../src/gateway/session';
 import type { GatewayAssignment } from '../src/gateway/types';
 import { gatewayBaseUrl } from '../src/gateway/urls';
 
@@ -64,6 +65,7 @@ function jsonResponse(status: number, body: unknown): Response {
 describe('enrollment gateway origin', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
+    resetGatewaySession();
   });
 
   test('a stored assignment apiURL never moves the claim to the PBX', async () => {
@@ -83,6 +85,7 @@ describe('enrollment gateway origin', () => {
       calls.push(url);
       const path = new URL(url).pathname;
       if (path === '/api/gateway/capabilities') return jsonResponse(200, CAPABILITIES);
+      if (path === '/api/gateway/enrollment/enroll') return jsonResponse(200, { device: { id: 'dev-1' }, status: 'pending' });
       if (path === '/api/gateway/enrollment/claim') {
         return jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT });
       }
@@ -106,5 +109,56 @@ describe('enrollment gateway origin', () => {
       expect(url).not.toContain('100.98.185.86');
       expect(url).not.toContain('10.0.0.5');
     }
+  });
+
+  test('an existing approved account upgrades HTTPS/WSS without a new identity or approval', async () => {
+    const record = {
+      host: HOST, extension: '160', claimSecret: await randomHex(),
+      deviceId: 'dev-1', deviceUuid: 'existing-installation', status: 'approved' as const,
+      gatewayMode: true, assignment: ASSIGNMENT, updatedAt: Date.now(),
+    };
+    await saveEnrollmentRecord(record);
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = jest.fn(async (url: string) => {
+      calls.push(url);
+      if (url.endsWith('/claim')) return jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT });
+      if (url.endsWith('/sip-ticket')) return jsonResponse(200, { ticket: 'new-ticket', expiresIn: 30 });
+      if (url.endsWith('/register-device')) return jsonResponse(200, { success: true });
+      throw new Error('Unexpected request');
+    }) as unknown as typeof fetch;
+    try {
+      const session = await getOrLoadGatewaySession(HOST, '160');
+      if (!session) throw new Error('Expected enrolled account');
+      expect(session.apiURL).toBe(`https://${HOST}`);
+      await expect(buildGatewaySipWebSocketUrl(session, `ws://${HOST}:8088/ws`))
+        .resolves.toBe(`wss://${HOST}:8089/ws?ticket=new-ticket`);
+      await registerGatewayPushToken(session, { platform: 'android', token: 'fixture-fcm', deviceUuid: record.deviceUuid });
+      expect(calls).toHaveLength(3);
+      expect(calls.every(url => url.startsWith(`https://${HOST}/`))).toBe(true);
+      expect(await loadEnrollmentRecord(HOST, '160')).toMatchObject({
+        claimSecret: record.claimSecret, deviceId: record.deviceId,
+        deviceUuid: record.deviceUuid, status: 'approved',
+      });
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test('TLS failure retains the saved approval and never creates a replacement enrollment', async () => {
+    const record = {
+      host: HOST, extension: '160', claimSecret: await randomHex(), deviceId: 'dev-1',
+      deviceUuid: 'existing-installation', status: 'approved' as const,
+      gatewayMode: true, assignment: ASSIGNMENT, updatedAt: Date.now(),
+    };
+    await saveEnrollmentRecord(record);
+    const originalFetch = globalThis.fetch;
+    const fetcher = jest.fn(async () => { throw new TypeError('TLS certificate rejected'); });
+    globalThis.fetch = fetcher as unknown as typeof fetch;
+    try {
+      await expect(getOrLoadGatewaySession(HOST, '160')).rejects.toMatchObject({ kind: 'network' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(await loadEnrollmentRecord(HOST, '160')).toMatchObject({
+        claimSecret: record.claimSecret, deviceId: record.deviceId, status: 'approved',
+      });
+    } finally { globalThis.fetch = originalFetch; }
   });
 });

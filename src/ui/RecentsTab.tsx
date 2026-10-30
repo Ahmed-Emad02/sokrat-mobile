@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { COLORS } from '../theme';
 import { CallRecord } from '../storage/store';
+import { callDisplayName } from '../calls/callerName';
 import {
   PhoneIcon,
   CallIncomingIcon,
@@ -89,7 +90,7 @@ export function RecentsTab({ calls, onCallNumber, onClearHistory }: Props) {
 
                 <View style={styles.infoCol}>
                   <Text style={styles.callerName} numberOfLines={1}>
-                    {item.name || item.number}
+                    {callDisplayName(item.number, item.name)}
                   </Text>
                   <Text style={styles.callerNum}>{item.number}</Text>
                 </View>

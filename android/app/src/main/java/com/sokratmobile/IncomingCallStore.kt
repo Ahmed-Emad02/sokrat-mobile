@@ -89,9 +89,12 @@ object IncomingCallStore {
 
     @Synchronized
     fun setAction(context: Context, callId: String, action: String): Record? {
-        if (action != "ANSWER" && action != "DECLINE" && action != "SHOW") return null
+        if (action != "ANSWER" && action != "DECLINE" && action != "END" && action != "SHOW") return null
         val records = readRecords(context)
         val record = records[callId] ?: return null
+        // A full-screen SHOW intent may arrive after the notification Answer.
+        // Presentation must not erase the user's pending terminal action.
+        if (action == "SHOW" && (record.action == "ANSWER" || record.action == "DECLINE" || record.action == "END")) return record
         val updated = record.copy(action = action)
         records[callId] = updated
         writeRecords(context, records)

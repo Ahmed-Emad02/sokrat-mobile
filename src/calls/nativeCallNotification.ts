@@ -1,9 +1,10 @@
 import { NativeModules, NativeEventEmitter, Platform, PermissionsAndroid } from 'react-native';
+import { callDisplayName } from './callerName';
 
 const getModule = () => NativeModules.CallNotificationModule;
 
 export type CallActionPayload = {
-  action: 'ANSWER' | 'SHOW' | 'DECLINE';
+  action: 'ANSWER' | 'SHOW' | 'DECLINE' | 'END';
   callId: string;
   callerId: string;
   callerName: string;
@@ -37,7 +38,7 @@ export function showIncomingCallNotification(
   const mod = getModule();
   if (Platform.OS !== 'android' || !mod?.showIncomingCallNotification) return;
   try {
-    mod.showIncomingCallNotification(callId, callerId, callerName, extension, String(timestamp || Date.now()));
+    mod.showIncomingCallNotification(callId, callerId, callDisplayName(callerId, callerName), extension, String(timestamp || Date.now()));
   } catch (error) {
     console.warn('[native-call] showIncomingCallNotification failed:', error);
   }
@@ -50,6 +51,13 @@ export function dismissNativeCallNotification(callId: string) {
     mod.dismissCallNotification(callId);
   } catch (error) {
     console.warn('[native-call] dismiss failed:', error);
+  }
+}
+/** Stop Android's alert without deleting the durable pre-INVITE Answer intent. */
+export function silenceNativeCallNotification(callId: string) {
+  const mod = getModule();
+  if (Platform.OS === 'android' && mod?.silenceCallNotification) {
+    mod.silenceCallNotification(callId);
   }
 }
 export function clearNativeCallWindow() {

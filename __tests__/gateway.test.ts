@@ -15,6 +15,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
       removeItem: jest.fn(async (key: string) => {
         store.delete(key);
       }),
+      getAllKeys: jest.fn(async () => [...store.keys()]),
       clear: jest.fn(async () => {
         store.clear();
       }),
@@ -37,6 +38,7 @@ import {
   resetGatewaySession,
 } from '../src/gateway/session';
 import { loadEnrollmentRecord, saveEnrollmentRecord } from '../src/gateway/storage';
+import { getDeviceUuid } from '../src/storage/deviceId';
 import type { GatewayAssignment } from '../src/gateway/types';
 import {
   appendQuery,
@@ -90,10 +92,10 @@ const CAPABILITIES = {
 
 describe('gateway urls + entropy', () => {
   test('gateway base URL follows the public/private port policy', () => {
-    expect(gatewayBaseUrl('pbx.example.com')).toBe('http://pbx.example.com');
+    expect(gatewayBaseUrl('pbx.example.com')).toBe('https://pbx.example.com');
     expect(gatewayBaseUrl('192.168.1.5')).toBe('http://192.168.1.5:8095');
     expect(gatewayBaseUrl('100.98.185.86')).toBe('http://100.98.185.86:8095');
-    expect(gatewayBaseUrl('pbx.example.com:8443')).toBe('http://pbx.example.com:8443');
+    expect(gatewayBaseUrl('pbx.example.com:8443')).toBe('https://pbx.example.com:8443');
     expect(normalizeServerHost('https://PBX.Example.com/path')).toBe('pbx.example.com');
   });
 
@@ -133,12 +135,20 @@ describe('gateway capability detection', () => {
     expect(result).toEqual({ mode: 'legacy', extension: '160' });
   });
 
-  test('unreachable gateway keeps direct PBX login', async () => {
+  test('unreachable private gateway keeps direct PBX login', async () => {
     const fetcher = jest.fn(async () => {
       throw new TypeError('Network request failed');
     }) as unknown as typeof fetch;
-    const result = await prepareLogin({ host: HOST, extension: '160', fetcher });
+    const result = await prepareLogin({ host: '192.168.1.5', extension: '160', fetcher });
     expect(result).toEqual({ mode: 'legacy', extension: '160' });
+  });
+
+  test('public TLS failure never retries over HTTP or bypasses gateway approval', async () => {
+    const fetcher = jest.fn(async () => { throw new TypeError('TLS verification failed'); });
+    await expect(prepareLogin({ host: HOST, extension: '160', fetcher: fetcher as unknown as typeof fetch }))
+      .rejects.toMatchObject({ kind: 'network' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect((fetcher.mock.calls as unknown as Array<[string]>)[0][0]).toBe(`https://${HOST}/api/gateway/capabilities`);
   });
 
   test('a detected but broken gateway fails closed (no direct bypass)', async () => {
@@ -233,11 +243,50 @@ describe('gateway enrollment', () => {
     expect(record?.claimSecret).toBe(enrollBody.claimSecret);
     expect(record?.assignment).toEqual(ASSIGNMENT);
 
-    // Next login reuses the approved assignment: no extra enroll/claim.
+    // Next login revalidates the approval with the gateway, without creating a
+    // second enrollment request that could silently revive a retired PBX.
     const again = await prepareLogin({ host: HOST, extension: '160', pollIntervalMs: 1, fetcher });
     expect(again.mode).toBe('gateway');
-    expect(claims).toBe(2);
+    expect(claims).toBe(3);
     expect(calls.filter((call) => call.url.endsWith('/enrollment/enroll'))).toHaveLength(1);
+  });
+
+  test('changing extension reuses the installation claim and requires new approval', async () => {
+    const deviceUuid = await getDeviceUuid();
+    const claimSecret = await randomHex();
+    await saveEnrollmentRecord({
+      host: HOST, extension: '160', claimSecret, deviceUuid, deviceId: 'dev-1',
+      status: 'approved', gatewayMode: true, assignment: ASSIGNMENT, updatedAt: Date.now(),
+    });
+    const calls: FetchCall[] = [];
+    let claims = 0;
+    const nextAssignment = { ...ASSIGNMENT, extension: '222' };
+    const fetcher = jest.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      const path = pathOf(url);
+      if (path === '/api/gateway/capabilities') return jsonResponse(200, CAPABILITIES);
+      if (path === '/api/gateway/enrollment/enroll') {
+        return jsonResponse(200, { device: { id: 'dev-1' }, status: 'pending' });
+      }
+      if (path === '/api/gateway/enrollment/claim') {
+        claims += 1;
+        if (claims === 1) return jsonResponse(202, { status: 'pending', retryAfterMs: 1 });
+        return jsonResponse(200, { status: 'approved', assignment: nextAssignment });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    const result = await prepareLogin({ host: HOST, extension: '222', pollIntervalMs: 1, fetcher });
+    expect(result.mode).toBe('gateway');
+    if (result.mode !== 'gateway') throw new Error('expected gateway login');
+    expect(result.session.assignment.extension).toBe('222');
+    const enroll = calls.find(call => call.url.endsWith('/enrollment/enroll'));
+    const body = bodyOf(enroll!.init);
+    expect(body).toMatchObject({ claimSecret, deviceUuid, extension: '222' });
+    expect(await loadEnrollmentRecord(HOST, '160')).toMatchObject({ status: 'approved', extension: '160' });
+    expect(await loadEnrollmentRecord(HOST, '222')).toMatchObject({
+      claimSecret, deviceUuid, deviceId: 'dev-1', status: 'approved', extension: '222',
+    });
   });
 
   test('403 rejected is terminal, persisted and fail-closed', async () => {
@@ -295,7 +344,7 @@ describe('gateway enrollment', () => {
     expect(isClaimSecret(secrets[0])).toBe(true);
   });
 
-  test('an assigned extension becomes the persisted identity for restarts', async () => {
+  test('an unexpected assigned extension fails closed until the user signs in to that account', async () => {
     const assignment: GatewayAssignment = { ...ASSIGNMENT, extension: '161' };
     const fetcher = jest.fn(async (url: string) => {
       const path = pathOf(url);
@@ -309,23 +358,13 @@ describe('gateway enrollment', () => {
       throw new Error(`unexpected request ${url}`);
     }) as unknown as typeof fetch;
 
-    const result = await prepareLogin({
+    await expect(prepareLogin({
       host: HOST,
       extension: '160',
       fetcher,
       pollIntervalMs: 1,
-    });
-    expect(result.mode).toBe('gateway');
-    expect(result.extension).toBe('161');
-
-    // The old key no longer exists; a restart hydrates the assigned extension
-    // instead of bypassing the gateway as a legacy host.
-    expect(await loadEnrollmentRecord(HOST, '160')).toBeNull();
-    const record = await loadEnrollmentRecord(HOST, '161');
-    expect(record).toMatchObject({ status: 'approved', extension: '161', deviceId: 'dev-1' });
-    resetGatewaySession();
-    const session = await getOrLoadGatewaySession(HOST, '161');
-    expect(session?.extension).toBe('161');
+    })).rejects.toMatchObject({ kind: 'fail_closed' });
+    expect(await loadEnrollmentRecord(HOST, '161')).toBeNull();
   });
 
   test('409 pbx_disabled waits for the administrator instead of failing', async () => {
@@ -465,6 +504,7 @@ describe('gateway session + tenant APIs', () => {
       assignment: ASSIGNMENT,
       updatedAt: Date.now(),
     });
+    globalThis.fetch = jest.fn(async () => jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT })) as unknown as typeof fetch;
     const session = await getOrLoadGatewaySession(HOST, '160');
     expect(session).toMatchObject({
       deviceId: 'dev-1',
@@ -481,7 +521,7 @@ describe('gateway session + tenant APIs', () => {
     const session = createGatewaySession(HOST, 'secret-1', 'dev-1', ASSIGNMENT);
     let issued = 0;
     const fetcher = jest.fn(async (url: string, init: RequestInit) => {
-      expect(url).toBe('http://pbx.example.com/api/gateway/sip-ticket');
+      expect(url).toBe('https://pbx.example.com/api/gateway/sip-ticket');
       expect(init.method).toBe('POST');
       expect(headerOf(init, 'Authorization')).toBe('Bearer secret-1');
       expect(headerOf(init, 'X-Sokrat-Device')).toBe('dev-1');
@@ -494,17 +534,17 @@ describe('gateway session + tenant APIs', () => {
     // never be dialed by the device; the gateway-derived URL is used instead.
     await expect(
       buildGatewaySipWebSocketUrl(session, 'ws://gw.example.com:8088/ws'),
-    ).resolves.toBe('ws://gw.example.com:8088/ws?ticket=ticket-1');
+    ).resolves.toBe('wss://pbx.example.com:8089/ws?ticket=ticket-1');
     await expect(
       buildGatewaySipWebSocketUrl(session, 'ws://gw.example.com:8088/ws'),
-    ).resolves.toBe('ws://gw.example.com:8088/ws?ticket=ticket-2');
+    ).resolves.toBe('wss://pbx.example.com:8089/ws?ticket=ticket-2');
     expect(issued).toBe(2);
   });
 
   test('relay credentials force relay and use authenticated gateway ICE', async () => {
     const session = createGatewaySession(HOST, 'secret-1', 'dev-1', ASSIGNMENT);
     const fetcher = jest.fn(async (url: string, init: RequestInit) => {
-      expect(url).toBe('http://pbx.example.com/api/gateway/ice');
+      expect(url).toBe('https://pbx.example.com/api/gateway/ice');
       expect(headerOf(init, 'Authorization')).toBe('Bearer secret-1');
       expect(headerOf(init, 'X-Sokrat-Device')).toBe('dev-1');
       return jsonResponse(200, {
@@ -538,7 +578,7 @@ describe('gateway session + tenant APIs', () => {
   test('push token registration uses the assignment extension and device auth', async () => {
     const session = createGatewaySession(HOST, 'secret-1', 'dev-1', ASSIGNMENT);
     const fetcher = jest.fn(async (url: string, init: RequestInit) => {
-      expect(url).toBe('http://pbx.example.com/api/gateway/register-device');
+      expect(url).toBe('https://pbx.example.com/api/gateway/register-device');
       expect(headerOf(init, 'Authorization')).toBe('Bearer secret-1');
       expect(headerOf(init, 'X-Sokrat-Device')).toBe('dev-1');
       expect(bodyOf(init)).toMatchObject({
@@ -563,7 +603,7 @@ describe('gateway session + tenant APIs', () => {
   test('logout removal hits the authenticated gateway endpoint', async () => {
     const session = createGatewaySession(HOST, 'secret-1', 'dev-1', ASSIGNMENT);
     const fetcher = jest.fn(async (url: string, init: RequestInit) => {
-      expect(url).toBe('http://pbx.example.com/api/gateway/remove-device');
+      expect(url).toBe('https://pbx.example.com/api/gateway/remove-device');
       expect(headerOf(init, 'Authorization')).toBe('Bearer secret-1');
       expect(bodyOf(init)).toMatchObject({ deviceUuid: 'device-uuid' });
       return jsonResponse(204, null);

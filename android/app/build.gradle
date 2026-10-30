@@ -70,6 +70,26 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+// Employee builds opt in explicitly; normal test builds keep the existing
+// signer so installing a test update never requires wiping a saved account.
+def productionRelease = providers.gradleProperty("productionRelease").orNull == "true"
+def releaseValues = ["SOKRAT_RELEASE_STORE_FILE", "SOKRAT_RELEASE_STORE_PASSWORD",
+                     "SOKRAT_RELEASE_KEY_ALIAS", "SOKRAT_RELEASE_KEY_PASSWORD",
+                     "SOKRAT_ANDROID_VERSION_CODE", "SOKRAT_ANDROID_VERSION_NAME"]
+        .collectEntries { name -> [(name): System.getenv(name)] }
+if (productionRelease) {
+    def missing = releaseValues.findAll { name, value -> !value?.trim() }.keySet()
+    if (!missing.isEmpty()) {
+        throw new GradleException("Production signing configuration required: " + missing.join(", "))
+    }
+    if (!file(releaseValues.SOKRAT_RELEASE_STORE_FILE).isFile()) {
+        throw new GradleException("Production keystore file is unavailable")
+    }
+    if (!(releaseValues.SOKRAT_ANDROID_VERSION_CODE ==~ /[1-9][0-9]{0,8}/)) {
+        throw new GradleException("Production version code must be a positive integer")
+    }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -80,10 +100,18 @@ android {
         applicationId "com.sokratmobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 1
+        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.0"
     }
     signingConfigs {
+        if (productionRelease) {
+            production {
+                storeFile file(releaseValues.SOKRAT_RELEASE_STORE_FILE)
+                storePassword releaseValues.SOKRAT_RELEASE_STORE_PASSWORD
+                keyAlias releaseValues.SOKRAT_RELEASE_KEY_ALIAS
+                keyPassword releaseValues.SOKRAT_RELEASE_KEY_PASSWORD
+            }
+        }
         debug {
             storeFile file('debug.keystore')
             storePassword 'android'
@@ -96,9 +124,9 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // -PproductionRelease=true refuses missing signing credentials;
+            // there is no fallback to the debug key for employee releases.
+            signingConfig productionRelease ? signingConfigs.production : signingConfigs.debug
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
@@ -110,6 +138,7 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation platform("com.google.firebase:firebase-bom:33.7.0")
     implementation("com.google.firebase:firebase-messaging")
+    testImplementation("junit:junit:4.13.2")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

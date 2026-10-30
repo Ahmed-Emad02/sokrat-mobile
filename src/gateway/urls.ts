@@ -7,21 +7,24 @@ import { isPrivateHost, splitHost } from '../network';
 export function normalizeServerHost(host: string): string {
   const { hostname, port } = splitHost(host);
   if (!hostname) return '';
-  return `${hostname.toLowerCase()}${port ? `:${port}` : ''}`;
+  const authority = hostname.includes(':') ? `[${hostname.toLowerCase()}]` : hostname.toLowerCase();
+  return `${authority}${port ? `:${port}` : ''}`;
 }
 
 /**
  * Gateway service base URL.
  *
- * Public deployments serve the gateway on HTTP port 80; private/LAN/tailnet
+ * Public deployments require HTTPS; private/LAN/tailnet
  * deployments keep the existing 8095 default. An explicit port in the host
  * wins over both.
  */
 export function gatewayBaseUrl(host: string): string {
   const { hostname, port } = splitHost(host);
   if (!hostname) return '';
-  if (port) return `http://${hostname}:${port}`;
-  return `http://${hostname}${isPrivateHost(hostname) ? ':8095' : ''}`;
+  const privateHost = isPrivateHost(hostname);
+  const authority = hostname.includes(':') ? `[${hostname}]` : hostname.toLowerCase();
+  const scheme = privateHost ? 'http' : 'https';
+  return `${scheme}://${authority}${port ? `:${port}` : privateHost ? ':8095' : ''}`;
 }
 
 /** Join a base URL and an API path without doubling slashes. */
