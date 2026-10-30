@@ -17,6 +17,9 @@ import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
 import { callDisplayName } from '../calls/callerName';
 import { getDeviceUuid } from '../storage/deviceId';
+import { getSecureRandomHex } from '../gateway/secureRandom';
+import { appendQuery } from '../gateway/urls';
+import { HandoverSocket } from './HandoverSocket';
 
 const CALL_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -54,6 +57,13 @@ type IceGatheringSession = {
   terminate?: (options?: unknown) => void;
   /** RTCPeerConnection (JsSIP `connection` getter); shape varies by version. */
   connection?: unknown;
+};
+
+type RecoverableSession = IceGatheringSession & {
+  isEstablished?: () => boolean;
+  isReadyToReOffer?: () => boolean;
+  renegotiate?: (options: { rtcOfferConstraints: { iceRestart: boolean } }, done: () => void) => boolean;
+  connection?: { setConfiguration?: (configuration: MediaConfiguration) => void };
 };
 
 try {
@@ -279,6 +289,11 @@ export class JsSipService {
   private password = '';
   private serverHost = '';
   private networkDebounceTimer: number | null = null;
+  private signalingSocket: HandoverSocket | null = null;
+  private mediaRecovery = new Map<RecoverableSession, number>();
+  private mediaRecoveryRun: object | null = null;
+  private mediaRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private handoverGeneration = 0;
   private useTls = false;
   /** True when the active media configuration is TURN/relay-only. */
   private mediaRelayRequired = false;
@@ -375,10 +390,30 @@ export class JsSipService {
     }
     this.gatewaySession = gatewaySession;
 
+    // A flow belongs to this UA, not the account/install. Reusing an install id
+    // here could attach a new login to a stale SIP dialog on the gateway.
+    let flow: string | null = null;
+    try {
+      if (gatewaySession) flow = await getSecureRandomHex(16);
+    } catch {
+      if (generation === this.connectionGeneration) this.setState('failed');
+      return;
+    }
+    if (generation !== this.connectionGeneration) return;
+    const withFlow = (url: string) => flow ? appendQuery(url, { flow }) : url;
+
     console.log(`[sip] connecting via JsSIP to ${wsUrl.replace(/([?&]ticket=)[^&]+/g, '$1[redacted]')} as sip:${extension}@${domain}`);
 
     try {
-      const socket = new JsSIP.WebSocketInterface(wsUrl);
+      const socket = new HandoverSocket(withFlow(wsUrl), async () => {
+        if (generation !== this.connectionGeneration) throw new Error('Superseded SIP connection');
+        const url = gatewaySession
+          ? await buildGatewaySipWebSocketUrl(gatewaySession, getSipWss(domain, useTls))
+          : getSipWss(domain, useTls);
+        if (generation !== this.connectionGeneration) throw new Error('Superseded SIP connection');
+        return withFlow(url);
+      });
+      this.signalingSocket = socket;
       const configuration = {
         sockets: [socket],
         uri: `sip:${extension}@${domain}`,
@@ -388,11 +423,10 @@ export class JsSipService {
         register: true,
         register_expires: 120,
         session_timers: false,
-        // Gateway tickets are one-use, so JsSIP must not reconnect the old
-        // socket URL by itself; `scheduleReconnect()` mints a fresh ticket.
-        ...(gatewaySession
-          ? { connection_recovery_min_interval: 3600, connection_recovery_max_interval: 3600 }
-          : { connection_recovery_min_interval: 2, connection_recovery_max_interval: 15 }),
+        // HandoverSocket mints a fresh ticket on every transport reconnect,
+        // retaining the same UA and confirmed SIP dialogs during short outages.
+        connection_recovery_min_interval: 1,
+        connection_recovery_max_interval: 3,
       };
 
       const ua = new JsSIP.UA(configuration);
@@ -433,6 +467,7 @@ export class JsSipService {
       console.log('[sip] UA registered successfully with Asterisk');
       this.reconnectAttempt = 0;
       this.setState('registered');
+      void this.recoverCallMedia();
     });
 
     ua.on('unregistered', () => {
@@ -462,6 +497,7 @@ export class JsSipService {
     ua.on('disconnected', () => {
       if (this.ua !== ua) return;
       console.log('[sip] WebSocket disconnected');
+      this.queueCallMediaRecovery();
       if (this.state === 'registered' || this.state === 'connecting') {
         this.setState('disconnected');
       }
@@ -582,6 +618,7 @@ export class JsSipService {
     // grace, with a hard cap (a relay-less SDP is never sent). Direct-PBX
     // sessions keep JsSIP's default gathering.
     this.attachIceGathering(session, call.id);
+    this.watchCallHandover(session);
 
     // Attach peerconnection remote audio track listeners and codec preferences
     session.on('peerconnection', (data: unknown) => {
@@ -830,6 +867,7 @@ export class JsSipService {
   ) {
     // Consult leg: same full-gathering rule as the primary session.
     this.attachIceGathering(session, consultCall.id);
+    this.watchCallHandover(session);
 
     session.on('peerconnection', (data: unknown) => {
       const pc = (data as { peerconnection?: unknown })?.peerconnection as {
@@ -1906,20 +1944,91 @@ export class JsSipService {
     // already started.
     if (!changed) return;
 
-    if (this.activeCall) {
-      console.log('[sip] network switched during active call; refreshing transport connection');
-      try {
-        // @ts-expect-error JsSIP transport reconnect
-        this.ua?.transport?.connect();
-      } catch {}
-      return;
-    }
-
     clearTimeout(this.networkDebounceTimer ?? undefined);
     this.networkDebounceTimer = setTimeout(() => {
       this.networkDebounceTimer = null;
-      void this.forceReconnect();
+      if (this.activeCall) {
+        console.log('[sip] network handover: preserving call, refreshing signaling and ICE');
+        this.handoverGeneration++;
+        this.queueCallMediaRecovery();
+        this.signalingSocket?.reconnect();
+      } else {
+        void this.forceReconnect();
+      }
     }, 350) as unknown as number;
+  }
+
+  private queueCallMediaRecovery(): void {
+    for (const value of [this.currentSession, this.consultSession]) {
+      const session = value as RecoverableSession | null;
+      if (session && !this.mediaRecovery.has(session)) {
+        this.mediaRecovery.set(session, Date.now() + 20000);
+      }
+    }
+  }
+
+  private watchCallHandover(value: unknown): void {
+    const session = value as RecoverableSession;
+    const generation = this.connectionGeneration;
+    session.on('confirmed', () => { void this.recoverCallMedia(); });
+    const cleanup = () => {
+      this.mediaRecovery.delete(session);
+      // A dropped transport must also recover registration after a call ends.
+      // Run after the normal termination listener clears activeCall.
+      void Promise.resolve().then(() => {
+        if (generation === this.connectionGeneration && this.ua && !this.ua.isConnected()) this.scheduleReconnect();
+      });
+    };
+    session.on('ended', cleanup);
+    session.on('failed', cleanup);
+  }
+
+  private async recoverCallMedia(): Promise<void> {
+    if (this.mediaRecoveryRun || !this.mediaRecovery.size) return;
+    clearTimeout(this.mediaRecoveryTimer ?? undefined);
+    this.mediaRecoveryTimer = null;
+    if (!this.ua?.isConnected() || !this.ua.isRegistered() || this.lastNetworkState?.isConnected === false) return;
+    const generation = this.connectionGeneration;
+    const handover = this.handoverGeneration;
+    const run = {};
+    this.mediaRecoveryRun = run;
+    try {
+      for (const [session, deadline] of this.mediaRecovery) {
+        if (Date.now() >= deadline) {
+          this.mediaRecovery.delete(session);
+          console.warn('[sip] network handover media recovery timed out');
+          continue;
+        }
+        // Wait for initial answer or an in-progress hold/re-INVITE. Never send
+        // overlapping offers or replace microphone/hold/mute/call identity.
+        if (!session.isEstablished?.() || !session.isReadyToReOffer?.()) continue;
+        try {
+          const configuration = await this.resolveMediaConfiguration();
+          if (generation !== this.connectionGeneration || handover !== this.handoverGeneration ||
+              !this.mediaRecovery.has(session) || !this.ua?.isConnected() || !this.ua.isRegistered() ||
+              Date.now() >= deadline || !session.isReadyToReOffer?.()) return;
+          session.connection?.setConfiguration?.(configuration);
+          const dispatched = session.renegotiate?.({ rtcOfferConstraints: { iceRestart: true } }, () => {
+            console.log('[sip] network handover ICE re-offer acknowledged');
+          });
+          if (dispatched) {
+            this.mediaRecovery.delete(session);
+            console.log('[sip] network handover ICE restart dispatched');
+          }
+        } catch {
+          // API connectivity may lag the network callback; retry within budget.
+          // Do not log error bodies carrying device/TURN credentials.
+          console.warn('[sip] network handover media refresh pending');
+        }
+      }
+    } finally {
+      if (this.mediaRecoveryRun === run) {
+        this.mediaRecoveryRun = null;
+        if (generation === this.connectionGeneration && this.mediaRecovery.size) {
+          this.mediaRecoveryTimer = setTimeout(() => { void this.recoverCallMedia(); }, 500);
+        }
+      }
+    }
   }
 
   async forceReconnect(): Promise<void> {
@@ -1973,6 +2082,13 @@ export class JsSipService {
   }
 
   disconnect(notifyState = true) {
+    this.handoverGeneration++;
+    clearTimeout(this.networkDebounceTimer ?? undefined);
+    this.networkDebounceTimer = null;
+    clearTimeout(this.mediaRecoveryTimer ?? undefined);
+    this.mediaRecoveryTimer = null;
+    this.mediaRecovery.clear();
+    this.mediaRecoveryRun = null;
     this.answerDispatchedSession = null;
     clearTimeout(this.liveGainTimer ?? undefined);
     this.liveGainTimer = null;
@@ -1998,6 +2114,7 @@ export class JsSipService {
         ua.stop();
       } catch {}
     }
+    this.signalingSocket = null;
     this.currentSession = null;
     this.activeCall = null;
     this.releaseLocalStream();

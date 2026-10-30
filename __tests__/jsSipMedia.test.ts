@@ -918,8 +918,8 @@ describe('JsSipService media + instance id', () => {
       await service.connect('160', 'pw', 'gateway.example.com', false);
 
       const ua = mockUaInstances[0];
-      expect(ua.configuration.sockets[0].url).toBe(
-        'wss://gateway.example.com:8089/ws?ticket=ticket-1',
+      expect(ua.configuration.sockets[0].url).toMatch(
+        /^wss:\/\/gateway\.example\.com:8089\/ws\?ticket=ticket-1&flow=[a-f0-9]{32}$/,
       );
       expect(fetchMock).toHaveBeenCalledWith(
         'https://gateway.example.com/api/gateway/sip-ticket',
@@ -943,5 +943,114 @@ describe('JsSipService media + instance id', () => {
       (AsyncStorage.getItem as jest.Mock).mockReset().mockResolvedValue(null);
       resetGatewaySession();
     }
+  });
+
+  describe('active call network handover', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    async function activeSession(direction: 'incoming' | 'outgoing' = 'outgoing') {
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com');
+      const ua = mockUaInstances[0];
+      ua.emit('registered');
+      const session = Object.assign(createSession(direction), {
+        isEstablished: jest.fn(() => true),
+        isReadyToReOffer: jest.fn(() => true),
+        renegotiate: jest.fn(() => true),
+      });
+      Object.assign(session.connection, { setConfiguration: jest.fn() });
+      ua.emit('newRTCSession', { session, request: {} });
+      session.emit('confirmed');
+      const socket = ua.configuration.sockets[0];
+      const reconnect = jest.spyOn(socket, 'reconnect').mockImplementation(() => ua.emit('disconnected'));
+      mockMediaConfiguration.mockResolvedValue(relayConfiguration);
+      return { service, session, ua, reconnect };
+    }
+
+    test.each(['incoming', 'outgoing'] as const)('%s call retains its UA, identity and mute/hold through Wi-Fi → data', async direction => {
+      const { service, session, ua, reconnect } = await activeSession(direction);
+      const call = service.activeCall!;
+      call.isMuted = true;
+      call.isHeld = true;
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      service.handleNetworkChange({ isConnected: false, networkType: 'NONE' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      await jest.advanceTimersByTimeAsync(350);
+      expect(reconnect).toHaveBeenCalledTimes(1);
+      expect(session.renegotiate).not.toHaveBeenCalled(); // wait for auth/registration
+      ua.emit('registered');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(session.renegotiate).toHaveBeenCalledWith({ rtcOfferConstraints: { iceRestart: true } }, expect.any(Function));
+      expect(session.connection).toHaveProperty('setConfiguration', expect.any(Function));
+      expect(mockUaInstances).toHaveLength(1);
+      expect(service.activeCall).toBe(call);
+      expect(call).toMatchObject({ id: session.id, isHeld: true, isMuted: true });
+      expect(session.terminate).not.toHaveBeenCalled();
+    });
+
+    test('ignores startup and repeated snapshots, coalesces capability callbacks', async () => {
+      const { service, reconnect } = await activeSession();
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      await jest.advanceTimersByTimeAsync(500);
+      expect(reconnect).not.toHaveBeenCalled();
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      await jest.advanceTimersByTimeAsync(350);
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    });
+
+    test('data → Wi-Fi waits for an in-progress hold/re-offer to finish', async () => {
+      const { service, session, ua } = await activeSession();
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      session.isReadyToReOffer.mockReturnValue(false);
+      await jest.advanceTimersByTimeAsync(350);
+      ua.emit('registered');
+      await jest.advanceTimersByTimeAsync(500);
+      expect(session.renegotiate).not.toHaveBeenCalled();
+      session.isReadyToReOffer.mockReturnValue(true);
+      await jest.advanceTimersByTimeAsync(500);
+      expect(session.renegotiate).toHaveBeenCalledTimes(1);
+    });
+
+    test('retries a declined re-offer without replacing the session', async () => {
+      const { service, session, ua } = await activeSession();
+      session.renegotiate.mockReturnValueOnce(false);
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      await jest.advanceTimersByTimeAsync(350);
+      ua.emit('registered');
+      await jest.advanceTimersByTimeAsync(500);
+      expect(session.renegotiate).toHaveBeenCalledTimes(2);
+      expect(mockUaInstances).toHaveLength(1);
+    });
+
+    test('hangup during relay credential fetch cannot revive or renegotiate the ended call', async () => {
+      const { service, session, ua } = await activeSession();
+      let finish!: (value: typeof relayConfiguration) => void;
+      mockMediaConfiguration.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      await jest.advanceTimersByTimeAsync(350);
+      ua.emit('registered');
+      await jest.advanceTimersByTimeAsync(0);
+      session.emit('ended');
+      finish(relayConfiguration);
+      await jest.advanceTimersByTimeAsync(500);
+      expect(session.renegotiate).not.toHaveBeenCalled();
+      expect(service.activeCall).toBeNull();
+    });
+
+    test('logout cancels a pending handover and does not register again', async () => {
+      const { service, reconnect } = await activeSession();
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      service.disconnect();
+      await jest.advanceTimersByTimeAsync(25000);
+      expect(reconnect).not.toHaveBeenCalled();
+      expect(mockUaInstances).toHaveLength(1);
+    });
   });
 });

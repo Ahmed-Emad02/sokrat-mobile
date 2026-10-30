@@ -1,0 +1,13 @@
+diff --git a/node_modules/jssip/lib/RTCSession.js b/node_modules/jssip/lib/RTCSession.js
+index be2033c..0410552 100644
+--- a/node_modules/jssip/lib/RTCSession.js
++++ b/node_modules/jssip/lib/RTCSession.js
+@@ -1422,7 +1422,7 @@ module.exports = class RTCSession extends EventEmitter {
+              */
+             const iceRestart = constraints && constraints.iceRestart;
+             if ((connection.iceGatheringState === 'complete' && !iceRestart) ||
+-                (connection.iceGatheringState === 'gathering' && this._iceReady)) {
++                (connection.iceGatheringState === 'gathering' && this._iceReady && !iceRestart)) {
+                 this._rtcReady = true;
+                 const e = {
+                     originator: 'local',
