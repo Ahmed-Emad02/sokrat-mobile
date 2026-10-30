@@ -454,6 +454,13 @@ const RecentCallRow = React.memo(function RecentCallRow({
   const styles = useScreenStyles();
   const { colors } = useTheme();
   const { t } = useI18n();
+  const directionLabel =
+    item.direction === 'inbound'
+      ? t('Incoming')
+      : item.direction === 'outbound'
+      ? t('Outgoing')
+      : t('Missed call');
+  const duration = item.duration ? formatCallDuration(item.duration) : '';
   return (
     <View style={styles.recentItem}>
       <TouchableOpacity
@@ -476,8 +483,13 @@ const RecentCallRow = React.memo(function RecentCallRow({
           >
             {callDisplayName(item.number, item.name)}
           </Text>
-          <Text style={styles.recentSub}>
-            {item.direction === 'missed' ? t('Missed call') : t('VoIP')}
+          <Text
+            style={[
+              styles.recentSub,
+              item.direction === 'missed' && styles.recentSubMissed,
+            ]}
+          >
+            {`${directionLabel}${duration ? ` · ${duration}` : ''}`}
           </Text>
         </View>
 
@@ -2976,6 +2988,9 @@ const rawStyles = StyleSheet.create({
     color: '#71717a',
     fontSize: 12,
     marginTop: 2,
+  },
+  recentSubMissed: {
+    color: '#ef4444',
   },
   recentTime: {
     color: '#71717a',

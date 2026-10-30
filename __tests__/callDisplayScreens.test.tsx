@@ -38,7 +38,12 @@ afterEach(async () => {
 });
 async function textFrom(element: React.ReactElement): Promise<string[]> {
   await act(async () => { renderer = TestRenderer.create(element); });
-  return renderer.root.findAllByType(Text).map(node => node.props.children).filter(value => typeof value === 'string');
+  return renderer.root.findAllByType(Text).flatMap(node => {
+    const children = Array.isArray(node.props.children)
+      ? node.props.children.flat(Infinity)
+      : [node.props.children];
+    return children.filter((value: unknown): value is string => typeof value === 'string');
+  });
 }
 
 test('incoming ringing screen shows a number, not the Unknown placeholder', async () => {
@@ -70,6 +75,18 @@ test('main phone history displays numbers for old placeholder names', async () =
   const text = await textFrom(<StandardPhoneScreen {...standardProps} />);
   expect(text).toContain(record.number);
   expect(text).not.toContain('Unknown');
+});
+
+test('main phone history labels incoming, outgoing and missed calls with duration', async () => {
+  const records = [
+    { ...record, id: 'in', direction: 'inbound' as const, timestamp: 3000, duration: 65 },
+    { ...record, id: 'out', direction: 'outbound' as const, timestamp: 2000, duration: 5 },
+    { ...record, id: 'missed', direction: 'missed' as const, timestamp: 1000 },
+  ];
+  const text = await textFrom(<StandardPhoneScreen {...standardProps} callsHistory={records} />);
+  expect(text).toContain('Incoming · 01:05');
+  expect(text).toContain('Outgoing · 00:05');
+  expect(text).toContain('Missed call');
 });
 
 test('ringing screen keeps resolved contact names alongside the number', async () => {
