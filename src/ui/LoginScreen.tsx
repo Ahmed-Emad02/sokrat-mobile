@@ -53,10 +53,12 @@ export function LoginScreen({ onLogin, state, message }: Props) {
         {/* Brand Header */}
         <View style={styles.brandContainer}>
           <View style={styles.logoBadge}>
-            <PhoneIcon size={28} color={colors.brand} />
+            <PhoneIcon size={20} color={colors.brand} />
           </View>
-          <Text style={styles.logoTitle}>SOKRAT</Text>
-          <Text style={styles.logoSubtitle}>VOICE · PJSIP Mobile</Text>
+          <View>
+            <Text style={styles.logoTitle}>SOKRAT</Text>
+            <Text style={styles.logoSubtitle}>VOICE · PJSIP Mobile</Text>
+          </View>
         </View>
 
         {/* Form Card */}
@@ -137,46 +139,44 @@ const rawStyles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
-    justifyContent: 'center',
     paddingHorizontal: 24,
+    paddingTop: 16,
   },
   content: {
     width: '100%',
   },
   brandContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 32,
+    gap: 12,
+    marginBottom: 16,
   },
   logoBadge: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#18181b',
     borderColor: '#10b981',
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
   },
   logoTitle: {
     color: '#ffffff',
-    fontSize: 34,
+    fontSize: 26,
     fontWeight: '800',
-    letterSpacing: 4,
+    letterSpacing: 2,
   },
   logoSubtitle: {
     color: '#10b981',
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 2,
-    marginTop: 4,
+    letterSpacing: 1,
+    marginTop: 2,
   },
   card: {
-    backgroundColor: '#18181b',
-    borderRadius: 16,
-    padding: 20,
-    borderColor: '#27272a',
-    borderWidth: 1,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
   },
   label: {
     color: '#a1a1aa',
