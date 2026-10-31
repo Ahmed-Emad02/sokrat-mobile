@@ -28,6 +28,7 @@ import {
 } from './src/push/pushHandler';
 import type { CancelPayload } from './src/push/pushHandler';
 import { CONFIG, getSipWss, getPushGateway } from './src/config';
+import { startConnectionService, stopConnectionService } from './src/calls/connectionService';
 import { prepareLogin } from './src/gateway/enrollment';
 import { describeEnrollmentError } from './src/gateway/errors';
 import { getOrLoadGatewaySession, resetGatewaySession } from './src/gateway/session';
@@ -142,6 +143,11 @@ export default function App() {
   }, [account]);
   const saveVolumeTimerRef = useRef<number | null>(null);
   const [isAuthLoaded, setIsAuthLoaded] = useState(false);
+  useEffect(() => {
+    if (!isAuthLoaded) return;
+    if (account) startConnectionService();
+    else stopConnectionService();
+  }, [account, isAuthLoaded]);
   useEffect(() => {
     const handleAppState = (nextAppState: AppStateStatus) => {
       const currentCall = activeCallRef.current;

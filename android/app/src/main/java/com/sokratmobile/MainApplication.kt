@@ -19,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           add(CallNotificationPackage())
           add(SecureRandomPackage())
+          add(ConnectionServicePackage())
         },
     )
   }

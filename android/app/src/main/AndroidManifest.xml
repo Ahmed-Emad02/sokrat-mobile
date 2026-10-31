@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- react-native-callkeep / telecom -->
@@ -89,6 +90,19 @@
         <intent-filter>
           <action android:name="com.google.firebase.MESSAGING_EVENT" />
         </intent-filter>
+      </service>
+
+      <!-- Keeps the approved SIP registration alive while the app is backgrounded.
+           specialUse is the appropriate type for a persistent VoIP signaling
+           connection; no microphone/camera/telephony capture is performed here. -->
+      <service
+        android:name=".SokratConnectionService"
+        android:exported="false"
+        android:foregroundServiceType="specialUse"
+        android:stopWithTask="false">
+        <property
+          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+          android:value="Keeps the approved SIP registration connected for incoming calls" />
       </service>
 
       <receiver
