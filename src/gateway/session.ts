@@ -230,6 +230,23 @@ export async function gatewayMediaConfiguration(
   return sessionRequest(session, () => client.iceServers());
 }
 
+/** Tell the gateway this device is alive so its watchdog can skip a wake. */
+export async function sendGatewayHeartbeat(
+  host: string,
+  extension: string,
+  sipState: string,
+): Promise<void> {
+  const session = getActiveGatewaySession(host, extension) ||
+    await getOrLoadGatewaySession(host, extension);
+  if (!session) return;
+  const client = new GatewayClient({
+    baseUrl: session.apiURL,
+    deviceId: session.deviceId,
+    claimSecret: session.claimSecret,
+  });
+  await sessionRequest(session, () => client.heartbeat({ sipState }));
+}
+
 /** Authenticated push token registration through the gateway. */
 export async function registerGatewayPushToken(
   session: GatewaySession,

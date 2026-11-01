@@ -131,11 +131,17 @@ object IncomingCallNotificationHelper {
             flags
         )
 
-        val hangupIntent = Intent(context, CallActionReceiver::class.java).apply {
+        val hangupIntent = Intent(context, MainActivity::class.java).apply {
             action = "com.sokratmobile.ACTION_END_CALL"
             putExtra("callId", callId)
+            putExtra("callAction", "END")
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
         }
-        val hangupPendingIntent = PendingIntent.getBroadcast(
+        val hangupPendingIntent = PendingIntent.getActivity(
             context,
             requestCode(callId, 11),
             hangupIntent,

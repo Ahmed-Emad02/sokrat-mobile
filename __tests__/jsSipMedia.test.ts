@@ -1043,6 +1043,27 @@ describe('JsSipService media + instance id', () => {
       expect(service.activeCall).toBeNull();
     });
 
+    test('extended levels apply speaker gain and dispatch boosted microphone gain', async () => {
+      const { service } = await activeSession();
+      const setTrackVolume = jest.fn();
+      const call = service.activeCall!;
+      call.remoteStream = {
+        getAudioTracks: () => [{ kind: 'audio', _setVolume: setTrackVolume }],
+      } as unknown as NonNullable<typeof call.remoteStream>;
+
+      service.setSpeakerVolume(150);
+      expect(setTrackVolume).toHaveBeenCalledWith(2);
+
+      const fetchMock = globalThis.fetch as unknown as jest.Mock;
+      fetchMock.mockClear();
+      service.setMicVolume(100);
+      await jest.advanceTimersByTimeAsync(200);
+
+      const volumeCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/call/volume'));
+      expect(volumeCall).toBeTruthy();
+      expect(JSON.parse(volumeCall![1].body)).toMatchObject({ micGainDb: 24 });
+    });
+
     test('logout cancels a pending handover and does not register again', async () => {
       const { service, reconnect } = await activeSession();
       service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });

@@ -100,8 +100,8 @@ android {
         applicationId "com.sokratmobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 1
-        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.0"
+        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 9
+        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.0.8"
     }
     signingConfigs {
         if (productionRelease) {

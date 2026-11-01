@@ -87,6 +87,12 @@ import {
 } from './Icons';
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
 import { fetchDeviceContacts, getNativeSpeakerVolume, SpeakerVolumeState } from '../calls/nativeCallNotification';
+import {
+  micPercentToDb,
+  speakerGainToDb,
+  speakerPercentToGain,
+  SPEAKER_MAX_PERCENT,
+} from '../calls/audioLevels';
 import { searchContacts } from '../utils/dialSearch';
 import { nameCallRecords } from '../utils/callLog';
 import { callDisplayName } from '../calls/callerName';
@@ -98,40 +104,44 @@ function VolumeSlider({
   onChange,
   icon,
   description,
+  max = 100,
+  presets = [25, 50, 75, 100],
 }: {
   label: string;
   value: number;
   onChange: (val: number) => void;
   icon: React.ReactNode;
   description: string;
+  max?: number;
+  presets?: number[];
 }) {
   const styles = useScreenStyles();
   const [trackWidth, setTrackWidth] = useState(250);
-  const startValueRef = useRef(value);
+  const trackRef = useRef<React.ComponentRef<typeof View>>(null);
+  const trackLeftRef = useRef(0);
+
+  const valueFromPageX = (pageX: number): number => {
+    const width = trackWidth > 0 ? trackWidth : 200;
+    const localX = pageX - trackLeftRef.current;
+    return Math.round(Math.max(0, Math.min(max, (localX / width) * max)));
+  };
 
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => false,
-        onStartShouldSetPanResponderCapture: () => false,
-        onMoveShouldSetPanResponder: (_evt, gestureState) => {
-          return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 6;
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponderCapture: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (event) => {
+          onChange(valueFromPageX(event.nativeEvent.pageX));
         },
-        onMoveShouldSetPanResponderCapture: (_evt, gestureState) => {
-          return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 6;
-        },
-        onPanResponderTerminationRequest: () => true,
-        onPanResponderGrant: () => {
-          startValueRef.current = value;
-        },
-        onPanResponderMove: (_evt, gestureState) => {
-          const width = trackWidth > 0 ? trackWidth : 200;
-          const deltaPct = (gestureState.dx / width) * 100;
-          const newPct = Math.round(Math.max(0, Math.min(100, startValueRef.current + deltaPct)));
-          onChange(newPct);
+        onPanResponderMove: (_event, gestureState) => {
+          onChange(valueFromPageX(gestureState.moveX));
         },
       }),
-    [onChange, trackWidth, value]
+    [max, onChange, trackWidth]
   );
 
   return (
@@ -159,34 +169,35 @@ function VolumeSlider({
           <Text style={styles.volStepBtnText}>−</Text>
         </TouchableOpacity>
 
-        <Pressable
+        <View
+          ref={trackRef}
           style={styles.volTrackTouchArea}
           onLayout={(e) => {
             const w = e.nativeEvent.layout.width;
             if (w > 0) setTrackWidth(w);
-          }}
-          onPress={(e) => {
-            const width = trackWidth > 0 ? trackWidth : 200;
-            const clickX = e.nativeEvent.locationX;
-            const pct = Math.round(Math.max(0, Math.min(100, (clickX / width) * 100)));
-            onChange(pct);
+            trackRef.current?.measureInWindow((x, _y, measuredWidth) => {
+              trackLeftRef.current = x;
+              if (measuredWidth > 0 && measuredWidth !== w) {
+                setTrackWidth(measuredWidth);
+              }
+            });
           }}
           {...panResponder.panHandlers}
         >
           <View style={styles.volTrackBg} pointerEvents="none">
-            <View style={[styles.volTrackFill, { width: `${value}%` }]} pointerEvents="none" />
+            <View style={[styles.volTrackFill, { width: `${(value / max) * 100}%` }]} pointerEvents="none" />
           </View>
           <View
             style={[
               styles.volThumb,
-              { left: `${Math.max(0, Math.min(94, value - 3))}%` },
+              { left: `${Math.max(0, Math.min(94, (value / max) * 100 - 3))}%` },
             ]}
             pointerEvents="none"
           />
-        </Pressable>
+        </View>
         <TouchableOpacity
           style={styles.volStepBtn}
-          onPress={() => onChange(Math.min(100, value + 5))}
+          onPress={() => onChange(Math.min(max, value + 5))}
           activeOpacity={0.6}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
@@ -196,7 +207,7 @@ function VolumeSlider({
 
       {/* Preset Pills */}
       <View style={styles.volPresetRow}>
-        {[25, 50, 75, 100].map((p) => {
+        {presets.map((p) => {
           const isSelected = value === p;
           return (
             <TouchableOpacity
@@ -247,8 +258,19 @@ function UnifiedAudioControls({
   const styles = useScreenStyles();
   const { colors } = useTheme();
   const { t } = useI18n();
-  const micDb = Math.round(((micVolume - 50) / 50) * (micVolume >= 50 ? 6 : 12));
+  const micDb = micPercentToDb(micVolume);
   const micDbLabel = micDb === 0 ? '0 dB • Calibrated' : `${micDb > 0 ? '+' : ''}${micDb} dB`;
+  const micDescription =
+    `Microphone capture gain (${micDbLabel}). Applied directly to live calls.` +
+    (micDb > 12 ? ' High boost may clip loud speech.' : '');
+  const speakerGain = speakerPercentToGain(speakerVolume);
+  const speakerBoostDb = speakerGainToDb(speakerGain);
+  const speakerBoostLabel =
+    speakerGain > 1 ? `+${speakerBoostDb.toFixed(1)} dB software boost` : 'no software boost';
+  const speakerDescription =
+    speakerVolume > 100
+      ? `Device at max (${speakerStep.current}/${speakerStep.max} steps), plus ${speakerBoostLabel}.`
+      : `Device volume ${speakerStep.current}/${speakerStep.max} steps. 100% reaches device max; above 100% adds software boost.`;
 
   return (
     <View style={styles.unifiedAudioContainer}>
@@ -257,7 +279,9 @@ function UnifiedAudioControls({
         value={speakerVolume}
         onChange={onChangeSpeaker}
         icon={<SpeakerIcon size={18} color={colors.brand} />}
-        description={`Output stream volume (${speakerStep.current}/${speakerStep.max} steps). Controls in-call earpiece and loudspeaker.`}
+        description={speakerDescription}
+        max={SPEAKER_MAX_PERCENT}
+        presets={[50, 100, 125, 150]}
       />
 
       <VolumeSlider
@@ -265,7 +289,7 @@ function UnifiedAudioControls({
         value={micVolume}
         onChange={onChangeMic}
         icon={<MicIcon size={18} color={colors.brand} />}
-        description={`Microphone capture gain (${micDbLabel}). Applied directly to live calls.`}
+        description={micDescription}
       />
 
       {showRouteControls !== false && (
@@ -720,14 +744,14 @@ function StandardPhoneScreenInner({
   }, []);
 
   useEffect(() => {
-    if (activeCall || showInCallVolumeModal) {
+    if (activeCall || showInCallVolumeModal || showSettingsModal) {
       void getNativeSpeakerVolume().then((res) => {
         if (res) {
           setInCallSpeakerStep({ current: res.currentStep, max: res.maxStep });
         }
       });
     }
-  }, [activeCall, showInCallVolumeModal]);
+  }, [activeCall, showInCallVolumeModal, showSettingsModal]);
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
@@ -886,7 +910,7 @@ function StandardPhoneScreenInner({
           // Ignore a response that belongs to an older drag position.
           if (!res || seq !== speakerSendSeqRef.current) return;
           setInCallSpeakerStep({ current: res.currentStep, max: res.maxStep });
-          setEditSpeakerVol(res.percent);
+          setEditSpeakerVol(pending > 100 ? pending : res.percent);
         });
       }
     }, 50) as unknown as number;
@@ -968,7 +992,7 @@ function StandardPhoneScreenInner({
       setEditDnd(account.dnd);
       setEditAuto(account.autoAnswer);
       setEditCodec(account.preferredCodec || 'opus');
-      setEditMicVol(account.micVolume ?? 85);
+      setEditMicVol(account.micVolume ?? 50);
       setEditSpeakerVol(account.speakerVolume ?? 85);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

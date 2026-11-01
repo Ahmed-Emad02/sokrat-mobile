@@ -9,16 +9,23 @@ import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'rea
 import { CONFIG, getPushGateway, getSipWss } from '../config';
 import { getMediaConfiguration, MediaConfiguration } from '../network';
 import { isTerminalEnrollmentError } from '../gateway/errors';
-import { buildGatewaySipWebSocketUrl, gatewayMediaConfiguration, getOrLoadGatewaySession } from '../gateway/session';
+import { buildGatewaySipWebSocketUrl, gatewayMediaConfiguration, getActiveGatewaySession, getOrLoadGatewaySession } from '../gateway/session';
 import type { GatewaySession } from '../gateway/types';
 import { startCallManagers, stopCallManagers, setMicrophoneMute } from '../calls/incall';
+import {
+  clampMicGainDb,
+  micDbToPercent,
+  micPercentToDb,
+  SPEAKER_MAX_PERCENT,
+  speakerPercentToGain,
+} from '../calls/audioLevels';
 import { dismissNativeCallNotification } from '../calls/nativeCallNotification';
 import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
 import { callDisplayName } from '../calls/callerName';
 import { getDeviceUuid } from '../storage/deviceId';
 import { getSecureRandomHex } from '../gateway/secureRandom';
-import { appendQuery } from '../gateway/urls';
+import { appendQuery, gatewayAuthHeaders } from '../gateway/urls';
 import { HandoverSocket } from './HandoverSocket';
 
 const CALL_ID_PATTERN =
@@ -158,22 +165,15 @@ export class JsSipService {
 
   setMicVolume(percent: number): void {
     this.micVolume = Math.max(0, Math.min(100, percent));
-    // Map 0..100% to -12 dB .. +6 dB with 50% = 0 dB (calibrated unity gain)
-    const db = Math.round(((this.micVolume - 50) / 50) * (this.micVolume >= 50 ? 6 : 12));
-    this.micGainDb = db;
+    this.micGainDb = micPercentToDb(this.micVolume);
     if (this.activeCall) {
-      void this.setLiveMicGain(db, this.activeCall.id);
+      void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
     }
   }
 
   setMicGainDb(gainDb: number): void {
-    this.micGainDb = Math.max(-12, Math.min(6, gainDb));
-    // Map back to 0..100% for slider display
-    if (this.micGainDb >= 0) {
-      this.micVolume = Math.round(50 + (this.micGainDb / 6) * 50);
-    } else {
-      this.micVolume = Math.round(50 + (this.micGainDb / 12) * 50);
-    }
+    this.micGainDb = clampMicGainDb(gainDb);
+    this.micVolume = micDbToPercent(this.micGainDb);
     if (this.activeCall) {
       void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
     }
@@ -189,7 +189,7 @@ export class JsSipService {
 
   async setLiveMicGain(gainDb: number, callId?: string): Promise<boolean> {
     const targetCallId = callId || this.activeCall?.id;
-    this.micGainDb = Math.max(-12, Math.min(6, gainDb));
+    this.micGainDb = clampMicGainDb(gainDb);
     if (!targetCallId) {
       return false;
     }
@@ -209,10 +209,15 @@ export class JsSipService {
           return;
         }
         try {
-          const gateway = getPushGateway(this.serverHost) || CONFIG.pushGateway;
-          const res = await fetch(`${gateway}/api/call/volume`, {
+          const gatewaySession = getActiveGatewaySession(this.serverHost, this.extension);
+          const gateway = gatewaySession?.apiURL || getPushGateway(this.serverHost) || CONFIG.pushGateway;
+          const path = gatewaySession ? '/api/gateway/call/volume' : '/api/call/volume';
+          const headers = gatewaySession
+            ? gatewayAuthHeaders({ claimSecret: gatewaySession.claimSecret, deviceId: gatewaySession.deviceId, json: true })
+            : { 'Content-Type': 'application/json' };
+          const res = await fetch(`${gateway}${path}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               extension: this.extension,
               callId: targetCallId,
@@ -236,8 +241,8 @@ export class JsSipService {
   }
 
   setSpeakerVolume(percent: number): void {
-    this.speakerVolume = Math.max(0, Math.min(100, percent));
-    const gain = this.speakerVolume / 100.0;
+    this.speakerVolume = Math.max(0, Math.min(SPEAKER_MAX_PERCENT, percent));
+    const gain = speakerPercentToGain(this.speakerVolume);
     if (this.activeCall?.remoteStream) {
       try {
         const tracks = this.activeCall.remoteStream.getAudioTracks ? this.activeCall.remoteStream.getAudioTracks() : [];

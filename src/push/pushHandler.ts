@@ -16,11 +16,13 @@ import {
 import { CONFIG } from '../config';
 import { callDisplayName } from '../calls/callerName';
 import { getDeviceUuid, UUID_PATTERN } from '../storage/deviceId';
+import type { SavedAccount } from '../storage/store';
 import {
   getOrLoadGatewaySession,
   getPersistedGatewayRecord,
   registerGatewayPushToken,
   removeGatewayPushToken,
+  sendGatewayHeartbeat,
 } from '../gateway/session';
 import type { GatewaySession } from '../gateway/types';
 import { createRegistrationRetry } from './registrationRetry';
@@ -42,7 +44,7 @@ export type CancelPayload = {
   callId: string;
 };
 
-type RawPushPayload = Omit<Partial<PushPayload>, 'msg'> & { msg?: string };
+type RawPushPayload = Omit<Partial<PushPayload>, 'msg' | 'type'> & { msg?: string; type?: string };
 type PushHandler = (payload: PushPayload) => void;
 type CancelHandler = (payload: CancelPayload) => void;
 
@@ -56,6 +58,7 @@ let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
 let pendingAndroidPayload: PushPayload | null = null;
 let lastDeliveredCallId = '';
+let lastWakeTimestamp = 0;
 const registrationRetry = createRegistrationRetry();
 const tokenRetry = createRegistrationRetry();
 let tokenListenersInitialized = false;
@@ -173,11 +176,52 @@ export async function clearPendingIncomingCall(callId?: string): Promise<void> {
   if (lastDeliveredCallId === callId) lastDeliveredCallId = '';
 }
 
+async function handleWake(rawData: RawPushPayload): Promise<boolean> {
+  if (rawData.msg !== 'wake' && rawData.type !== 'keepalive') return false;
+  const wakeTimestamp = Number(rawData.timestamp) || 0;
+  if (wakeTimestamp && wakeTimestamp === lastWakeTimestamp) return true;
+  lastWakeTimestamp = wakeTimestamp;
+  const { StorageService } = require('../storage/store');
+  const storedAccount = await StorageService.getAccount();
+  if (!storedAccount) return true;
+  require('../calls/connectionService').startConnectionService();
+  try {
+    await sendGatewayHeartbeat(storedAccount.serverHost, storedAccount.extension, 'wake');
+    if (wakeTimestamp) console.log(`[push] heartbeat ACK sent timestamp=${wakeTimestamp}`);
+  } catch (heartbeatError) {
+    console.warn('[push] heartbeat ACK failed:', heartbeatError);
+  }
+  if (!onIncoming) await bootstrapHeadlessSip(storedAccount, 'keepalive');
+  return true;
+}
+
+async function bootstrapHeadlessSip(storedAccount: SavedAccount, label: string): Promise<void> {
+  try {
+    const { getSharedJsSipService } = require('../sip/JsSipService');
+    // Hydrate the approved gateway assignment first: a gateway-enrolled device
+    // must wake through the ticket/relay path, never the direct PBX socket.
+    await getOrLoadGatewaySession(storedAccount.serverHost, storedAccount.extension);
+    console.log(`[push][${label}] headless bootstrapping SIP for ext=${storedAccount.extension}`);
+    const headlessSip = getSharedJsSipService();
+    if (!headlessSip.isConnectedOrConnecting()) {
+      await headlessSip.connect(
+        storedAccount.extension,
+        storedAccount.password,
+        storedAccount.serverHost,
+        storedAccount.useTls,
+      );
+    }
+  } catch (bootstrapErr) {
+    console.error('[push] headless SIP bootstrap error:', bootstrapErr);
+  }
+}
+
 if (Platform.OS === 'android') {
   try {
     const messaging = getMessaging();
     setBackgroundMessageHandler(messaging, async (remoteMessage) => {
       const rawData = (remoteMessage?.data || {}) as RawPushPayload;
+      if (await handleWake(rawData)) return;
       const cancelPayload = normalizeCancelPayload(rawData);
       if (cancelPayload) {
         console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (background)`);
@@ -199,32 +243,8 @@ if (Platform.OS === 'android') {
       console.log(`[push][callId=${payload.callId}] headless payload persisted`);
       deliverIncomingCall(payload);
 
-      // If App.tsx is not mounted (cold wake / killed state), bootstrap SIP directly in Headless JS
-      if (!onIncoming) {
-        try {
-          const { getSharedJsSipService } = require('../sip/JsSipService');
-          if (storedAccount) {
-            // Hydrate the approved gateway assignment first: a gateway-enrolled
-            // device must wake through the ticket/relay path, never the direct
-            // PBX socket. Pending/revoked records throw and abort the bootstrap.
-            await getOrLoadGatewaySession(storedAccount.serverHost, storedAccount.extension);
-            console.log(
-              `[push][callId=${payload.callId}] headless bootstrapping SIP for ext=${storedAccount.extension}`
-            );
-            const headlessSip = getSharedJsSipService();
-            if (!headlessSip.isConnectedOrConnecting()) {
-              await headlessSip.connect(
-                storedAccount.extension,
-                storedAccount.password,
-                storedAccount.serverHost,
-                storedAccount.useTls,
-              );
-            }
-          }
-        } catch (bootstrapErr) {
-          console.error('[push] headless SIP bootstrap error:', bootstrapErr);
-        }
-      }
+      // If App.tsx is not mounted (cold wake / killed state), bootstrap SIP directly in Headless JS.
+      if (!onIncoming) await bootstrapHeadlessSip(storedAccount, `callId=${payload.callId}`);
     });
   } catch (error) {
     console.warn('[push] FCM background handler init failed:', error);
@@ -273,6 +293,7 @@ export function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandl
       onTokenRefresh(messaging, handleToken);
       onMessage(messaging, async (remoteMessage) => {
         const rawData = (remoteMessage?.data || {}) as RawPushPayload;
+        if (await handleWake(rawData)) return;
         const cancelPayload = normalizeCancelPayload(rawData);
         if (cancelPayload) {
           console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (foreground)`);

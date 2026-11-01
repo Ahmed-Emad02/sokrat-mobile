@@ -335,6 +335,24 @@ export class GatewayClient {
     }
   }
 
+  /** Acknowledge a keepalive wake so the gateway does not send another. */
+  async heartbeat(body: Record<string, string>): Promise<void> {
+    const { status } = await this.call('/api/gateway/device/heartbeat', {
+      method: 'POST',
+      headers: this.tenantHeaders(true),
+      body: JSON.stringify(body),
+    });
+    if (status === 401 || status === 403) {
+      throw new GatewayError('unauthorized', 'Gateway rejected the heartbeat', { status });
+    }
+    if (status === 409 || status === 410) {
+      throw new GatewayError('pbx_disabled', 'PBX is no longer available', { status });
+    }
+    if (status !== 200 && status !== 202 && status !== 204) {
+      throw new GatewayError('invalid', `Heartbeat failed (HTTP ${status})`, { status });
+    }
+  }
+
   private enrollmentRejection(body: JsonBody): GatewayError {
     const status = bodyString(body, 'status');
     if (status === 'revoked') {

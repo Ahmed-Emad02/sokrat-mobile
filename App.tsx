@@ -165,7 +165,7 @@ export default function App() {
           );
         }
       } else if (nextAppState === 'active') {
-        dismissOngoingCallNotification();
+        if (!currentCall) dismissOngoingCallNotification();
         if (accountRef.current) {
           void sipRef.current?.reconnectIfDisconnected();
         }
@@ -201,6 +201,16 @@ export default function App() {
   useEffect(() => {
     setCallWindowActive(Boolean(activeCall || incoming));
   }, [activeCall, incoming]);
+
+  useEffect(() => {
+    // Clear an ongoing-call notification left behind by a call that ended
+    // while the JS process was suspended. A ringing incoming call must not
+    // inherit a stale End Call action from the previous call.
+    if (!activeCall ||
+        (activeCall.status === 'ringing' && activeCall.direction === 'inbound')) {
+      dismissOngoingCallNotification();
+    }
+  }, [activeCall]);
 
   useEffect(() => {
     const unsubAudio = subscribeAudioDeviceChanges((s) => {
@@ -262,6 +272,10 @@ export default function App() {
 
   const updateIncoming = (value: IncomingCallInfo | null) => {
     if (!value) setAnswerRequested(false);
+    if (value) {
+      const current = sipRef.current?.activeCall;
+      if (!current || current.status === 'ringing') dismissOngoingCallNotification();
+    }
     const initial = value ? { ...value, callerName: callDisplayName(value.callerId) } : null;
     incomingRef.current = initial;
     setIncoming(initial);
@@ -350,9 +364,13 @@ export default function App() {
   const endSipCall = async (callId: string) => {
     console.log(`[app][callId=${callId}] native end requested`);
     const current = sipRef.current?.activeCall;
-    if (current && current.id !== callId) return;
     if (current) {
-      const ended = await sipRef.current?.hangup(callId);
+      // Ongoing notifications can carry the pre-answer push id on some
+      // notification paths. There is only one live leg; end the live leg.
+      if (current.id !== callId) {
+        console.warn(`[app][callId=${callId}] end id differs from live call ${current.id}`);
+      }
+      const ended = await sipRef.current?.hangup(current.id);
       if (!ended) Alert.alert('Call not ended', 'Unable to end the call. Please try again.');
       return;
     }
@@ -465,14 +483,15 @@ export default function App() {
             setIsSpeakerOn(state.selectedDevice === 'SPEAKER_PHONE');
           });
         }
-        if (AppState.currentState === 'background' || AppState.currentState === 'inactive') {
-          showOngoingCallNotification(
-            call.id,
-            call.targetName || call.target,
-            `Call in progress • Ext ${call.target}`,
-            call.startTime || Date.now()
-          );
-        }
+        // Keep an End Call action available even when the answer intent
+        // brought the app to the foreground. The active-call UI can be behind
+        // the lock screen on some OEM builds.
+        showOngoingCallNotification(
+          call.id,
+          call.targetName || call.target,
+          `Call in progress • Ext ${call.target}`,
+          call.startTime || Date.now()
+        );
         const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
         void setNativeSpeakerVolume(targetSpeakerVol);
         sipRef.current?.setSpeakerVolume(targetSpeakerVol);
@@ -621,7 +640,7 @@ export default function App() {
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
         preferredCodec: storedAccount?.preferredCodec || 'pcmu',
-        micVolume: Math.min(storedAccount?.micVolume ?? 50, 50),
+        micVolume: Math.max(0, Math.min(100, storedAccount?.micVolume ?? 50)),
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
       // A gateway-enrolled device without an approved assignment must stay on
@@ -1225,11 +1244,13 @@ export default function App() {
             return null;
           } else {
             sipRef.current?.setSpeakerVolume(val);
-            const res = await setNativeSpeakerVolume(val);
+            const res = await setNativeSpeakerVolume(Math.min(100, val));
             if (accountRef.current) {
               accountRef.current = {
                 ...accountRef.current,
-                speakerVolume: res ? res.percent : val,
+                // Native returns the quantized hardware step (max 100). Keep
+                // the user's requested software boost above that ceiling.
+                speakerVolume: val > 100 ? val : res ? res.percent : val,
               };
               clearTimeout(saveVolumeTimerRef.current ?? undefined);
               saveVolumeTimerRef.current = setTimeout(() => {
