@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
-import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus, Permission, Linking } from 'react-native';
+import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus, Permission, Linking, View, Text, TouchableOpacity } from 'react-native';
 import { useTheme, applySystemBars } from './src/theme';
 import { initI18n } from './src/i18n';
 import { resolveCallerName } from './src/calls/callerNameResolver';
@@ -25,13 +25,21 @@ import {
   askNotificationPermission,
   clearPendingIncomingCall,
   unregisterCurrentDevice,
+  bindChatPushHandler,
+  normalizeChatPayload,
+  repairPushRegistration,
 } from './src/push/pushHandler';
 import type { CancelPayload } from './src/push/pushHandler';
+import { ChatClient } from './src/chat/client';
+import { ChatCache } from './src/chat/cache';
+import { ChatSocket } from './src/chat/socket';
+import type { ChatConversation, UnreadSummary } from './src/chat/types';
 import { CONFIG, getSipWss, getPushGateway } from './src/config';
 import { startConnectionService, stopConnectionService } from './src/calls/connectionService';
 import { prepareLogin } from './src/gateway/enrollment';
-import { describeEnrollmentError } from './src/gateway/errors';
-import { getOrLoadGatewaySession, resetGatewaySession } from './src/gateway/session';
+import { describeEnrollmentError, isTerminalEnrollmentError } from './src/gateway/errors';
+import { getOrLoadGatewaySession, resetGatewaySession, getPersistedGatewayRecord } from './src/gateway/session';
+import { getDeviceUuid } from './src/storage/deviceId';
 import {
   setupCallKeep,
   reportIncomingCall,
@@ -41,6 +49,7 @@ import {
 } from './src/calls/callKit';
 import {
   showIncomingCallNotification,
+  updateNativeIncomingCallNotification,
   acknowledgeNativeCallAction,
   clearNativeCallWindow,
   dismissNativeCallNotification,
@@ -127,20 +136,37 @@ export default function App() {
   }, []);
   const sipRef = useRef<JsSipService | null>(null);
   const incomingRef = useRef<IncomingCallInfo | null>(null);
+  const pendingNameResolutionRef = useRef<IncomingCallInfo | null>(null);
   const activeCallUUIDRef = useRef<string | null>(null);
   const activeCallRef = useRef<ActiveCall | null>(null);
   const pendingAnswerUUIDRef = useRef<string | null>(null);
   const pendingEndUUIDRef = useRef<string | null>(null);
   const answerGenerationRef = useRef(0);
+  const answerWatchdogRef = useRef<{
+    timer: ReturnType<typeof setTimeout>;
+    uiCallId: string;
+    sessionCallId: string;
+  } | null>(null);
+  const terminalCallIdsRef = useRef<Set<string>>(new Set());
+  const terminalCallTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // App State
   const [account, setAccount] = useState<SavedAccount | null>(null);
   const accountRef = useRef<SavedAccount | null>(null);
   const accountGenerationRef = useRef(0);
   const enrollmentAbortRef = useRef<AbortController | null>(null);
+  const [gatewayState, setGatewayState] = useState<'restoring' | 'online' | 'offline' | 'blocked'>('restoring');
+  const gatewayStateRef = useRef(gatewayState);
+  const [gatewayMessage, setGatewayMessage] = useState('');
+  const gatewayRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gatewayRetryAttemptRef = useRef(0);
+  const retryGatewayRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     accountRef.current = account;
   }, [account]);
+  useEffect(() => {
+    gatewayStateRef.current = gatewayState;
+  }, [gatewayState]);
   const saveVolumeTimerRef = useRef<number | null>(null);
   const [isAuthLoaded, setIsAuthLoaded] = useState(false);
   useEffect(() => {
@@ -168,6 +194,7 @@ export default function App() {
         if (!currentCall) dismissOngoingCallNotification();
         if (accountRef.current) {
           void sipRef.current?.reconnectIfDisconnected();
+          if (gatewayStateRef.current === 'offline') retryGatewayRef.current?.();
         }
       }
     };
@@ -180,6 +207,129 @@ export default function App() {
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [callsHistory, setCallsHistory] = useState<CallRecord[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
+
+  // Chat state
+  const chatClientRef = useRef<ChatClient | null>(null);
+  const chatCacheRef = useRef<ChatCache | null>(null);
+  const chatSocketRef = useRef<ChatSocket | null>(null);
+  const [chatConversations, setChatConversations] = useState<ChatConversation[]>([]);
+  const [chatUnread, setChatUnread] = useState<UnreadSummary>({ total: 0, per_conversation: {} });
+  const lastChatToastRef = useRef('');
+
+  // Initialize chat when account becomes available; tear down on logout.
+  useEffect(() => {
+    if (!account) {
+      chatSocketRef.current?.dispose();
+      chatSocketRef.current = null;
+      chatClientRef.current = null;
+      chatCacheRef.current = null;
+      bindChatPushHandler(null);
+      setChatConversations([]);
+      setChatUnread({ total: 0, per_conversation: {} });
+      return;
+    }
+
+    const gatewayBase = getPushGateway(account.serverHost);
+    void (async () => {
+      let base = gatewayBase;
+      try {
+        const s = await getOrLoadGatewaySession(account.serverHost, account.extension);
+        if (s) base = s.apiURL;
+      } catch {
+        // fallback to push gateway base
+      }
+
+      const rec = await getPersistedGatewayRecord(account.serverHost, account.extension).catch(() => null);
+      const claimSecret = rec?.claimSecret ?? '';
+      const deviceId = rec?.deviceId ?? '';
+      const deviceUuid = await getDeviceUuid().catch(() => '');
+
+      const client = new ChatClient({
+        gatewayBase: base,
+        claimSecret,
+        deviceId: deviceId || deviceUuid,
+        extension: account.extension,
+        sipPassword: account.password,
+      });
+      const cache = new ChatCache(account.extension, account.serverHost);
+      chatClientRef.current = client;
+      chatCacheRef.current = cache;
+
+      // Seed from cache first so the UI is instant
+      const cached = await cache.getConversations();
+      if (cached.length) setChatConversations(cached);
+      setChatUnread(await cache.getUnread());
+
+      // Fetch fresh data
+      try {
+        const fresh = await client.getConversations();
+        setChatConversations(fresh);
+        await cache.saveConversations(fresh);
+      } catch {}
+      try {
+        const unread = await client.getUnread();
+        setChatUnread(unread);
+        await cache.saveUnread(unread);
+      } catch {}
+
+      // Open socket
+      const socket = new ChatSocket(base, client, {
+        onMessage: async (msg) => {
+          if (msg.sender_extension !== account.extension && msg.id !== lastChatToastRef.current) {
+            lastChatToastRef.current = msg.id;
+            showToast({ type: 'info', title: `Chat · ${msg.sender_extension}`, message: msg.body || 'New message', duration: 2500 });
+          }
+          await cache.upsertMessage(msg.conversation_id, msg);
+          setChatUnread({ ...await cache.incrementUnread(msg.conversation_id) });
+          try {
+            const convs = await client.getConversations();
+            setChatConversations(convs);
+            await cache.saveConversations(convs);
+          } catch {}
+        },
+        onConversationUpdated: async (conv) => {
+          await cache.upsertConversation(conv);
+          setChatConversations(await cache.getConversations());
+        },
+        onTyping: () => {},
+        onConnected: () => {},
+        onDisconnected: () => {},
+      });
+      chatSocketRef.current = socket;
+      void socket.connect();
+
+      // Wire FCM chat push
+      bindChatPushHandler(async (payload) => {
+        if (payload.messageId !== lastChatToastRef.current) {
+          lastChatToastRef.current = payload.messageId;
+          showToast({ type: 'info', title: `Chat · ${payload.senderExtension}`, message: payload.preview || 'New message', duration: 2500 });
+        }
+        setChatUnread({ ...await cache.incrementUnread(payload.conversationId) });
+        try {
+          const convs = await client.getConversations();
+          setChatConversations(convs);
+          await cache.saveConversations(convs);
+        } catch {}
+      });
+    })();
+
+    return () => {
+      chatSocketRef.current?.dispose();
+      chatSocketRef.current = null;
+      bindChatPushHandler(null);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.extension, account?.serverHost, account?.password]);
+
+  const handleChatRefresh = async () => {
+    const client = chatClientRef.current;
+    const cache = chatCacheRef.current;
+    if (!client || !cache) return;
+    const [convs, unread] = await Promise.all([client.getConversations(), client.getUnread()]);
+    setChatConversations(convs);
+    setChatUnread(unread);
+    await Promise.all([cache.saveConversations(convs), cache.saveUnread(unread)]);
+  };
 
   // Telephony State
   const [incoming, setIncoming] = useState<IncomingCallInfo | null>(null);
@@ -222,6 +372,7 @@ export default function App() {
       sipRef.current?.handleNetworkChange(netState);
       if (netState.isConnected && accountRef.current) {
         bindExtension(accountRef.current.extension);
+        if (gatewayStateRef.current === 'offline') retryGatewayRef.current?.();
       }
     });
     const unsubGsm = subscribeGsmCallState((gsmState: GsmCallState) => {
@@ -270,37 +421,6 @@ export default function App() {
     };
   }, []);
 
-  const updateIncoming = (value: IncomingCallInfo | null) => {
-    if (!value) setAnswerRequested(false);
-    if (value) {
-      const current = sipRef.current?.activeCall;
-      if (!current || current.status === 'ringing') dismissOngoingCallNotification();
-    }
-    const initial = value ? { ...value, callerName: callDisplayName(value.callerId) } : null;
-    incomingRef.current = initial;
-    setIncoming(initial);
-    if (value) {
-      const lookupAccount = accountRef.current;
-      void resolveCallerName(value.callerId, lookupAccount).then(name => {
-        if (incomingRef.current !== initial) return;
-        if (accountRef.current !== lookupAccount) return;
-        name = callDisplayName(value.callerId, name);
-        const resolved = { ...value, callerName: name };
-        incomingRef.current = resolved;
-        setIncoming(resolved);
-        const call = sipRef.current?.activeCall;
-        if (call?.id === value.callId) call.targetName = name;
-        if (Platform.OS === 'android' && AppState.currentState !== 'active' &&
-            pendingAnswerUUIDRef.current !== value.callId && pendingEndUUIDRef.current !== value.callId) {
-          showIncomingCallNotification(value.callId, value.callerId, name, value.extension, value.timestamp);
-        }
-        if (Platform.OS === 'ios' && value.nativePresented) {
-          updateIncomingCaller(value.callId, value.callerId, name);
-        }
-      });
-    }
-  };
-
   const updateCallUUID = (value: string | null) => {
     activeCallUUIDRef.current = value;
     setActiveCallUUID(value);
@@ -310,11 +430,146 @@ export default function App() {
     activeCallRef.current = value;
     setActiveCall(value);
   };
+
+  const applyResolvedIncomingName = (callId: string, callerId: string, name: string) => {
+    const displayName = callDisplayName(callerId, name);
+    if (displayName === callDisplayName(callerId)) return;
+
+    const current = incomingRef.current;
+    if (current?.callId === callId && current.callerName !== displayName) {
+      const resolved = { ...current, callerName: displayName };
+      incomingRef.current = resolved;
+      setIncoming(resolved);
+    }
+
+    const call = sipRef.current?.activeCall;
+    if (call?.id === callId) {
+      call.targetName = displayName;
+      updateActiveCall({ ...call });
+    }
+
+    if (Platform.OS === 'android') {
+      updateNativeIncomingCallNotification(callId, displayName);
+    }
+    if (Platform.OS === 'ios' && (current?.callId === callId || call?.id === callId)) {
+      updateIncomingCaller(callId, callerId, displayName);
+    }
+    void StorageService.updateCallRecordName(callId, displayName).then((updated) => {
+      if (updated.length) setCallsHistory(updated);
+    });
+  };
+
+  const enrichIncomingName = (value: IncomingCallInfo, lookupAccount: SavedAccount | null) => {
+    void resolveCallerName(value.callerId, lookupAccount).then(name => {
+      if (name === 'Unknown') return;
+      if (lookupAccount && accountRef.current &&
+          lookupAccount.extension !== accountRef.current.extension) return;
+      applyResolvedIncomingName(value.callId, value.callerId, name);
+    });
+  };
+
+  const updateIncoming = (value: IncomingCallInfo | null) => {
+    if (value && isTerminalCall(value.callId)) return;
+    if (!value) setAnswerRequested(false);
+    if (value) {
+      const current = sipRef.current?.activeCall;
+      if (!current || current.status === 'ringing') dismissOngoingCallNotification();
+    }
+    const existing = value && incomingRef.current?.callId === value.callId
+      ? incomingRef.current
+      : null;
+    const initial = value
+      ? {
+          ...value,
+          callerName: existing?.callerName || callDisplayName(value.callerId),
+        }
+      : null;
+    incomingRef.current = initial;
+    setIncoming(initial);
+    if (value) {
+      const lookupAccount = accountRef.current;
+      if (lookupAccount) {
+        pendingNameResolutionRef.current = null;
+        enrichIncomingName(value, lookupAccount);
+      } else {
+        pendingNameResolutionRef.current = value;
+      }
+    } else {
+      pendingNameResolutionRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    const pending = pendingNameResolutionRef.current;
+    if (!account || !pending) return;
+    if (pending.callId !== incomingRef.current?.callId &&
+        pending.callId !== sipRef.current?.activeCall?.id) {
+      pendingNameResolutionRef.current = null;
+      return;
+    }
+    pendingNameResolutionRef.current = null;
+    enrichIncomingName(pending, account);
+  }, [account]);
+
   const updateAttendedTransferState = (value: AttendedTransferState | null) => {
     attendedTransferStateRef.current = value;
     setAttendedTransferState(value);
   };
 
+
+  const markCallTerminal = (callId: string | null | undefined) => {
+    const id = String(callId || '').trim();
+    if (!id) return;
+    terminalCallIdsRef.current.add(id);
+    const previous = terminalCallTimersRef.current.get(id);
+    if (previous) clearTimeout(previous);
+    terminalCallTimersRef.current.set(id, setTimeout(() => {
+      terminalCallIdsRef.current.delete(id);
+      terminalCallTimersRef.current.delete(id);
+    }, 90_000));
+  };
+
+  const isTerminalCall = (callId: string | null | undefined): boolean =>
+    !!callId && terminalCallIdsRef.current.has(String(callId));
+
+  const clearAnswerWatchdog = () => {
+    if (answerWatchdogRef.current) {
+      clearTimeout(answerWatchdogRef.current.timer);
+      answerWatchdogRef.current = null;
+    }
+  };
+
+  const startAnswerWatchdog = (
+    uiCallId: string,
+    sessionCallId: string,
+    generation: number,
+  ) => {
+    clearAnswerWatchdog();
+    const timer = setTimeout(() => {
+      answerWatchdogRef.current = null;
+      if (generation !== answerGenerationRef.current) return;
+      const active = sipRef.current?.activeCall;
+      if (active?.id === sessionCallId && active.status === 'active') return;
+      ++answerGenerationRef.current;
+      pendingAnswerUUIDRef.current = null;
+      setAnswerRequested(false);
+      if (incomingRef.current?.callId === uiCallId) updateIncoming(null);
+      dismissNativeCallNotification(uiCallId);
+      clearNativeCallWindow();
+      stopRingtone();
+      stopCallManagers();
+      if (active?.id === sessionCallId) {
+        void sipRef.current?.hangup(sessionCallId).catch(() => {});
+      }
+      showToast({
+        type: 'error',
+        title: 'Call not connected',
+        message: 'The call could not be established. Please try again.',
+      });
+      console.warn(`[app][callId=${uiCallId}] answer timed out without SIP confirmation`);
+    }, 20_000);
+    answerWatchdogRef.current = { timer, uiCallId, sessionCallId };
+  };
 
   const answerSipCall = async (callId: string): Promise<boolean> => {
     console.log(`[app][callId=${callId}] answer requested`);
@@ -330,8 +585,18 @@ export default function App() {
     const targetCallId = (activeCall && activeCall.status === 'ringing' && activeCall.direction === 'inbound')
       ? activeCall.id
       : callId;
-    if (activeCall && activeCall.id !== targetCallId) return false;
-    if (!activeCall) return false;
+    if (activeCall && activeCall.id !== targetCallId) {
+      pendingAnswerUUIDRef.current = null;
+      setAnswerRequested(false);
+      return false;
+    }
+    if (!activeCall) {
+      // Native/push answer can precede the SIP INVITE. Keep the intent alive
+      // briefly, but never leave the UI in an indefinite connecting state.
+      startAnswerWatchdog(callId, callId, generation);
+      return false;
+    }
+    startAnswerWatchdog(callId, targetCallId, generation);
     startCallManagers();
     let answered = false;
     try {
@@ -339,6 +604,7 @@ export default function App() {
     } catch (error) {
       if (answerGenerationRef.current !== generation || pendingAnswerUUIDRef.current !== callId) return false;
       console.error(`[app][callId=${targetCallId}] answer action failed:`, error);
+      clearAnswerWatchdog();
       pendingAnswerUUIDRef.current = null;
       setAnswerRequested(false);
       stopCallManagers();
@@ -350,6 +616,7 @@ export default function App() {
       // Retain intent only when waiting for the matching SIP INVITE after a
       // native push answer. A failed attempt on an existing session may retry.
       if (sipRef.current?.activeCall?.id === targetCallId) {
+        clearAnswerWatchdog();
         pendingAnswerUUIDRef.current = null;
         setAnswerRequested(false);
         stopCallManagers();
@@ -362,6 +629,8 @@ export default function App() {
   };
 
   const endSipCall = async (callId: string) => {
+    clearAnswerWatchdog();
+    markCallTerminal(callId);
     console.log(`[app][callId=${callId}] native end requested`);
     const current = sipRef.current?.activeCall;
     if (current) {
@@ -391,6 +660,85 @@ export default function App() {
       await clearPendingIncomingCall(callId);
     }
   };
+  const clearGatewayRetry = () => {
+    if (gatewayRetryTimerRef.current) {
+      clearTimeout(gatewayRetryTimerRef.current);
+      gatewayRetryTimerRef.current = null;
+    }
+  };
+
+  const scheduleGatewayRetry = (activeAccount: SavedAccount, generation: number) => {
+    clearGatewayRetry();
+    const delay = Math.min(5_000 * (2 ** gatewayRetryAttemptRef.current), 60_000);
+    gatewayRetryAttemptRef.current += 1;
+    gatewayRetryTimerRef.current = setTimeout(() => {
+      gatewayRetryTimerRef.current = null;
+      void attemptGatewayRestore(activeAccount, generation);
+    }, delay);
+  };
+
+  /**
+   * Validate/revalidate the stored account without ever treating a network
+   * failure as a sign-out. The account remains mounted; only an explicit
+   * handleLogout may clear it.
+   */
+  const attemptGatewayRestore = async (activeAccount: SavedAccount, generation: number) => {
+    if (generation !== accountGenerationRef.current) return;
+    clearGatewayRetry();
+    setGatewayState('restoring');
+    setGatewayMessage('Connecting to gateway…');
+    try {
+      await getOrLoadGatewaySession(activeAccount.serverHost, activeAccount.extension);
+      if (generation !== accountGenerationRef.current) return;
+      accountRef.current = activeAccount;
+      setAccount(activeAccount);
+      setIsAuthLoaded(true);
+      setLoginMessage(null);
+      setGatewayState('online');
+      setGatewayMessage('');
+      gatewayRetryAttemptRef.current = 0;
+      sipRef.current?.setPreferredCodec(activeAccount.preferredCodec || 'opus');
+      sipRef.current?.setMicVolume(activeAccount.micVolume ?? 50);
+      sipRef.current?.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
+      CONFIG.sipDomain = activeAccount.serverHost;
+      CONFIG.sipWss = getSipWss(activeAccount.serverHost, activeAccount.useTls);
+      CONFIG.pushGateway = getPushGateway(activeAccount.serverHost);
+      bindExtension(activeAccount.extension);
+      void sipRef.current?.connect(
+        activeAccount.extension,
+        activeAccount.password,
+        activeAccount.serverHost,
+        activeAccount.useTls,
+      );
+    } catch (error) {
+      if (generation !== accountGenerationRef.current) return;
+      const message = describeEnrollmentError(error);
+      if (isTerminalEnrollmentError(error)) {
+        setGatewayState('blocked');
+        setGatewayMessage(message);
+        return;
+      }
+      setGatewayState('offline');
+      setGatewayMessage(message);
+      scheduleGatewayRetry(activeAccount, generation);
+    }
+  };
+
+  retryGatewayRef.current = () => {
+    const activeAccount = accountRef.current;
+    if (!activeAccount) return;
+    gatewayRetryAttemptRef.current = 0;
+    void attemptGatewayRestore(activeAccount, accountGenerationRef.current);
+  };
+
+  useEffect(() => () => {
+    clearGatewayRetry();
+    clearAnswerWatchdog();
+    for (const timer of terminalCallTimersRef.current.values()) clearTimeout(timer);
+    terminalCallTimersRef.current.clear();
+    terminalCallIdsRef.current.clear();
+  }, []);
+
   useEffect(() => {
     if (Platform.OS === 'android') {
       const perms: Permission[] = [
@@ -414,6 +762,10 @@ export default function App() {
       onStateChange: (state) => setUiState(state),
       onIncomingCall: (info) => {
         const callId = info.callId;
+        if (isTerminalCall(callId)) {
+          void sip.decline(callId);
+          return;
+        }
         if (pendingEndUUIDRef.current === callId) {
           void sip.decline(callId).then((declined) => {
             if (!declined) return;
@@ -431,7 +783,7 @@ export default function App() {
         const correlatedInfo: IncomingCallInfo = {
           ...info,
           callerId: info.callerId || existing?.callerId || '',
-          callerName: info.callerName || existing?.callerName || 'Incoming Call',
+          callerName: info.callerName || existing?.callerName || '',
           nativePresented: Platform.OS === 'android' || existing?.nativePresented || false,
         };
         updateCallUUID(callId);
@@ -466,6 +818,7 @@ export default function App() {
         }
       },
       onCallEstablished: (call) => {
+        clearAnswerWatchdog();
         ++answerGenerationRef.current;
         updateActiveCall(call);
         updateCallUUID(call.id);
@@ -535,6 +888,8 @@ export default function App() {
         }
       },
       onCallEnded: (callId, cause, details) => {
+        clearAnswerWatchdog();
+        markCallTerminal(callId);
         ++answerGenerationRef.current;
         stopRingtone();
         dismissOngoingCallNotification();
@@ -563,6 +918,7 @@ export default function App() {
             ? Math.floor((Date.now() - currentCall.startTime) / 1000)
             : 0;
           StorageService.addCallRecord({
+            callId: resolvedCallId || undefined,
             number: currentCall.target,
             name: callDisplayName(currentCall.target, currentCall.targetName),
             direction: currentCall.direction,
@@ -571,6 +927,7 @@ export default function App() {
           }).then(setCallsHistory);
         } else if (currentIncoming) {
           StorageService.addCallRecord({
+            callId: resolvedCallId || undefined,
             number: currentIncoming.callerId,
             name: callDisplayName(currentIncoming.callerId, currentIncoming.callerName),
             direction: 'missed',
@@ -636,6 +993,7 @@ export default function App() {
         extension: storedAccount.extension || '',
         password: storedAccount?.password || '',
         serverHost: storedAccount?.serverHost || '',
+        fallbackHost: storedAccount?.fallbackHost,
         useTls: storedAccount?.useTls ?? false,
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
@@ -643,38 +1001,16 @@ export default function App() {
         micVolume: Math.max(0, Math.min(100, storedAccount?.micVolume ?? 50)),
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
-      // A gateway-enrolled device without an approved assignment must stay on
-      // the login screen; it must never fall back to a direct PBX socket.
-      try {
-        await getOrLoadGatewaySession(
-          activeAccount.serverHost,
-          activeAccount.extension,
-        );
-      } catch (recordErr) {
-        if (restoreGeneration !== accountGenerationRef.current) return;
-        setLoginMessage(describeEnrollmentError(recordErr));
-        setIsAuthLoaded(true);
-        return;
-      }
       if (restoreGeneration !== accountGenerationRef.current) return;
-      setLoginMessage(null);
-      sip.setPreferredCodec(activeAccount.preferredCodec || 'opus');
-      sip.setMicVolume(activeAccount.micVolume ?? 50);
-      sip.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
+      // Keep the stored account mounted while the gateway is validated. A
+      // network failure must never look like a sign-out.
       accountRef.current = activeAccount;
       setAccount(activeAccount);
+      setGatewayState('restoring');
+      setGatewayMessage('Connecting to gateway…');
       setIsAuthLoaded(true);
       void StorageService.saveAccount(activeAccount);
-      CONFIG.sipDomain = activeAccount.serverHost;
-      CONFIG.sipWss = getSipWss(activeAccount.serverHost, activeAccount.useTls);
-      CONFIG.pushGateway = getPushGateway(activeAccount.serverHost);
-      bindExtension(activeAccount.extension);
-      void sip.connect(
-        activeAccount.extension,
-        activeAccount.password,
-        activeAccount.serverHost,
-        activeAccount.useTls,
-      );
+      await attemptGatewayRestore(activeAccount, restoreGeneration);
     }).catch((err) => {
       console.error('[app] account load failed:', err);
       setIsAuthLoaded(true);
@@ -684,6 +1020,11 @@ export default function App() {
 
     initPush((payload) => {
       const callId = payload.callId;
+      if (isTerminalCall(callId)) {
+        void clearPendingIncomingCall(callId);
+        dismissNativeCallNotification(callId);
+        return;
+      }
       // A late copy of the push must not reopen an established call's overlay.
       if (sip.activeCall?.id === callId && sip.activeCall.status === 'active') return;
       console.log(`[app][callId=${callId}] push wake received`);
@@ -731,8 +1072,10 @@ export default function App() {
       }
     }, (cancel: CancelPayload) => {
       const cancelCallId = cancel.callId;
+      markCallTerminal(cancelCallId);
       if (incomingRef.current?.callId === cancelCallId) {
         console.log(`[app][callId=${cancelCallId}] cancel-call push dismissed overlay`);
+        clearAnswerWatchdog();
         updateIncoming(null);
         updateCallUUID(null);
         dismissNativeCallNotification(cancelCallId);
@@ -752,6 +1095,10 @@ export default function App() {
 
     const handleNativeAction = (payload: CallActionPayload) => {
       const callId = payload.callId;
+      if (isTerminalCall(callId)) {
+        dismissNativeCallNotification(callId);
+        return;
+      }
       console.log(`[app][callId=${callId}] native action=${payload.action}`);
       if (payload.action === 'END') {
         if (sip.activeCall?.id === callId) {
@@ -918,6 +1265,7 @@ export default function App() {
   };
 
   const handleHangup = async () => {
+    clearAnswerWatchdog();
     const current = sipRef.current?.activeCall;
     const callId = current?.id || activeCallUUIDRef.current;
     console.log(`[app][callId=${callId || 'none'}] UI hangup requested`);
@@ -932,6 +1280,7 @@ export default function App() {
     }
     dismissOngoingCallNotification();
     if (callId) {
+      markCallTerminal(callId);
       reportEnded(callId);
       dismissNativeCallNotification(callId);
       await clearPendingIncomingCall(callId);
@@ -982,53 +1331,82 @@ export default function App() {
   const handleSaveAccount = async (newAcc: SavedAccount) => {
     const previous = accountRef.current;
     const identityChanged = !previous || previous.extension !== newAcc.extension ||
-      previous.serverHost !== newAcc.serverHost || previous.password !== newAcc.password;
+      previous.serverHost !== newAcc.serverHost || previous.fallbackHost !== newAcc.fallbackHost || previous.password !== newAcc.password;
     const generation = ++accountGenerationRef.current;
     enrollmentAbortRef.current?.abort();
+    clearGatewayRetry();
     const controller = new AbortController();
     enrollmentAbortRef.current = controller;
-    if (identityChanged) {
-      accountRef.current = null;
-      sipRef.current?.disconnect();
-      // Stop old token retries before the configured host/extension changes.
-      const removal = unregisterCurrentDevice();
-      resetGatewaySession();
-      setAccount(null);
-      await removal;
+    try {
+      if (identityChanged) {
+        // Do not sign out the existing account while validating replacement
+        // credentials. Keep it mounted until the new login is confirmed.
+        sipRef.current?.disconnect();
+        resetGatewaySession();
+        const prepared = await prepareLogin({
+          host: newAcc.serverHost, extension: newAcc.extension, password: newAcc.password,
+          fallbackHost: newAcc.fallbackHost,
+          signal: controller.signal,
+          onProgress: progress => {
+            if (generation === accountGenerationRef.current && progress.message) setLoginMessage(progress.message);
+          },
+        });
+        if (generation !== accountGenerationRef.current) return;
+        newAcc = { ...newAcc, extension: prepared.extension };
+        if (previous) {
+          // Remove the old registration only after the replacement login has
+          // succeeded. A failed login leaves the previous account/token alone.
+          try { await unregisterCurrentDevice(); } catch {}
+        }
+      }
+      await StorageService.saveAccount(newAcc);
       if (generation !== accountGenerationRef.current) return;
-      const prepared = await prepareLogin({
-        host: newAcc.serverHost, extension: newAcc.extension, password: newAcc.password,
-        signal: controller.signal,
-        onProgress: progress => {
-          if (generation === accountGenerationRef.current && progress.message) setLoginMessage(progress.message);
-        },
-      });
-      if (generation !== accountGenerationRef.current) return;
-      newAcc = { ...newAcc, extension: prepared.extension };
+      accountRef.current = newAcc;
+      setAccount(newAcc);
+      setLoginMessage(null);
+      if (identityChanged) {
+        setGatewayState('online');
+        setGatewayMessage('');
+        gatewayRetryAttemptRef.current = 0;
+      }
+      sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
+      sipRef.current?.setMicVolume(newAcc.micVolume ?? 50);
+      sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
+      CONFIG.sipDomain = newAcc.serverHost;
+      CONFIG.sipWss = getSipWss(newAcc.serverHost, newAcc.useTls);
+      CONFIG.pushGateway = getPushGateway(newAcc.serverHost);
+      bindExtension(newAcc.extension);
+      sipRef.current?.connect(newAcc.extension, newAcc.password, newAcc.serverHost, newAcc.useTls);
+    } catch (error) {
+      if (generation !== accountGenerationRef.current) throw error;
+      if (!previous) {
+        // Initial login: there is no existing account to preserve.
+        setAccount(null);
+        throw error;
+      }
+      // Preserve the previous account and keep the user on the main screen.
+      accountRef.current = previous;
+      setAccount(previous);
+      const terminal = isTerminalEnrollmentError(error);
+      setGatewayState(terminal ? 'blocked' : 'offline');
+      setGatewayMessage(describeEnrollmentError(error));
+      if (!terminal) scheduleGatewayRetry(previous, generation);
+      throw error;
     }
-    await StorageService.saveAccount(newAcc);
-    if (generation !== accountGenerationRef.current) return;
-    accountRef.current = newAcc;
-    setAccount(newAcc);
-    setLoginMessage(null);
-    sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
-    sipRef.current?.setMicVolume(newAcc.micVolume ?? 50);
-    sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
-    CONFIG.sipDomain = newAcc.serverHost;
-    CONFIG.sipWss = getSipWss(newAcc.serverHost, newAcc.useTls);
-    CONFIG.pushGateway = getPushGateway(newAcc.serverHost);
-    bindExtension(newAcc.extension);
-    sipRef.current?.connect(newAcc.extension, newAcc.password, newAcc.serverHost, newAcc.useTls);
   };
 
   const handleLogout = async () => {
     ++accountGenerationRef.current;
     enrollmentAbortRef.current?.abort();
+    clearGatewayRetry();
+    clearAnswerWatchdog();
     accountRef.current = null;
     const removal = unregisterCurrentDevice();
     sipRef.current?.disconnect();
     resetGatewaySession();
     setAccount(null);
+    setGatewayState('online');
+    setGatewayMessage('');
     setLoginMessage(null);
     updateActiveCall(null);
     updateIncoming(null);
@@ -1113,7 +1491,7 @@ export default function App() {
         <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <ToastContainer />
         <LoginScreen
-          onLogin={async (ext, password, serverHost) => {
+          onLogin={async (ext, password, serverHost, fallbackHost) => {
             setLoginMessage(null);
             setUiState('connecting');
             try {
@@ -1123,6 +1501,7 @@ export default function App() {
                 extension: ext,
                 password,
                 serverHost: serverHost || '',
+                fallbackHost: fallbackHost || undefined,
                 useTls: false,
                 dnd: false,
                 autoAnswer: false,
@@ -1146,6 +1525,34 @@ export default function App() {
     <SafeAreaProvider initialMetrics={initialWindowMetrics} style={[styles.root, { backgroundColor: colors.bg }]}>
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
       <ToastContainer />
+      {gatewayState !== 'online' && (
+        <View
+          accessibilityRole="alert"
+          style={[
+            styles.gatewayBanner,
+            {
+              backgroundColor: gatewayState === 'blocked' ? colors.dangerSoft : colors.warningSoft,
+              borderColor: gatewayState === 'blocked' ? colors.dangerBorder : colors.warningBorder,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.gatewayBannerText,
+              { color: gatewayState === 'blocked' ? colors.dangerText : colors.warningText },
+            ]}
+          >
+            {gatewayMessage || (gatewayState === 'restoring' ? 'Connecting to gateway…' : 'Gateway unavailable — reconnecting…')}
+          </Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => retryGatewayRef.current?.()}
+            style={styles.gatewayRetry}
+          >
+            <Text style={[styles.gatewayRetryText, { color: colors.text }]}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <StandardPhoneScreen
         account={account}
         state={uiState}
@@ -1218,6 +1625,7 @@ export default function App() {
         onCancelTransfer={handleCancelTransfer}
         onSwapLines={handleSwapLines}
         onSaveAccount={handleSaveAccount}
+        onRepairPush={repairPushRegistration}
         onLogout={handleLogout}
         onClearHistory={handleClearHistory}
         onDeleteCallRecord={handleDeleteCallRecord}
@@ -1263,6 +1671,12 @@ export default function App() {
             return res;
           }
         }}
+        chatClient={chatClientRef.current}
+        chatCache={chatCacheRef.current}
+        chatConversations={chatConversations}
+        chatUnread={chatUnread}
+        chatSocket={chatSocketRef.current}
+        onChatRefresh={handleChatRefresh}
       />
     </SafeAreaProvider>
   );
@@ -1272,5 +1686,34 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: '#000000',
+  },
+  gatewayBanner: {
+    position: 'absolute',
+    top: 48,
+    left: 12,
+    right: 12,
+    zIndex: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  gatewayBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  gatewayRetry: {
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 7,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  gatewayRetryText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

@@ -1,6 +1,7 @@
 describe('mobile push token lifecycle', () => {
   let push: typeof import('../src/push/pushHandler');
   let getToken: jest.Mock;
+  let deleteToken: jest.Mock;
   let register: jest.Mock;
   let remove: jest.Mock;
   let getRecord: jest.Mock;
@@ -15,6 +16,7 @@ describe('mobile push token lifecycle', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
     getToken = jest.fn().mockResolvedValue('test-fcm-token');
+    deleteToken = jest.fn().mockResolvedValue(undefined);
     register = jest.fn().mockResolvedValue(undefined);
     remove = jest.fn().mockResolvedValue(undefined);
     getRecord = jest.fn().mockResolvedValue(session);
@@ -25,6 +27,7 @@ describe('mobile push token lifecycle', () => {
     jest.doMock('@react-native-firebase/messaging', () => ({
       getMessaging: () => ({}),
       getToken,
+      deleteToken,
       setBackgroundMessageHandler: (_: unknown, handler: typeof backgroundMessage) => { backgroundMessage = handler; },
       onMessage: jest.fn(),
       onTokenRefresh: (_: unknown, handler: typeof onRefresh) => { onRefresh = handler; },
@@ -106,6 +109,34 @@ describe('mobile push token lifecycle', () => {
     onState('active');
     await settle();
     expect(getToken).toHaveBeenCalledTimes(2);
+    expect(deleteToken).not.toHaveBeenCalled();
+  });
+
+  it('does not invalidate a healthy token when the app version changes', async () => {
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    AsyncStorage.getItem.mockResolvedValueOnce('1.0.14');
+    push.bindExtension('201');
+    await settle();
+    await Promise.resolve();
+    await settle();
+    expect(deleteToken).not.toHaveBeenCalled();
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sokrat/push-app-version', '1.0.15');
+    expect(register).toHaveBeenCalledWith(session, expect.objectContaining({ token: 'test-fcm-token' }));
+  });
+
+  it('manual repair deletes the token, fetches a new one, and registers it', async () => {
+    push.bindExtension('201');
+    await settle();
+    deleteToken.mockClear();
+    getToken.mockClear();
+    register.mockClear();
+
+    await expect(push.repairPushRegistration()).resolves.toBe(true);
+    expect(deleteToken).toHaveBeenCalledTimes(1);
+    expect(getToken).toHaveBeenCalledTimes(1);
+    expect(register).toHaveBeenCalledWith(session, expect.objectContaining({
+      extension: '201', token: 'test-fcm-token', platform: 'android',
+    }));
   });
 
   it('stops all registration retries on logout', async () => {

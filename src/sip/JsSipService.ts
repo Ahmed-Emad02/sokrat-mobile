@@ -302,6 +302,12 @@ export class JsSipService {
   private useTls = false;
   /** True when the active media configuration is TURN/relay-only. */
   private mediaRelayRequired = false;
+  /** Short-lived prefetched ICE/TURN configuration shared by calls. */
+  private mediaConfigurationCache: {
+    key: string;
+    expiresAt: number;
+    promise: Promise<MediaConfiguration>;
+  } | null = null;
   /** Approved gateway assignment backing the current registration, if any. */
   private gatewaySession: GatewaySession | null = null;
   /** Active bounded-ICE-gathering controllers (cancelled on teardown). */
@@ -603,6 +609,10 @@ export class JsSipService {
     };
 
     this.activeCall = call;
+
+    // Start TURN/ICE discovery as soon as an inbound INVITE arrives, so the
+    // answer path does not wait for a fresh gateway request.
+    if (session.direction === 'incoming') this.prefetchMediaConfiguration();
 
     if (session.direction === 'outgoing') {
       startCallManagers();
@@ -1497,19 +1507,54 @@ export class JsSipService {
    * Fetch the call media configuration and remember whether relay is mandatory
    * for the next session's ICE gathering.
    */
+  private prefetchMediaConfiguration(): void {
+    // Failures are handled by the answer path; an inbound call must still ring.
+    void this.resolveMediaConfiguration().catch(() => {});
+  }
+
   private async resolveMediaConfiguration(): Promise<MediaConfiguration> {
     const domain = this.serverHost || CONFIG.sipDomain;
     const gatewaySession = this.gatewaySession
       ?? (await getOrLoadGatewaySession(domain, this.extension));
-    if (gatewaySession) {
-      // Gateway deployments always relay media; no P2P fallback.
-      const mediaConfiguration = await gatewayMediaConfiguration(gatewaySession);
-      this.mediaRelayRequired = true;
-      return mediaConfiguration;
+    const cacheKey = gatewaySession
+      ? `gateway:${gatewaySession.apiURL}:${gatewaySession.deviceId}`
+      : `direct:${domain}:${this.extension}:${this.connectionGeneration}`;
+    const now = Date.now();
+    if (this.mediaConfigurationCache?.key === cacheKey &&
+        this.mediaConfigurationCache.expiresAt > now) {
+      return this.mediaConfigurationCache.promise;
     }
-    const mediaConfiguration = await getMediaConfiguration(domain, this.extension, this.password);
-    this.mediaRelayRequired = mediaConfiguration.iceTransportPolicy === 'relay';
-    return mediaConfiguration;
+
+    const generation = this.connectionGeneration;
+    const promise = (async () => {
+      let mediaConfiguration: MediaConfiguration;
+      if (gatewaySession) {
+        // Gateway deployments always relay media; no P2P fallback.
+        mediaConfiguration = await gatewayMediaConfiguration(gatewaySession);
+      } else {
+        mediaConfiguration = await getMediaConfiguration(domain, this.extension, this.password);
+      }
+      if (generation !== this.connectionGeneration) {
+        throw new Error('Media configuration superseded by a newer connection');
+      }
+      this.mediaRelayRequired = gatewaySession
+        ? true
+        : mediaConfiguration.iceTransportPolicy === 'relay';
+      return mediaConfiguration;
+    })();
+
+    const entry = {
+      key: cacheKey,
+      expiresAt: now + 4 * 60 * 1000,
+      promise,
+    };
+    this.mediaConfigurationCache = entry;
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.mediaConfigurationCache === entry) this.mediaConfigurationCache = null;
+      throw error;
+    }
   }
 
   /**
@@ -1667,8 +1712,30 @@ export class JsSipService {
     }
 
     const stillCurrent = () => this.currentSession === session && this.activeCall === activeCall;
-    const localStream = await this.getLocalAudioStream();
+    // Microphone acquisition and relay discovery are independent. Run them
+    // together so the answer path pays the slower cost, not the sum.
+    const localStreamPromise = this.getLocalAudioStream();
+    const mediaConfigurationPromise = this.resolveMediaConfiguration();
+    const [streamResult, configurationResult] = await Promise.allSettled([
+      localStreamPromise,
+      mediaConfigurationPromise,
+    ]);
+
+    if (configurationResult.status === 'rejected') {
+      this.mediaRelayRequired = false;
+      // getLocalAudioStream has already published the stream on this service;
+      // release it once rather than stopping its tracks twice.
+      this.releaseLocalStream();
+      if (!stillCurrent()) return false;
+      console.error(
+        `[sip][callId=${callId}] answer blocked: media configuration failed:`,
+        configurationResult.reason,
+      );
+      return false;
+    }
+    const localStream = streamResult.status === 'fulfilled' ? streamResult.value : null;
     if (!localStream) {
+      this.mediaRelayRequired = false;
       console.error(`[sip][callId=${callId}] answer blocked: microphone unavailable`);
       return false;
     }
@@ -1677,22 +1744,7 @@ export class JsSipService {
       return false;
     }
     this.localStream = localStream;
-
-    let mediaConfiguration: MediaConfiguration;
-    try {
-      mediaConfiguration = await this.resolveMediaConfiguration();
-    } catch (error) {
-      if (!stillCurrent()) return false;
-      this.mediaRelayRequired = false;
-      this.releaseLocalStream();
-      console.error(`[sip][callId=${callId}] answer blocked: media configuration failed:`, error);
-      return false;
-    }
-
-    if (!stillCurrent()) {
-      if (this.localStream === localStream) this.releaseLocalStream();
-      return false;
-    }
+    const mediaConfiguration = configurationResult.value;
 
     // Bounded ICE gathering depends on the media mode that `answer()` will
     // actually use; the initial listener (attached at newRTCSession) cannot
@@ -2124,6 +2176,7 @@ export class JsSipService {
     this.activeCall = null;
     this.releaseLocalStream();
     this.mediaRelayRequired = false;
+    this.mediaConfigurationCache = null;
     this.gatewaySession = null;
     if (notifyState) {
       this.setState('disconnected');

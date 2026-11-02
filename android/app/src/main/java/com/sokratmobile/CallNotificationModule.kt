@@ -541,6 +541,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         timestamp: String
     ) {
         val canonicalCallId = if (IncomingCallStore.isValidCallId(callId)) callId else java.util.UUID.randomUUID().toString()
+        if (IncomingCallStore.isTerminated(reactApplicationContext, canonicalCallId)) return
         val record = IncomingCallStore.upsertIncoming(
             reactApplicationContext,
             canonicalCallId,
@@ -557,6 +558,16 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             callerName,
             extension,
             timestamp
+        )
+    }
+
+    @ReactMethod
+    fun updateIncomingCallNotification(callId: String, callerName: String) {
+        if (!IncomingCallStore.isValidCallId(callId)) return
+        IncomingCallNotificationHelper.updateCallNotification(
+            reactApplicationContext,
+            callId,
+            callerName
         )
     }
 
@@ -657,6 +668,42 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     fun removeListeners(count: Int) {
         // Required for React Native built-in EventEmitter calls.
     }
+    @ReactMethod
+    fun lookupDeviceContact(number: String, promise: Promise) {
+        if (number.isBlank()) {
+            promise.resolve("")
+            return
+        }
+        val context = reactApplicationContext
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) !=
+            PackageManager.PERMISSION_GRANTED) {
+            promise.resolve("")
+            return
+        }
+        try {
+            val uri = Uri.withAppendedPath(
+                ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                Uri.encode(number)
+            )
+            context.contentResolver.query(
+                uri,
+                arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(ContactsContract.PhoneLookup.DISPLAY_NAME)
+                if (cursor.moveToFirst() && nameIndex >= 0) {
+                    promise.resolve(cursor.getString(nameIndex) ?: "")
+                } else {
+                    promise.resolve("")
+                }
+            } ?: promise.resolve("")
+        } catch (e: Exception) {
+            promise.resolve("")
+        }
+    }
+
     @ReactMethod
     fun getDeviceContacts(promise: Promise) {
         val context = reactApplicationContext
@@ -775,6 +822,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             } else {
                 IncomingCallStore.pending(context).firstOrNull()?.callId ?: return
             }
+            if (IncomingCallStore.isTerminated(context, canonicalCallId)) return
             val existing = IncomingCallStore.pending(context)
                 .firstOrNull { it.callId == canonicalCallId }
             if (existing == null) {

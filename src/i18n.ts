@@ -20,6 +20,8 @@ export const translations: Record<string, string> = {
   // Navigation / status
   Contacts: 'جهات الاتصال',
   Favourites: 'المفضلة',
+  Chat: 'الدردشة',
+  'New Conversation': 'محادثة جديدة',
   Connected: 'متصل',
   'Connecting...': 'جارٍ الاتصال...',
   Offline: 'غير متصل',
@@ -164,7 +166,7 @@ export const translations: Record<string, string> = {
   'Port 8089 (WSS)': 'المنفذ 8089 (WSS)',
 
   // Ringing / login
-  'INCOMING SOKRAT CALL': 'مكالمة SOKRAT واردة',
+  'Incoming Call': 'مكالمة واردة',
   'Ringing softphone…': 'رنين الهاتف…',
   'Connecting audio…': 'جارٍ توصيل الصوت…',
   Decline: 'رفض',

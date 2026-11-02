@@ -25,6 +25,13 @@
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" tools:node="remove" />
     <uses-permission android:name="android.permission.CALL_PHONE" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Chat attachments — read media and images from gallery -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Microphone is already granted for VoIP; listed explicitly for chat voice notes -->
     <!-- react-native-incall-manager proximity sensor -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.sensor.proximity" android:required="false" />
@@ -56,8 +63,6 @@
         android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
         android:launchMode="singleTask"
         android:windowSoftInputMode="adjustResize"
-        android:showWhenLocked="true"
-        android:turnScreenOn="true"
         android:inheritShowWhenLocked="true"
         android:exported="true">
         <intent-filter>
@@ -107,7 +112,7 @@
 
       <receiver
         android:name=".CallActionReceiver"
-        android:exported="true">
+        android:exported="false">
         <intent-filter>
           <action android:name="com.sokratmobile.ACTION_DECLINE_CALL" />
           <action android:name="com.sokratmobile.ACTION_END_CALL" />

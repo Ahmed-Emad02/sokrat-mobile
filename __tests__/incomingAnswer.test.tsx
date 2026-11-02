@@ -68,6 +68,8 @@ jest.mock('../src/push/pushHandler', () => ({
   bindExtension: jest.fn(),
   askNotificationPermission: jest.fn(),
   clearPendingIncomingCall: (id?: string) => mockClearPending(id),
+  bindChatPushHandler: jest.fn(),
+  normalizeChatPayload: () => null,
 }));
 jest.mock('../src/calls/nativeCallNotification', () => ({
   ...jest.requireActual('../src/calls/nativeCallNotification'),
@@ -200,6 +202,23 @@ describe('notification Answer / pending INVITE coordination', () => {
     expect(mockSip.hangup).toHaveBeenCalledWith(callId);
     expect(mockSip.activeCall).toBe(call);
     expect(Alert.alert).toHaveBeenCalledWith('Call not ended', expect.any(String));
+  });
+
+
+  test('dispatched answer that never confirms times out and cleans up', async () => {
+    let call!: ActiveCall;
+    await act(async () => { call = invite(); });
+    const answer = renderer.root.findByType(RingingScreen).props.onAnswer;
+    await act(async () => { await answer(); });
+    expect(mockSip.answer).toHaveBeenCalledWith(callId);
+    expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(1);
+
+    await act(async () => { jest.advanceTimersByTime(20_001); });
+
+    expect(mockSip.hangup).toHaveBeenCalledWith(callId);
+    expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
+    expect(mockDismiss).toHaveBeenCalledWith(callId);
+    expect(mockSip.activeCall).toBe(call);
   });
 
   test('mount recovers an inbound SIP leg already received by headless bootstrap', async () => {

@@ -44,6 +44,16 @@ export function showIncomingCallNotification(
   }
 }
 
+export function updateNativeIncomingCallNotification(callId: string, callerName: string) {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.updateIncomingCallNotification) return;
+  try {
+    mod.updateIncomingCallNotification(callId, callerName);
+  } catch (error) {
+    console.warn('[native-call] notification update failed:', error);
+  }
+}
+
 export function dismissNativeCallNotification(callId: string) {
   const mod = getModule();
   if (Platform.OS !== 'android' || !mod?.dismissCallNotification) return;
@@ -167,6 +177,17 @@ export async function requestContactsPermission(): Promise<boolean> {
   } catch (err) {
     console.warn('[contacts] permission request failed:', err);
     return false;
+  }
+}
+
+export async function lookupDeviceContactName(number: string): Promise<string> {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.lookupDeviceContact || !number.trim()) return '';
+  try {
+    return String(await mod.lookupDeviceContact(number) || '').trim();
+  } catch (err) {
+    console.warn('[contacts] lookupDeviceContact failed:', err);
+    return '';
   }
 }
 

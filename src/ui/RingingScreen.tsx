@@ -3,7 +3,7 @@
  * Features fluid multi-ring radar waves, glassmorphic badges, and responsive action controls.
  */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Animated } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Animated, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme, themedStyles } from '../theme';
 import { useI18n } from '../i18n';
@@ -84,14 +84,31 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
     return () => stopRingtone();
   }, [answerRequested]);
   const [isAnswering, setIsAnswering] = useState(false);
+  const wasAnswerRequestedRef = useRef(false);
+  const answerPending = isAnswering || answerRequested;
+
+  // The parent clears answerRequested when the SIP answer fails or ends.
+  // Mirror that reset locally so the answer control becomes usable again.
+  useEffect(() => {
+    if (wasAnswerRequestedRef.current && !answerRequested) setIsAnswering(false);
+    wasAnswerRequestedRef.current = answerRequested;
+  }, [answerRequested]);
+
+  // Safety only for the unusual case where onAnswer never starts a SIP answer
+  // (for example, no correlated call leg). A real answer keeps answerPending
+  // true until the parent replaces this screen or reports failure.
+  useEffect(() => {
+    if (!isAnswering || answerRequested) return;
+    const timer = setTimeout(() => {
+      if (!answerRequested) setIsAnswering(false);
+    }, 10_000);
+    return () => clearTimeout(timer);
+  }, [isAnswering, answerRequested]);
 
   const handleAnswerPress = () => {
-    if (isAnswering || answerRequested) return;
+    if (answerPending) return;
     setIsAnswering(true);
     stopRingtone();
-    setTimeout(() => {
-      setIsAnswering(false);
-    }, 6000);
     onAnswer();
   };
   const handleDeclinePress = () => {
@@ -108,7 +125,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
       <View style={styles.badgeWrapper}>
         <View style={styles.badgePill}>
           <View style={styles.badgeDot} />
-          <Text style={styles.badgeText}>{t('INCOMING SOKRAT CALL')}</Text>
+          <Text style={styles.badgeText}>{t('Incoming Call')}</Text>
         </View>
       </View>
 
@@ -195,7 +212,7 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
         </View>
 
         <Animated.Text style={[styles.ringingStatus, { opacity: textFadeAnim }]}>
-          {isAnswering || answerRequested ? t('Connecting audio…') : t('Ringing softphone…')}
+          {answerPending ? t('Connecting audio…') : t('Ringing softphone…')}
         </Animated.Text>
       </View>
 
@@ -234,19 +251,22 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
               pointerEvents="none"
             />
             <TouchableOpacity
-              style={[styles.actionBtn, styles.answerBtn, (isAnswering || answerRequested) && { opacity: 0.6 }]}
+              style={[styles.actionBtn, styles.answerBtn, answerPending && { opacity: 0.6 }]}
               onPress={handleAnswerPress}
               delayPressIn={0}
               hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
               activeOpacity={0.7}
-              disabled={isAnswering || answerRequested}
+              disabled={answerPending}
               accessibilityRole="button"
-              accessibilityLabel="Answer incoming call"
+              accessibilityState={{ disabled: answerPending, busy: answerPending }}
+              accessibilityLabel={answerPending ? 'Connecting call' : 'Answer incoming call'}
             >
-              <PhoneAnswerIcon size={32} color={colors.onBrand} />
+              {answerPending
+                ? <ActivityIndicator size={30} color={colors.onBrand} />
+                : <PhoneAnswerIcon size={32} color={colors.onBrand} />}
             </TouchableOpacity>
           </View>
-          <Text style={styles.actionLabel}>{t('Answer')}</Text>
+          <Text style={styles.actionLabel}>{answerPending ? t('Connecting…') : t('Answer')}</Text>
         </View>
       </View>
     </SafeAreaView>
@@ -269,12 +289,6 @@ const rawStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
-    borderColor: 'rgba(56, 189, 248, 0.3)',
-    borderWidth: 1,
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    borderRadius: 20,
   },
   badgeDot: {
     width: 7,

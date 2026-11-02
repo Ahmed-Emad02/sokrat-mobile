@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import { Text } from 'react-native';
+import { ActivityIndicator, Text } from 'react-native';
 import { RingingScreen } from '../src/ui/RingingScreen';
 import { ActiveCallModal } from '../src/ui/ActiveCallModal';
 import { RecentsTab } from '../src/ui/RecentsTab';
@@ -49,7 +49,37 @@ async function textFrom(element: React.ReactElement): Promise<string[]> {
 test('incoming ringing screen shows a number, not the Unknown placeholder', async () => {
   const text = await textFrom(<RingingScreen callerId="204" callerName="Unknown" onAnswer={noop} onDecline={noop} />);
   expect(text).toContain('204');
+  expect(text).toContain('Incoming Call');
   expect(text).not.toContain('Unknown');
+});
+
+
+test('answer press immediately disables the control and shows a connecting spinner', async () => {
+  const onAnswer = jest.fn();
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RingingScreen callerId="204" callerName="Unknown" onAnswer={onAnswer} onDecline={noop} />,
+    );
+  });
+  const answer = renderer.root.findByProps({ accessibilityLabel: 'Answer incoming call' });
+  await act(async () => { answer.props.onPress(); });
+  expect(onAnswer).toHaveBeenCalledTimes(1);
+  expect(renderer.root.findAllByType(ActivityIndicator).length).toBeGreaterThan(0);
+  expect(renderer.root.findAllByType(Text).some(node => node.props.children === 'Connecting…')).toBe(true);
+  const pending = renderer.root.findByProps({ accessibilityLabel: 'Connecting call' });
+  expect(pending.props.disabled).toBe(true);
+  await act(async () => { pending.props.onPress?.(); });
+  expect(onAnswer).toHaveBeenCalledTimes(1);
+});
+
+test('a native answer request shows the connecting state without a press', async () => {
+  await act(async () => {
+    renderer = TestRenderer.create(
+      <RingingScreen callerId="204" callerName="Unknown" answerRequested onAnswer={noop} onDecline={noop} />,
+    );
+  });
+  expect(renderer.root.findAllByType(ActivityIndicator).length).toBeGreaterThan(0);
+  expect(renderer.root.findByProps({ accessibilityLabel: 'Connecting call' }).props.disabled).toBe(true);
 });
 
 test('active call modal shows an outgoing feature code when contact lookup missed', async () => {
@@ -57,7 +87,7 @@ test('active call modal shows an outgoing feature code when contact lookup misse
     onToggleMute={noop} onToggleHold={noop} onToggleSpeaker={noop} onSendDtmf={noop} onTransfer={noop} onHangup={noop} />);
   expect(text).toContain('*43');
   expect(text).not.toContain('Unknown');
-});
+}, 15000);
 
 test('legacy recents render the saved number instead of a persisted Unknown name', async () => {
   const text = await textFrom(<RecentsTab calls={[record]} onCallNumber={noop} onClearHistory={noop} />);

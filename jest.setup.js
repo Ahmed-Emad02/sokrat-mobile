@@ -84,6 +84,7 @@ jest.mock('@react-native-firebase/messaging', () => {
     getMessaging: () => ({}),
     setBackgroundMessageHandler: noop,
     getToken: jest.fn(() => Promise.resolve('mock-token')),
+    deleteToken: jest.fn(() => Promise.resolve()),
     onTokenRefresh: noop,
     requestPermission: jest.fn(() => Promise.resolve(1)),
     onMessage: noop,
@@ -179,3 +180,30 @@ jest.mock('sip.js', () => {
     Inviter: InviterLike,
   };
 });
+
+jest.mock('react-native-image-picker', () => ({
+  launchImageLibrary: jest.fn(() => Promise.resolve({ assets: [] })),
+}));
+jest.mock('@react-native-documents/picker', () => ({
+  pick: jest.fn(() => Promise.resolve([])),
+  types: { allFiles: '*/*' },
+}));
+jest.mock('react-native-nitro-sound', () => ({
+  __esModule: true,
+  default: {
+    startRecorder: jest.fn(() => Promise.resolve('')),
+    stopRecorder: jest.fn(() => Promise.resolve('')),
+    addRecordBackListener: jest.fn(),
+    removeRecordBackListener: jest.fn(),
+    startPlayer: jest.fn(() => Promise.resolve('')),
+    stopPlayer: jest.fn(() => Promise.resolve('')),
+  },
+}));
+jest.mock('react-native-blob-util', () => ({
+  __esModule: true,
+  default: {
+    config: jest.fn(() => ({ fetch: jest.fn(() => Promise.resolve({ path: () => '' })) })),
+    fs: { dirs: { CacheDir: '/tmp' }, stat: jest.fn(() => Promise.resolve({ size: 0 })) },
+    android: { actionViewIntent: jest.fn() },
+  },
+}));

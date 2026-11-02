@@ -8,7 +8,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isClaimSecret, randomHex } from './entropy';
 import { failClosed } from './errors';
-import type { EnrollmentRecord, EnrollmentStatus, GatewayAssignment } from './types';
+import type { EnrollmentRecord, EnrollmentStatus, GatewayAssignment, GatewayEndpoint } from './types';
 import { normalizeServerHost } from './urls';
 
 const RECORD_PREFIX = '@sokrat/gateway/v1';
@@ -41,6 +41,14 @@ function isAssignment(value: unknown): value is GatewayAssignment {
     typeof assignment.apiURL === 'string';
 }
 
+function isEndpoint(value: unknown): value is GatewayEndpoint {
+  if (!value || typeof value !== 'object') return false;
+  const endpoint = value as Partial<GatewayEndpoint>;
+  return typeof endpoint.id === 'string' && (endpoint.role === 'primary' || endpoint.role === 'fallback') &&
+    typeof endpoint.host === 'string' && typeof endpoint.apiURL === 'string' &&
+    typeof endpoint.sipWssUrl === 'string';
+}
+
 function normalizeRecord(raw: unknown): EnrollmentRecord | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Partial<EnrollmentRecord>;
@@ -54,6 +62,7 @@ function normalizeRecord(raw: unknown): EnrollmentRecord | null {
     deviceUuid: typeof value.deviceUuid === 'string' ? value.deviceUuid : undefined,
     enrollmentUuid: typeof value.enrollmentUuid === 'string' ? value.enrollmentUuid : undefined,
     status: (value.status as EnrollmentStatus | 'unclaimed') || 'unclaimed',
+    fallback: isEndpoint(value.fallback) ? value.fallback : undefined,
     gatewayMode: value.gatewayMode !== false,
     assignment: isAssignment(value.assignment) ? value.assignment : undefined,
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),

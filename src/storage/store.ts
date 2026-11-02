@@ -10,6 +10,8 @@ export interface SavedAccount {
   extension: string;
   password: string;
   serverHost: string;
+  /** Optional LAN/Local gateway origin for automatic fallback. */
+  fallbackHost?: string;
   useTls: boolean;
   dnd: boolean;
   autoAnswer: boolean;
@@ -20,6 +22,7 @@ export interface SavedAccount {
 
 export interface CallRecord {
   id: string;
+  callId?: string;
   number: string;
   name: string;
   direction: 'inbound' | 'outbound' | 'missed';
@@ -102,6 +105,23 @@ export const StorageService = {
       return updated;
     } catch (err) {
       console.warn('[storage] addCallRecord failed:', err);
+      return [];
+    }
+  },
+
+  async updateCallRecordName(callId: string, name: string): Promise<CallRecord[]> {
+    try {
+      const current = await this.getCallHistory();
+      let changed = false;
+      const updated = current.map((record) => {
+        if (record.callId !== callId || record.name === name) return record;
+        changed = true;
+        return { ...record, name };
+      });
+      if (changed) await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(updated));
+      return updated;
+    } catch (err) {
+      console.warn('[storage] updateCallRecordName failed:', err);
       return [];
     }
   },

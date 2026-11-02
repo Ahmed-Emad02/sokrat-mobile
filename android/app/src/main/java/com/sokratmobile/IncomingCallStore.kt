@@ -8,6 +8,7 @@ import java.util.UUID
 object IncomingCallStore {
     private const val PREFS = "sokrat_incoming_calls"
     private const val KEY_RECORDS = "records"
+    private const val KEY_TOMBSTONES = "tombstones"
     const val MAX_AGE_MS = 90_000L
 
     data class Record(
@@ -17,6 +18,7 @@ object IncomingCallStore {
         val extension: String,
         val timestamp: Long,
         val action: String?,
+        val terminalAt: Long?,
         val notificationShown: Boolean,
         val bootstrapForwarded: Boolean
     ) {
@@ -27,6 +29,7 @@ object IncomingCallStore {
             put("extension", extension)
             put("timestamp", timestamp)
             if (action != null) put("action", action)
+            if (terminalAt != null) put("terminalAt", terminalAt)
             put("notificationShown", notificationShown)
             put("bootstrapForwarded", bootstrapForwarded)
         }
@@ -59,6 +62,7 @@ object IncomingCallStore {
             extension = extension,
             timestamp = timestamp,
             action = previous?.action,
+            terminalAt = previous?.terminalAt,
             notificationShown = previous?.notificationShown ?: false,
             bootstrapForwarded = previous?.bootstrapForwarded ?: false
         )
@@ -88,17 +92,45 @@ object IncomingCallStore {
     }
 
     @Synchronized
+    fun isTerminated(context: Context, callId: String): Boolean {
+        if (!isValidCallId(callId)) return false
+        val now = System.currentTimeMillis()
+        val tombstones = readTombstones(context)
+        val terminalAt = tombstones[callId] ?: return false
+        if (now - terminalAt > MAX_AGE_MS) {
+            tombstones.remove(callId)
+            writeTombstones(context, tombstones)
+            return false
+        }
+        return true
+    }
+
+    @Synchronized
     fun setAction(context: Context, callId: String, action: String): Record? {
         if (action != "ANSWER" && action != "DECLINE" && action != "END" && action != "SHOW") return null
         val records = readRecords(context)
         val record = records[callId] ?: return null
-        // A full-screen SHOW intent may arrive after the notification Answer.
-        // Presentation must not erase the user's pending terminal action.
+        // Terminal actions are first-writer-wins. A late SHOW or a second
+        // Answer/Decline from a notification must never resurrect the call.
+        if (isTerminated(context, callId) || record.terminalAt != null) return record
         if (action == "SHOW" && (record.action == "ANSWER" || record.action == "DECLINE" || record.action == "END")) return record
-        val updated = record.copy(action = action)
+        val terminal = action == "ANSWER" || action == "DECLINE" || action == "END"
+        val now = System.currentTimeMillis()
+        val updated = record.copy(
+            action = action,
+            terminalAt = if (terminal) now else record.terminalAt
+        )
         records[callId] = updated
         writeRecords(context, records)
+        if (terminal) markTerminal(context, callId, now)
         return updated
+    }
+
+    @Synchronized
+    private fun markTerminal(context: Context, callId: String, at: Long = System.currentTimeMillis()) {
+        val tombstones = readTombstones(context)
+        tombstones[callId] = at
+        writeTombstones(context, tombstones)
     }
 
     @Synchronized
@@ -113,6 +145,7 @@ object IncomingCallStore {
     @Synchronized
     fun remove(context: Context, callId: String) {
         val records = readRecords(context)
+        markTerminal(context, callId)
         if (records.remove(callId) != null) writeRecords(context, records)
     }
 
@@ -144,6 +177,7 @@ object IncomingCallStore {
                     extension = value.optString("extension", ""),
                     timestamp = timestamp,
                     action = value.optString("action").takeIf { it.isNotBlank() },
+                    terminalAt = value.optLong("terminalAt", 0L).takeIf { it > 0L },
                     notificationShown = value.optBoolean("notificationShown", false),
                     bootstrapForwarded = value.optBoolean("bootstrapForwarded", false)
                 )
@@ -152,6 +186,36 @@ object IncomingCallStore {
         } catch (_: Exception) {
             mutableMapOf()
         }
+    }
+
+    private fun readTombstones(context: Context): MutableMap<String, Long> {
+        val encoded = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_TOMBSTONES, null) ?: return mutableMapOf()
+        val now = System.currentTimeMillis()
+        return try {
+            val objectValue = JSONObject(encoded)
+            val tombstones = mutableMapOf<String, Long>()
+            val keys = objectValue.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val at = objectValue.optLong(key, 0L)
+                if (isValidCallId(key) && at > 0L && now - at <= MAX_AGE_MS) {
+                    tombstones[key] = at
+                }
+            }
+            tombstones
+        } catch (_: Exception) {
+            mutableMapOf()
+        }
+    }
+
+    private fun writeTombstones(context: Context, tombstones: Map<String, Long>) {
+        val objectValue = JSONObject()
+        tombstones.forEach { (callId, at) -> objectValue.put(callId, at) }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_TOMBSTONES, objectValue.toString())
+            .apply()
     }
 
     private fun writeRecords(context: Context, records: Map<String, Record>) {

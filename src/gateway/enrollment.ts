@@ -13,8 +13,8 @@ import { DEFAULT_BUSY_RETRY_MS, DEFAULT_CLAIM_POLL_MS, GatewayClient } from './c
 import { GatewayError, failClosed } from './errors';
 import { assertGatewaySessionGeneration, createGatewaySession, getGatewaySessionGeneration, resetGatewaySession, setActiveGatewaySession } from './session';
 import { getOrCreateEnrollmentRecord, isKnownGatewayHost, loadEnrollmentRecord, rememberGatewayHost, saveEnrollmentRecord } from './storage';
-import type { EnrollmentRecord, GatewaySession } from './types';
-import { gatewayBaseUrl, normalizeServerHost } from './urls';
+import type { EnrollmentRecord, GatewaySession, GatewayEndpoint } from './types';
+import { fallbackGatewayEndpoint, gatewayBaseUrl, normalizeServerHost } from './urls';
 
 export const PENDING_APPROVAL_MESSAGE = 'Waiting for administrator approval…';
 export const MAX_NETWORK_BACKOFF_MS = 30_000;
@@ -35,6 +35,8 @@ export type LoginPreparation =
 export type PrepareLoginOptions = {
   host: string;
   extension: string;
+  /** Optional LAN/local gateway origin used only after the primary is unreachable. */
+  fallbackHost?: string;
   /** Passed through for callers/tests; SIP auth stays local, never sent to the gateway. */
   password?: string;
   platform?: 'android' | 'ios';
@@ -109,17 +111,49 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   const knownGateway = existing?.gatewayMode || await isKnownGatewayHost(host);
   checkCurrent();
 
-  const baseUrl = gatewayBaseUrl(host);
   const fetcher = options.fetcher;
   const timeoutMs = options.timeoutMs;
-  const probe = new GatewayClient({ baseUrl, fetcher, timeoutMs });
+  const fallback = options.fallbackHost
+    ? fallbackGatewayEndpoint(options.fallbackHost)
+    : existing?.fallback;
+  const primaryBaseUrl = gatewayBaseUrl(host);
+  let baseUrl = primaryBaseUrl;
+  let probe = new GatewayClient({ baseUrl, fetcher, timeoutMs });
+  let selectedEndpoint: GatewayEndpoint | undefined;
 
   options.onProgress?.({ phase: 'detecting', message: 'Checking server…' });
-  const capabilities = await probe.capabilities();
+  let capabilities = null;
+  let primaryError: unknown = null;
+  try {
+    capabilities = await probe.capabilities();
+  } catch (error) {
+    primaryError = error;
+  }
   checkCurrent();
+
+  // If the cloud/public gateway is unreachable, try the configured LAN gateway
+  // with the same claim secret. Authorization failures are not failover cases.
+  if ((!capabilities || !capabilities.deviceApproval) && fallback &&
+      (!primaryError || (primaryError instanceof GatewayError &&
+        (primaryError.kind === 'network' || (primaryError.status || 0) >= 500)))) {
+    const fallbackProbe = new GatewayClient({ baseUrl: fallback.apiURL, fetcher, timeoutMs });
+    try {
+      const fallbackCapabilities = await fallbackProbe.capabilities();
+      if (fallbackCapabilities?.deviceApproval) {
+        capabilities = fallbackCapabilities;
+        baseUrl = fallback.apiURL;
+        probe = fallbackProbe;
+        selectedEndpoint = fallback;
+      }
+    } catch {
+      // Keep the original primary error / result below.
+    }
+    checkCurrent();
+  }
 
   // No gateway (404/unreachable) or approval disabled → keep direct-PBX login.
   if (!capabilities || !capabilities.deviceApproval) {
+    if (primaryError) throw primaryError;
     if (knownGateway) throw failClosed('Known gateway cannot be bypassed');
     options.onProgress?.({ phase: 'legacy', message: '' });
     return { mode: 'legacy', extension };
@@ -131,6 +165,11 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   checkCurrent();
   let record: EnrollmentRecord = await getOrCreateEnrollmentRecord(host, extension, deviceUuid);
   checkCurrent();
+  if (fallback && JSON.stringify(record.fallback) !== JSON.stringify(fallback)) {
+    record = { ...record, fallback, updatedAt: Date.now() };
+    await saveEnrollmentRecord(record);
+    checkCurrent();
+  }
   const platform = options.platform ?? (Platform.OS === 'ios' ? 'ios' : 'android');
   const deviceName = options.deviceName ?? defaultDeviceName(platform, deviceUuid);
   const appVersion = options.appVersion ?? CONFIG.appVersion;
@@ -204,6 +243,7 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
           record.claimSecret,
           assignedDeviceId,
           assignment,
+          selectedEndpoint,
         );
         setActiveGatewaySession(session);
         options.onProgress?.({ phase: 'approved', message: 'Device approved' });

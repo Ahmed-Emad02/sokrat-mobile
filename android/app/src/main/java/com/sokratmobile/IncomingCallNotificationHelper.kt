@@ -10,10 +10,12 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
 import androidx.core.app.NotificationManagerCompat
 
 object IncomingCallNotificationHelper {
-    const val CHANNEL_ID = "sokrat_incoming_calls"
+    const val CHANNEL_ID = "sokrat_incoming_calls_v2"
+    const val LEGACY_CHANNEL_ID = "sokrat_incoming_calls"
     const val CHANNEL_NAME = "Incoming Calls"
     const val ONGOING_CHANNEL_ID = "sokrat_active_call_v3"
     const val ONGOING_CHANNEL_NAME = "Active Call"
@@ -198,10 +200,13 @@ object IncomingCallNotificationHelper {
         callerId: String,
         callerName: String,
         extension: String,
-        timestamp: String
+        timestamp: String,
+        silentUpdate: Boolean = false
     ) {
-        acquireScreenWakeLock(context)
-        createNotificationChannel(context)
+        if (!silentUpdate) {
+            acquireScreenWakeLock(context)
+            createNotificationChannel(context)
+        }
         val title = CallerDisplayName.resolve(callerId, callerName)
         val subtitle = if (callerId.isNotBlank() && callerId != title) {
             "Incoming call from $callerId"
@@ -238,40 +243,61 @@ object IncomingCallNotificationHelper {
             activityIntent("com.sokratmobile.ACTION_ANSWER_CALL", "ANSWER"),
             flags
         )
-        val declineIntent = Intent(context, CallActionReceiver::class.java).apply {
-            action = "com.sokratmobile.ACTION_DECLINE_CALL"
-            putCallExtras(this, callId, callerId, callerName, extension, timestamp)
-        }
-        val declinePendingIntent = PendingIntent.getBroadcast(
+        // Decline must launch the activity directly. Sending a broadcast and
+        // calling startActivity() from its receiver is a notification trampoline
+        // and is blocked on Android 12+ when the app process is not running.
+        val declinePendingIntent = PendingIntent.getActivity(
             context,
             requestCode(callId, 2),
-            declineIntent,
+            activityIntent("com.sokratmobile.ACTION_DECLINE_CALL", "DECLINE"),
             flags
         )
 
         val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_call)
             .setColor(0xFFEB1235.toInt())
             .setContentTitle(title)
             .setContentText(subtitle)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setSound(ringtoneUri)
-            .setVibrate(longArrayOf(0, 1000, 1000, 1000, 1000, 1000))
             .setAutoCancel(false)
             .setOngoing(true)
             .setTimeoutAfter(IncomingCallStore.MAX_AGE_MS)
             .setContentIntent(showPendingIntent)
-            .setFullScreenIntent(showPendingIntent, true)
-            .addAction(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val person = Person.Builder().setName(title).setImportant(true).build()
+            builder.setStyle(
+                NotificationCompat.CallStyle.forIncomingCall(
+                    person,
+                    declinePendingIntent,
+                    answerPendingIntent
+                )
+            )
+        } else {
+            builder.addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 "Decline",
                 declinePendingIntent
-            )
-            .addAction(android.R.drawable.ic_menu_call, "Answer", answerPendingIntent)
-            .build()
+            ).addAction(android.R.drawable.ic_menu_call, "Answer", answerPendingIntent)
+        }
+        if (silentUpdate) {
+            builder.setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setOnlyAlertOnce(true)
+                .setSound(null)
+                .setVibrate(null)
+        } else {
+            builder.setPriority(NotificationCompat.PRIORITY_MAX)
+                .setSound(ringtoneUri)
+                .setVibrate(longArrayOf(0, 1000, 1000, 1000, 1000, 1000))
+            val fullScreenAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                    ?.canUseFullScreenIntent() != false
+            if (fullScreenAllowed) {
+                builder.setFullScreenIntent(showPendingIntent, true)
+            }
+        }
+        val notification = builder.build()
 
         try {
             NotificationManagerCompat.from(context).notify(notificationId(callId), notification)
@@ -280,13 +306,35 @@ object IncomingCallNotificationHelper {
         }
 
         val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-        if (pm?.isInteractive != true) {
+        if (!silentUpdate && pm?.isInteractive != true) {
             try {
                 context.startActivity(showIntent)
             } catch (error: Exception) {
                 // Full screen intent via notification handles launch if background start blocked
             }
         }
+    }
+
+    fun updateCallNotification(context: Context, callId: String, callerName: String) {
+        val record = IncomingCallStore.pending(context).firstOrNull { it.callId == callId } ?: return
+        if (record.action == "ANSWER" || record.action == "DECLINE" || record.action == "END") return
+        IncomingCallStore.upsertIncoming(
+            context,
+            callId,
+            record.callerId,
+            callerName,
+            record.extension,
+            record.timestamp
+        )
+        showCallNotification(
+            context,
+            callId,
+            record.callerId,
+            callerName,
+            record.extension,
+            record.timestamp.toString(),
+            silentUpdate = true
+        )
     }
 
     fun dismissCallNotification(context: Context, callId: String) {
@@ -300,7 +348,8 @@ object IncomingCallNotificationHelper {
             val sysNm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && sysNm != null) {
                 sysNm.activeNotifications?.forEach { sbn ->
-                    if (sbn.notification.channelId == CHANNEL_ID) {
+                    if (sbn.notification.channelId == CHANNEL_ID ||
+                        sbn.notification.channelId == LEGACY_CHANNEL_ID) {
                         sysNm.cancel(sbn.id)
                     }
                 }

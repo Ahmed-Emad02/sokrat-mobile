@@ -31,9 +31,21 @@ export type GatewayAssignment = {
   mediaIps: string[];
 };
 
+/** One reachable gateway origin in a logical cluster. */
+export type GatewayEndpoint = {
+  id: 'primary' | 'fallback' | string;
+  role: 'primary' | 'fallback';
+  host: string;
+  apiURL: string;
+  /** Device-facing WSS URL; never the assignment's upstream PBX socket. */
+  sipWssUrl: string;
+};
+
 export type EnrollmentRecord = {
   host: string;
   extension: string;
+  /** Local/LAN failover endpoint, configured once at login. */
+  fallback?: GatewayEndpoint;
   /** 256-bit client secret, persisted per host+extension; the gateway credential. */
   claimSecret: string;
   deviceId?: string;
@@ -53,8 +65,11 @@ export type GatewaySession = {
   deviceId: string;
   claimSecret: string;
   assignment: GatewayAssignment;
-  /** Base URL for authenticated tenant APIs (assignment.apiURL or gateway base). */
+  /** Base URL for authenticated tenant APIs (gateway origin, never assignment.apiURL). */
   apiURL: string;
+  /** Configured device-facing WSS endpoint for this session. */
+  sipWssUrl?: string;
+  endpointId?: string;
 };
 
 export type EnrollResponse = {

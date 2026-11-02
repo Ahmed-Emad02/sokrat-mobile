@@ -17,7 +17,7 @@ import { CONFIG } from '../config';
 import { SettingsIcon, PhoneIcon } from './Icons';
 
 type Props = {
-  onLogin: (ext: string, password: string, serverHost: string) => void;
+  onLogin: (ext: string, password: string, serverHost: string, fallbackHost?: string) => void;
   state: string;
   /** Optional status/error line (e.g. gateway approval pending). */
   message?: string | null;
@@ -36,6 +36,7 @@ export function LoginScreen({ onLogin, state, message }: Props) {
   const [extension, setExtension] = useState('');
   const [password, setPassword] = useState('');
   const [serverHost, setServerHost] = useState(CONFIG.sipDomain || '');
+  const [fallbackHost, setFallbackHost] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(!CONFIG.sipDomain);
 
   const submit = () => {
@@ -44,7 +45,7 @@ export function LoginScreen({ onLogin, state, message }: Props) {
       return;
     }
     if (!extension.trim() || !password.trim()) return;
-    onLogin(extension.trim(), password.trim(), serverHost.trim());
+    onLogin(extension.trim(), password.trim(), serverHost.trim(), fallbackHost.trim() || undefined);
   };
 
   return (
@@ -102,6 +103,16 @@ export function LoginScreen({ onLogin, state, message }: Props) {
                 value={serverHost}
                 onChangeText={setServerHost}
                 placeholder="e.g. pbx.yourcompany.com"
+                placeholderTextColor={colors.textFaint}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.label}>{t('LOCAL FALLBACK GATEWAY (OPTIONAL)')}</Text>
+              <TextInput
+                style={styles.input}
+                value={fallbackHost}
+                onChangeText={setFallbackHost}
+                placeholder="e.g. 192.168.100.50:18080"
                 placeholderTextColor={colors.textFaint}
                 autoCapitalize="none"
                 autoCorrect={false}

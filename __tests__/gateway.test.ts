@@ -43,6 +43,7 @@ import type { GatewayAssignment } from '../src/gateway/types';
 import {
   appendQuery,
   gatewayAuthHeaders,
+  fallbackGatewayEndpoint,
   gatewayBaseUrl,
   normalizeServerHost,
 } from '../src/gateway/urls';
@@ -621,5 +622,59 @@ describe('gateway session + tenant APIs', () => {
   test('tenant APIs without a claim secret are rejected locally', async () => {
     const client = new GatewayClient({ baseUrl: 'http://pbx.example.com' });
     await expect(client.sipTicket()).rejects.toMatchObject({ kind: 'unauthorized' });
+  });
+});
+
+
+describe('automatic local gateway fallback', () => {
+  const FALLBACK = '192.168.100.50:18080';
+
+  test('uses the configured LAN endpoint when the public gateway is unreachable', async () => {
+    const calls: string[] = [];
+    const fetcher = jest.fn(async (url: string) => {
+      calls.push(url);
+      if (url.startsWith(`https://${HOST}`)) throw new TypeError('network request failed');
+      if (url.endsWith('/api/gateway/capabilities')) return jsonResponse(200, CAPABILITIES);
+      if (url.endsWith('/api/gateway/enrollment/enroll')) return jsonResponse(200, { device: { id: 'dev-local' }, status: 'pending' });
+      if (url.endsWith('/api/gateway/enrollment/claim')) {
+        return jsonResponse(200, { status: 'approved', assignment: { ...ASSIGNMENT, deviceId: 'dev-local' } });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    const result = await prepareLogin({ host: HOST, extension: '160', fallbackHost: FALLBACK, fetcher });
+    expect(result.mode).toBe('gateway');
+    if (result.mode !== 'gateway') throw new Error('expected gateway login');
+    expect(result.session.apiURL).toBe('http://192.168.100.50:18080');
+    expect(result.session.sipWssUrl).toBe('ws://192.168.100.50:18088/ws');
+    expect(result.session.endpointId).toBe('fallback');
+    expect(calls.some(url => url.startsWith('http://192.168.100.50:18080'))).toBe(true);
+    const record = await loadEnrollmentRecord(HOST, '160');
+    expect(record?.fallback).toEqual(fallbackGatewayEndpoint(FALLBACK));
+  });
+
+  test('revalidates the same device against the local endpoint when the public claim fails', async () => {
+    resetGatewaySession();
+    await saveEnrollmentRecord({
+      host: HOST, extension: '160', claimSecret: 'a'.repeat(64), deviceId: 'dev-1',
+      status: 'approved', gatewayMode: true, assignment: ASSIGNMENT,
+      fallback: fallbackGatewayEndpoint(FALLBACK), updatedAt: Date.now(),
+    });
+    const fetcher = jest.fn(async (url: string) => {
+      if (url.startsWith(`https://${HOST}`)) throw new TypeError('network request failed');
+      if (url.endsWith('/api/gateway/enrollment/claim')) {
+        return jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const original = globalThis.fetch;
+    globalThis.fetch = fetcher;
+    try {
+      const session = await getOrLoadGatewaySession(HOST, '160');
+      expect(session?.apiURL).toBe('http://192.168.100.50:18080');
+      expect(session?.sipWssUrl).toBe('ws://192.168.100.50:18088/ws');
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

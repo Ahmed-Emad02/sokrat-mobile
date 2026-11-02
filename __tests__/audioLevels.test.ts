@@ -12,8 +12,8 @@ describe('in-call audio level mapping', () => {
   test('keeps 50% microphone at unity and exposes the full boost range', () => {
     expect(micPercentToDb(50)).toBe(0);
     expect(micPercentToDb(0)).toBe(MIC_MIN_GAIN_DB);
-    expect(micPercentToDb(100)).toBe(MIC_MAX_GAIN_DB);
-    expect(micPercentToDb(75)).toBe(12);
+    expect(micPercentToDb(100)).toBe(Math.round(MIC_MAX_GAIN_DB));
+    expect(micPercentToDb(75)).toBe(16);
     expect(micPercentToDb(25)).toBe(-6);
   });
 
@@ -30,6 +30,7 @@ describe('in-call audio level mapping', () => {
     expect(speakerPercentToGain(50)).toBe(0.5);
     expect(speakerPercentToGain(100)).toBe(1);
     expect(speakerPercentToGain(125)).toBe(1.5);
+    expect(speakerPercentToGain(150)).toBe(2);
     expect(speakerPercentToGain(SPEAKER_MAX_PERCENT)).toBe(SPEAKER_MAX_GAIN);
     expect(speakerPercentToGain(999)).toBe(SPEAKER_MAX_GAIN);
   });

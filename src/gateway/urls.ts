@@ -1,4 +1,5 @@
 import { isPrivateHost, splitHost } from '../network';
+import type { GatewayEndpoint } from './types';
 
 /**
  * Canonical host for storage keys and comparisons: no scheme, no path,
@@ -25,6 +26,43 @@ export function gatewayBaseUrl(host: string): string {
   const authority = hostname.includes(':') ? `[${hostname}]` : hostname.toLowerCase();
   const scheme = privateHost ? 'http' : 'https';
   return `${scheme}://${authority}${port ? `:${port}` : privateHost ? ':8095' : ''}`;
+}
+
+/**
+ * Device-facing WSS URL for a gateway origin.
+ *
+ * The LAN gateway keeps its API on 18080 and WebSocket on 18088; public
+ * gateways use 8089. This is intentionally explicit because the old private
+ * 8088 default is the PBX socket, not the gateway.
+ */
+export function gatewaySipWssUrl(host: string, role: GatewayEndpoint['role']): string {
+    const { hostname, port } = splitHost(host);
+    if (!hostname) return '';
+    const authority = hostname.includes(':') ? `[${hostname}]` : hostname.toLowerCase();
+    if (role === 'fallback') {
+        return `ws://${authority}:18088/ws`;
+    }
+    if (!isPrivateHost(hostname)) {
+        return `wss://${authority}:8089/ws`;
+    }
+    return `ws://${authority}:${port || 8088}/ws`;
+}
+
+export function fallbackGatewayEndpoint(host: string): GatewayEndpoint | undefined {
+    const normalized = normalizeServerHost(host);
+    if (!normalized) return undefined;
+    const { hostname, port } = splitHost(normalized);
+    if (!hostname) return undefined;
+    const authority = hostname.includes(':') ? `[${hostname}]` : hostname.toLowerCase();
+    return {
+        id: 'fallback',
+        role: 'fallback',
+        host: normalized,
+        // The LAN gateway defaults to HTTP/API 18080 when only its host is
+        // entered. An explicit port still wins for non-default deployments.
+        apiURL: port ? gatewayBaseUrl(normalized) : `http://${authority}:18080`,
+        sipWssUrl: gatewaySipWssUrl(normalized, 'fallback'),
+    };
 }
 
 /** Join a base URL and an API path without doubling slashes. */

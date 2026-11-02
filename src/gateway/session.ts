@@ -21,8 +21,8 @@ import { getSipWss } from '../config';
 import { GatewayClient } from './client';
 import { GatewayError, failClosed } from './errors';
 import { isKnownGatewayHost, loadEnrollmentRecord, saveEnrollmentRecord } from './storage';
-import type { EnrollmentRecord, GatewayAssignment, GatewaySession } from './types';
-import { appendQuery, gatewayBaseUrl, normalizeServerHost } from './urls';
+import type { EnrollmentRecord, GatewayAssignment, GatewaySession, GatewayEndpoint } from './types';
+import { appendQuery, gatewayBaseUrl, gatewaySipWssUrl, normalizeServerHost } from './urls';
 
 let activeSession: GatewaySession | null = null;
 let sessionGeneration = 0;
@@ -70,19 +70,26 @@ export function createGatewaySession(
   claimSecret: string,
   deviceId: string,
   assignment: GatewayAssignment,
+  endpoint?: GatewayEndpoint,
 ): GatewaySession {
+  const normalizedHost = normalizeServerHost(host);
+  const selected: GatewayEndpoint = endpoint || {
+    id: 'primary',
+    role: 'primary',
+    host: normalizedHost,
+    apiURL: gatewayBaseUrl(normalizedHost),
+    sipWssUrl: gatewaySipWssUrl(normalizedHost, 'primary'),
+  };
   const session: GatewaySession = {
-    host: normalizeServerHost(host),
+    host: normalizedHost,
     extension: assignment.extension,
     deviceId,
     claimSecret,
     assignment,
-    // Authenticated gateway APIs (ICE, SIP ticket, push registration) are
-    // always served by the gateway itself. `assignment.apiURL` is the *PBX*
-    // API — usually a private address such as http://100.98.185.86:8080 — and
-    // using it as the gateway origin sends authenticated device calls to the
-    // wrong server (404/401), so it is deliberately ignored here.
-    apiURL: gatewayBaseUrl(host),
+    // The assignment's apiURL is the PBX upstream and must never be used here.
+    apiURL: selected.apiURL,
+    sipWssUrl: selected.sipWssUrl,
+    endpointId: selected.id,
   };
   generations.set(session, sessionGeneration);
   return session;
@@ -108,14 +115,14 @@ export function getActiveGatewaySession(
   return activeSession;
 }
 
-function sessionFromRecord(record: EnrollmentRecord): GatewaySession {
+function sessionFromRecord(record: EnrollmentRecord, endpoint?: GatewayEndpoint): GatewaySession {
   if (record.status !== 'approved' || !record.assignment || record.assignment.extension !== record.extension) {
     throw failClosed('Device approval is still pending; direct PBX fallback is disabled');
   }
   if (!record.deviceId) {
     throw failClosed('Enrollment record has no device id');
   }
-  return createGatewaySession(record.host, record.claimSecret, record.deviceId, record.assignment);
+  return createGatewaySession(record.host, record.claimSecret, record.deviceId, record.assignment, endpoint);
 }
 
 /**
@@ -144,20 +151,40 @@ export async function getOrLoadGatewaySession(
     throw new GatewayError(record.status, 'Device enrollment is no longer valid');
   }
 
-  const session = sessionFromRecord(record);
-  // Approval is mutable: a cached assignment is not evidence that its PBX or
-  // device is still active. Revalidate before every SIP registration/restore.
-  const client = new GatewayClient({ baseUrl: session.apiURL, deviceId: session.deviceId, claimSecret: session.claimSecret });
-  const claim = await sessionRequest(session, () => client.claim(session.deviceId));
-  assertGatewaySessionGeneration(generation);
-  if (claim.status !== 'approved' || claim.assignment.extension !== extension.trim()) {
-    await saveEnrollmentRecord({ ...record, status: claim.status, assignment: undefined });
-    resetGatewaySession();
-    throw failClosed('Gateway approval is required for this account');
+  const primary: GatewayEndpoint = {
+    id: 'primary',
+    role: 'primary',
+    host: record.host,
+    apiURL: gatewayBaseUrl(record.host),
+    sipWssUrl: gatewaySipWssUrl(record.host, 'primary'),
+  };
+  const endpoints = [primary, record.fallback].filter(Boolean) as GatewayEndpoint[];
+  let lastError: unknown = null;
+  for (const endpoint of endpoints) {
+    const session = sessionFromRecord(record, endpoint);
+    // Approval is mutable: revalidate at the selected endpoint before SIP.
+    const client = new GatewayClient({ baseUrl: session.apiURL, deviceId: session.deviceId, claimSecret: session.claimSecret });
+    try {
+      const claim = await sessionRequest(session, () => client.claim(session.deviceId));
+      assertGatewaySessionGeneration(generation);
+      if (claim.status !== 'approved' || claim.assignment.extension !== extension.trim()) {
+        await saveEnrollmentRecord({ ...record, status: claim.status, assignment: undefined });
+        resetGatewaySession();
+        throw failClosed('Gateway approval is required for this account');
+      }
+      session.assignment = claim.assignment;
+      activeSession = session;
+      return session;
+    } catch (error) {
+      if (!(error instanceof GatewayError) ||
+          (error.kind !== 'network' && (error.status || 0) < 500) ||
+          endpoint === endpoints[endpoints.length - 1]) {
+        throw error;
+      }
+      lastError = error;
+    }
   }
-  session.assignment = claim.assignment;
-  activeSession = session;
-  return session;
+  throw lastError || failClosed('Gateway unavailable');
 }
 
 /** Returns the persisted record (approved or pending) for login/restore UX. */
@@ -208,7 +235,11 @@ export async function buildGatewaySipWebSocketUrl(
   session: GatewaySession,
   fallbackUrl?: string,
 ): Promise<string> {
-  const base = resolveGatewaySipWebSocketUrl(session.host, fallbackUrl);
+  const configured = session.sipWssUrl || resolveGatewaySipWebSocketUrl(session.host, fallbackUrl);
+  // Preserve caller query parameters only on the same endpoint URL. This keeps
+  // transport flags used by the legacy reconnect path while never allowing a
+  // different host to replace the selected gateway endpoint.
+  const base = fallbackUrl && fallbackUrl.startsWith(`${configured}?`) ? fallbackUrl : configured;
   const client = new GatewayClient({
     baseUrl: session.apiURL,
     deviceId: session.deviceId,
@@ -235,16 +266,17 @@ export async function sendGatewayHeartbeat(
   host: string,
   extension: string,
   sipState: string,
-): Promise<void> {
+): Promise<boolean> {
   const session = getActiveGatewaySession(host, extension) ||
     await getOrLoadGatewaySession(host, extension);
-  if (!session) return;
+  if (!session) return false;
   const client = new GatewayClient({
     baseUrl: session.apiURL,
     deviceId: session.deviceId,
     claimSecret: session.claimSecret,
   });
   await sessionRequest(session, () => client.heartbeat({ sipState }));
+  return true;
 }
 
 /** Authenticated push token registration through the gateway. */

@@ -1,4 +1,4 @@
-import { callDisplayName, callerNameFromContacts } from '../src/calls/callerName';
+import { callDisplayName, callerNameFromContacts, providerCallerName } from '../src/calls/callerName';
 
 const contacts = [{ id: 'contact', name: 'Customer', extension: '+44 20 1234 5678' }];
 
@@ -16,6 +16,10 @@ test('supports local numbers, extensions and Arabic digits without a hardcoded c
   expect(callerNameFromContacts('204', [{ id: 'b', name: 'Colleague', extension: '204' }])).toBe('Colleague');
 });
 
+test('matches app contacts that use feature-code numbers', () => {
+  expect(callerNameFromContacts('*88', [{ id: 'echo', name: 'Echo Audio Test', extension: '*88' }])).toBe('Echo Audio Test');
+});
+
 test.each(['', 'Unknown', ' unknown caller ', 'Incoming Call', 'غير معروف'])('number replaces placeholder display name %s', name => {
   expect(callDisplayName('+44 20 1234 5678', name)).toBe('+44 20 1234 5678');
 });
@@ -30,4 +34,20 @@ test('missing or withheld numbers and trunk labels are not invented as caller id
   for (const number of ['', 'anonymous', 'restricted', 'dongle0']) {
     expect(callDisplayName(number, 'Unknown')).toBe('Unknown');
   }
+});
+
+describe('provider caller names', () => {
+  test('keeps human provider labels and rejects routing labels', () => {
+    expect(providerCallerName('204', 'Ahmed Sales')).toBe('Ahmed Sales');
+    expect(providerCallerName('204', 'Dongle/dongle1')).toBe('204');
+    expect(providerCallerName('204', 'PJSIP/204-00000001')).toBe('204');
+    expect(providerCallerName('204', 'from-internal')).toBe('204');
+    expect(providerCallerName('204', 'Unknown')).toBe('204');
+    expect(providerCallerName('204', '204')).toBe('204');
+  });
+
+  test('uses the first usable provider name', () => {
+    expect(providerCallerName('204', 'Unknown', 'Sales Line')).toBe('Sales Line');
+    expect(providerCallerName('204', 'Sales Line', 'Support')).toBe('Sales Line');
+  });
 });

@@ -33,8 +33,8 @@ class SokratFirebaseMessagingService : ReactNativeFirebaseMessagingService() {
 
         val canonicalCallId = callId!!
         val callerId = data["callerId"] ?: "Unknown"
-        // A push display label can be a trunk name. JS resolves the address book.
-        val callerName = CallerDisplayName.resolve(callerId)
+        // Keep a human provider name; contact enrichment can improve it later.
+        val callerName = CallerDisplayName.resolve(callerId, data["callerName"] ?: "")
         val extension = data["extension"] ?: ""
         val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 

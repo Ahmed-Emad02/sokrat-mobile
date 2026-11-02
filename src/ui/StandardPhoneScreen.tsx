@@ -97,6 +97,13 @@ import { searchContacts } from '../utils/dialSearch';
 import { nameCallRecords } from '../utils/callLog';
 import { callDisplayName } from '../calls/callerName';
 import { editDialInput, type DialSelection } from '../utils/dialInput';
+import type { ChatClient } from '../chat/client';
+import type { ChatCache } from '../chat/cache';
+import type { ChatConversation, UnreadSummary } from '../chat/types';
+import type { ChatSocket } from '../chat/socket';
+import { ChatTab } from '../chat/ChatTab';
+import { ChatThreadScreen } from '../chat/ChatThreadScreen';
+import { ChatIcon } from './Icons';
 
 function VolumeSlider({
   label,
@@ -281,7 +288,7 @@ function UnifiedAudioControls({
         icon={<SpeakerIcon size={18} color={colors.brand} />}
         description={speakerDescription}
         max={SPEAKER_MAX_PERCENT}
-        presets={[50, 100, 125, 150]}
+        presets={[50, 100, 125, 150, 195]}
       />
 
       <VolumeSlider
@@ -429,6 +436,7 @@ type Props = {
   onCancelTransfer: () => Promise<void>;
   onSwapLines: () => Promise<void>;
   onSaveAccount: (account: SavedAccount) => void;
+  onRepairPush?: () => Promise<boolean>;
   onLogout: () => void;
   onClearHistory: () => void;
   onSaveContact: (contact: Contact) => void;
@@ -439,9 +447,16 @@ type Props = {
   onUpdateVolume?: (type: 'mic' | 'speaker', value: number) => void;
   audioDeviceState?: AudioDeviceState;
   onChooseAudioRoute?: (route: AudioRouteType) => Promise<AudioDeviceState>;
+  // Chat
+  chatClient?: ChatClient | null;
+  chatCache?: ChatCache | null;
+  chatConversations?: ChatConversation[];
+  chatUnread?: UnreadSummary;
+  chatSocket?: ChatSocket | null;
+  onChatRefresh?: () => Promise<void>;
 };
 
-type BottomTab = 'phone' | 'contacts' | 'favourites';
+type BottomTab = 'phone' | 'contacts' | 'chat';
 
 const DIALPAD_KEYS = [
   { digit: '1', sub: 'VM', isVm: true },
@@ -672,6 +687,7 @@ function StandardPhoneScreenInner({
   onSwapLines,
   onSaveAccount,
   onSaveContactsBatch,
+  onRepairPush,
   onLogout,
   onClearHistory,
   onSaveContact,
@@ -679,6 +695,12 @@ function StandardPhoneScreenInner({
   onDeleteCallRecord,
   onToggleFavorite,
   onUpdateVolume,
+  chatClient,
+  chatCache,
+  chatConversations = [],
+  chatUnread = { total: 0, per_conversation: {} },
+  chatSocket = null,
+  onChatRefresh,
 }: Props) {
   const styles = useScreenStyles();
   const { colors } = useTheme();
@@ -693,6 +715,7 @@ function StandardPhoneScreenInner({
   };
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState<BottomTab>('phone');
+  const [openThread, setOpenThread] = useState<ChatConversation | null>(null);
   const [digits, setDigits] = useState('');
   const [dialSelection, setDialSelection] = useState<DialSelection>({ start: 0, end: 0 });
   const setCursorIndex = (index: number) => setDialSelection({ start: index, end: index });
@@ -723,6 +746,7 @@ function StandardPhoneScreenInner({
   const [editExt, setEditExt] = useState(account?.extension || '');
   const [editPass, setEditPass] = useState(account?.password || '');
   const [editHost, setEditHost] = useState(account?.serverHost || '');
+  const [editFallbackHost, setEditFallbackHost] = useState(account?.fallbackHost || '');
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
@@ -791,7 +815,7 @@ function StandardPhoneScreenInner({
 
   const handleTabPress = useCallback((tab: BottomTab) => {
     if (tab === activeTab || tabSwitchingRef.current) return;
-    const order: BottomTab[] = ['phone', 'contacts', 'favourites'];
+    const order: BottomTab[] = ['phone', 'contacts', 'chat'];
     const fromIndex = order.indexOf(activeTab);
     const toIndex = order.indexOf(tab);
     const forward = toIndex > fromIndex;
@@ -867,7 +891,7 @@ function StandardPhoneScreenInner({
           Math.abs(gesture.dx) > 30 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
         onPanResponderRelease: (_evt, gesture) => {
           if (Math.abs(gesture.dx) < 70) return;
-          const order: BottomTab[] = ['phone', 'contacts', 'favourites'];
+          const order: BottomTab[] = ['phone', 'contacts', 'chat'];
           const index = order.indexOf(activeTab);
           const forward = I18nManager.isRTL ? gesture.dx > 0 : gesture.dx < 0;
           const nextIndex = Math.min(2, Math.max(0, index + (forward ? 1 : -1)));
@@ -880,7 +904,7 @@ function StandardPhoneScreenInner({
   const handleScrollEnd = (e: { nativeEvent: { contentOffset: { x: number } } }) => {
     const offsetX = e.nativeEvent.contentOffset.x;
     const idx = Math.round(offsetX / SCREEN_WIDTH);
-    const tabOrder: BottomTab[] = ['phone', 'contacts', 'favourites'];
+    const tabOrder: BottomTab[] = ['phone', 'contacts', 'chat'];
     if (tabOrder[idx] && tabOrder[idx] !== activeTab) {
       setActiveTab(tabOrder[idx]);
       Animated.spring(tabIndicatorAnim, {
@@ -1168,6 +1192,7 @@ function StandardPhoneScreenInner({
       extension: editExt.trim(),
       password: editPass.trim(),
       serverHost: editHost.trim(),
+      fallbackHost: editFallbackHost.trim() || undefined,
       useTls: editTls,
       dnd: editDnd,
       autoAnswer: editAuto,
@@ -1914,7 +1939,7 @@ function StandardPhoneScreenInner({
       <View style={styles.topBar}>
         <View>
           <Text style={styles.topTitle}>
-            {activeTab === 'phone' ? 'VOICE' : activeTab === 'contacts' ? t('Contacts') : t('Favourites')}
+            {activeTab === 'phone' ? 'VOICE' : activeTab === 'contacts' ? t('Contacts') : t('Chat')}
           </Text>
           <TouchableOpacity
             style={[
@@ -2354,28 +2379,33 @@ function StandardPhoneScreenInner({
         </View>
 
         )}
-        {activeTab === 'favourites' && (
+        {activeTab === 'chat' && (
         <View style={{ flex: 1 }}>
-        <View style={styles.contactsContent}>
-          <FlatList
-            data={favoriteContacts}
-            keyExtractor={contactKeyExtractor}
-            initialNumToRender={10}
-            maxToRenderPerBatch={10}
-            windowSize={5}
-            removeClippedSubviews={Platform.OS === 'android'}
-            contentContainerStyle={styles.contactsListContent}
-            ListEmptyComponent={
-              <View style={styles.emptyHistory}>
-                <Text style={styles.emptyHistoryText}>{t('No favourites yet. Bookmark contacts to see them here.')}</Text>
-              </View>
-            }
-            renderItem={renderContact}
+          <ChatTab
+            account={account}
+            client={chatClient ?? null}
+            cache={chatCache ?? null}
+            unread={chatUnread}
+            conversations={chatConversations}
+            onOpenThread={setOpenThread}
+            onRefresh={onChatRefresh ?? (() => Promise.resolve())}
           />
-        </View>
         </View>
         )}
       </Animated.View>
+
+      {/* Chat thread overlay — full-screen modal */}
+      {openThread !== null && chatClient && chatCache && (
+        <ChatThreadScreen
+          conversation={openThread}
+          ownExtension={account?.extension ?? ''}
+          client={chatClient}
+          cache={chatCache}
+          socket={chatSocket}
+          onClose={() => setOpenThread(null)}
+          onCall={(ext) => { setOpenThread(null); onCall(ext); }}
+        />
+      )}
 
       {/* Bottom Navigation Bar */}
       <View style={styles.bottomNav}>
@@ -2422,10 +2452,17 @@ function StandardPhoneScreenInner({
 
         <TouchableOpacity
           style={styles.navItem}
-          onPress={() => handleTabPress('favourites')}
+          onPress={() => handleTabPress('chat')}
         >
-          <BookmarkIcon size={20} color={activeTab === 'favourites' ? colors.brand : colors.textFaint} fill={activeTab === 'favourites' ? colors.brand : 'none'} />
-          <Text style={[styles.navLabel, activeTab === 'favourites' && styles.navLabelActive]}>{t('Favourites')}</Text>
+          <View>
+            <ChatIcon size={20} color={activeTab === 'chat' ? colors.brand : colors.textFaint} />
+            {chatUnread.total > 0 && (
+              <View style={styles.navBadge}>
+                <Text style={styles.navBadgeText}>{chatUnread.total > 99 ? '99+' : String(chatUnread.total)}</Text>
+              </View>
+            )}
+          </View>
+          <Text style={[styles.navLabel, activeTab === 'chat' && styles.navLabelActive]}>{t('Chat')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -2472,6 +2509,17 @@ function StandardPhoneScreenInner({
                     value={editHost}
                     onChangeText={setEditHost}
                     placeholder="e.g. pbx.yourcompany.com"
+                    placeholderTextColor={colors.textFaint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+
+                  <Text style={styles.fieldLabel}>{t('LOCAL FALLBACK GATEWAY (OPTIONAL)')}</Text>
+                  <TextInput
+                    style={styles.settingsInput}
+                    value={editFallbackHost}
+                    onChangeText={setEditFallbackHost}
+                    placeholder="e.g. 192.168.100.50:18080"
                     placeholderTextColor={colors.textFaint}
                     autoCapitalize="none"
                     autoCorrect={false}
@@ -2678,6 +2726,22 @@ function StandardPhoneScreenInner({
                   </TouchableOpacity>
 
                   <View style={styles.settingsActions}>
+                    {account && onRepairPush ? (
+                      <TouchableOpacity
+                        onPress={async () => {
+                          const repaired = await onRepairPush();
+                          Alert.alert(
+                            'Notifications',
+                            repaired
+                              ? 'Push notifications were re-registered.'
+                              : 'Push registration could not be repaired. Check notification permission and network.',
+                          );
+                        }}
+                        style={styles.dialogCancelBtn}
+                      >
+                        <Text style={styles.dialogCancelText}>{t('Repair notifications')}</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     {account ? (
                       <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
                         <Text style={styles.dialogCancelText}>{t('Cancel')}</Text>
@@ -3218,6 +3282,23 @@ const rawStyles = StyleSheet.create({
   },
   navLabelActive: {
     color: '#38bdf8',
+    fontWeight: '700',
+  },
+  navBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  navBadgeText: {
+    color: '#ffffff',
+    fontSize: 9,
     fontWeight: '700',
   },
   audioRouteCard: {

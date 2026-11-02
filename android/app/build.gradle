@@ -100,8 +100,8 @@ android {
         applicationId "com.sokratmobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 9
-        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.0.8"
+        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 16
+        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.0.15"
     }
     signingConfigs {
         if (productionRelease) {
@@ -138,6 +138,7 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation platform("com.google.firebase:firebase-bom:33.7.0")
     implementation("com.google.firebase:firebase-messaging")
+    implementation("androidx.core:core-ktx:1.13.1")
     testImplementation("junit:junit:4.13.2")
 
     if (hermesEnabled.toBoolean()) {

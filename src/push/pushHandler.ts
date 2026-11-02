@@ -10,6 +10,7 @@ import {
   setBackgroundMessageHandler,
   onMessage,
   getToken,
+  deleteToken,
   onTokenRefresh,
   requestPermission,
 } from '@react-native-firebase/messaging';
@@ -44,15 +45,44 @@ export type CancelPayload = {
   callId: string;
 };
 
+export type ChatPushPayload = {
+  type: 'chat-message';
+  conversationId: string;
+  messageId: string;
+  senderExtension: string;
+  extension: string;
+  preview?: string;
+  timestamp?: string;
+};
+
+type ChatPushHandler = (payload: ChatPushPayload) => void;
+
+/** Normalize a raw FCM data payload into ChatPushPayload, or null if not chat. */
+export function normalizeChatPayload(data: Record<string, string | undefined>): ChatPushPayload | null {
+  if (data.type !== 'chat-message') return null;
+  if (!data.conversationId || !data.messageId || !data.senderExtension || !data.extension) return null;
+  return {
+    type: 'chat-message',
+    conversationId: data.conversationId,
+    messageId: data.messageId,
+    senderExtension: data.senderExtension,
+    extension: data.extension,
+    preview: data.preview,
+    timestamp: data.timestamp,
+  };
+}
+
 type RawPushPayload = Omit<Partial<PushPayload>, 'msg' | 'type'> & { msg?: string; type?: string };
 type PushHandler = (payload: PushPayload) => void;
 type CancelHandler = (payload: CancelPayload) => void;
 
 const PENDING_CALLS_KEY = '@sokrat/pending-incoming-calls';
+const PUSH_APP_VERSION_KEY = '@sokrat/push-app-version';
 const MAX_PENDING_AGE_MS = 90_000;
 
 let onIncoming: PushHandler | null = null;
 let onCancel: CancelHandler | null = null;
+let onChatMessage: ChatPushHandler | null = null;
 let currentExtension = '';
 let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
@@ -86,6 +116,50 @@ function refreshAndroidToken() {
       return false;
     }
   });
+}
+
+/**
+ * Refresh the currently cached token on startup/foreground without invalidating
+ * it. App-version changes are recorded for diagnostics only; deleting a token
+ * is reserved for the explicit repair action so no healthy user token is lost.
+ */
+async function refreshAndroidTokenForAppVersion() {
+  if (Platform.OS !== 'android' || !currentExtension) return;
+  const version = String(CONFIG.appVersion || '');
+  try {
+    await AsyncStorage.setItem(PUSH_APP_VERSION_KEY, version);
+    refreshAndroidToken();
+  } catch {
+    console.warn('[push] app-version token check failed; retry on next foreground');
+  }
+}
+
+/**
+ * Explicit repair path for settings/operator use. This is the only operation
+ * that should delete a healthy token outside an app-version change.
+ */
+export async function repairPushRegistration(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !currentExtension) return false;
+  const extension = currentExtension;
+  const host = CONFIG.sipDomain;
+  // Repair is an explicit one-shot operation. Drain normal registration
+  // retries first so deleteToken/getToken/register cannot race a foreground or
+  // token-refresh registration.
+  await registrationRetry.stop();
+  await tokenRetry.stop();
+  try {
+    await deleteToken(getMessaging());
+    const token = await getToken(getMessaging());
+    if (currentExtension !== extension || CONFIG.sipDomain !== host) return false;
+    const registered = await sendTokenToGateway('android', token, null, extension, host);
+    if (!registered) return false;
+    fcmTokenCache = token;
+    await AsyncStorage.setItem(PUSH_APP_VERSION_KEY, String(CONFIG.appVersion || ''));
+    return true;
+  } catch {
+    console.warn('[push] push registration repair failed');
+    return false;
+  }
 }
 
 function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
@@ -178,32 +252,54 @@ export async function clearPendingIncomingCall(callId?: string): Promise<void> {
 
 async function handleWake(rawData: RawPushPayload): Promise<boolean> {
   if (rawData.msg !== 'wake' && rawData.type !== 'keepalive') return false;
-  const wakeTimestamp = Number(rawData.timestamp) || 0;
-  if (wakeTimestamp && wakeTimestamp === lastWakeTimestamp) return true;
-  lastWakeTimestamp = wakeTimestamp;
   const { StorageService } = require('../storage/store');
   const storedAccount = await StorageService.getAccount();
   if (!storedAccount) return true;
+  const payloadExtension = typeof rawData.extension === 'string' ? rawData.extension.trim() : '';
+  if (payloadExtension && payloadExtension !== storedAccount.extension) {
+    console.warn('[push] heartbeat for stale extension ignored');
+    return true;
+  }
+  const wakeTimestamp = Number(rawData.timestamp) || 0;
+  if (wakeTimestamp && wakeTimestamp === lastWakeTimestamp) return true;
   require('../calls/connectionService').startConnectionService();
+  // Never ACK a wake before SIP is registered. The gateway treats an ACK as
+  // proof the device is awake and suppresses the next wake for 180 seconds.
+  const sipReady = await bootstrapHeadlessSip(storedAccount, 'keepalive');
+  if (!sipReady) {
+    console.warn('[push] heartbeat ACK deferred: SIP is not registered');
+    return true;
+  }
   try {
-    await sendGatewayHeartbeat(storedAccount.serverHost, storedAccount.extension, 'wake');
-    if (wakeTimestamp) console.log(`[push] heartbeat ACK sent timestamp=${wakeTimestamp}`);
+    const acknowledged = await sendGatewayHeartbeat(
+      storedAccount.serverHost,
+      storedAccount.extension,
+      'wake',
+    );
+    if (!acknowledged) {
+      console.warn('[push] heartbeat ACK skipped: no gateway session');
+      return true;
+    }
+    if (wakeTimestamp) {
+      lastWakeTimestamp = wakeTimestamp;
+      console.log(`[push] heartbeat ACK sent timestamp=${wakeTimestamp}`);
+    }
   } catch (heartbeatError) {
     console.warn('[push] heartbeat ACK failed:', heartbeatError);
   }
-  if (!onIncoming) await bootstrapHeadlessSip(storedAccount, 'keepalive');
   return true;
 }
 
-async function bootstrapHeadlessSip(storedAccount: SavedAccount, label: string): Promise<void> {
+async function bootstrapHeadlessSip(storedAccount: SavedAccount, label: string): Promise<boolean> {
   try {
     const { getSharedJsSipService } = require('../sip/JsSipService');
+    const headlessSip = getSharedJsSipService();
+    if (headlessSip.isRegistered()) return true;
     // Hydrate the approved gateway assignment first: a gateway-enrolled device
     // must wake through the ticket/relay path, never the direct PBX socket.
     await getOrLoadGatewaySession(storedAccount.serverHost, storedAccount.extension);
-    console.log(`[push][${label}] headless bootstrapping SIP for ext=${storedAccount.extension}`);
-    const headlessSip = getSharedJsSipService();
     if (!headlessSip.isConnectedOrConnecting()) {
+      console.log(`[push][${label}] headless bootstrapping SIP for ext=${storedAccount.extension}`);
       await headlessSip.connect(
         storedAccount.extension,
         storedAccount.password,
@@ -211,8 +307,10 @@ async function bootstrapHeadlessSip(storedAccount: SavedAccount, label: string):
         storedAccount.useTls,
       );
     }
+    return headlessSip.isRegistered();
   } catch (bootstrapErr) {
     console.error('[push] headless SIP bootstrap error:', bootstrapErr);
+    return false;
   }
 }
 
@@ -222,6 +320,13 @@ if (Platform.OS === 'android') {
     setBackgroundMessageHandler(messaging, async (remoteMessage) => {
       const rawData = (remoteMessage?.data || {}) as RawPushPayload;
       if (await handleWake(rawData)) return;
+      // Chat message — never triggers SIP, never auto-starts calls
+      const chatPayload = normalizeChatPayload(rawData as Record<string, string | undefined>);
+      if (chatPayload) {
+        console.log(`[push][chat] background chat-message convId=${chatPayload.conversationId}`);
+        if (onChatMessage) onChatMessage(chatPayload);
+        return;
+      }
       const cancelPayload = normalizeCancelPayload(rawData);
       if (cancelPayload) {
         console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (background)`);
@@ -294,6 +399,13 @@ export function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandl
       onMessage(messaging, async (remoteMessage) => {
         const rawData = (remoteMessage?.data || {}) as RawPushPayload;
         if (await handleWake(rawData)) return;
+        // Chat message — never triggers SIP
+        const chatPayload = normalizeChatPayload(rawData as Record<string, string | undefined>);
+        if (chatPayload) {
+          console.log(`[push][chat] foreground chat-message convId=${chatPayload.conversationId}`);
+          if (onChatMessage) onChatMessage(chatPayload);
+          return;
+        }
         const cancelPayload = normalizeCancelPayload(rawData);
         if (cancelPayload) {
           console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (foreground)`);
@@ -309,7 +421,7 @@ export function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandl
       AppState.addEventListener('change', (state) => {
         if (state === 'active' && currentExtension) {
           registerCachedToken();
-          refreshAndroidToken();
+          void refreshAndroidTokenForAppVersion();
         }
       });
       tokenListenersInitialized = true;
@@ -325,12 +437,17 @@ export function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandl
   }
 }
 
+/** Register a listener for incoming chat push notifications. */
+export function bindChatPushHandler(handler: ChatPushHandler | null): void {
+  onChatMessage = handler;
+}
+
 export function bindExtension(extension: string) {
   registrationRetry.stop();
   tokenRetry.stop();
   currentExtension = extension;
   registerCachedToken();
-  if (!fcmTokenCache) refreshAndroidToken();
+  void refreshAndroidTokenForAppVersion();
 }
 
 /**

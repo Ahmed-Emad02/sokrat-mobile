@@ -270,7 +270,7 @@ describe('JsSipService media + instance id', () => {
     expect(service.activeCall?.target).toBe('102');
   });
 
-  test('incoming call publishes its number before contact lookup or Answer', async () => {
+  test('incoming call starts with the number until app/VoIP contact lookup resolves', async () => {
     const events = createEvents();
     const service = createService(events);
     await service.connect('160', 'pw', 'pbx.example.com', false);
@@ -555,6 +555,21 @@ describe('JsSipService media + instance id', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+
+  test('prefetches media configuration while ringing and reuses it for answer', async () => {
+    mockMediaConfiguration.mockResolvedValue(relayConfiguration);
+    const { stream } = createStream();
+    (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(stream);
+    const service = createService();
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    await new Promise<void>(resolve => setTimeout(() => resolve(), 10));
+    expect(mockMediaConfiguration).toHaveBeenCalledTimes(1);
+    await expect(service.answer(session.id)).resolves.toBe(true);
+    expect(mockMediaConfiguration).toHaveBeenCalledTimes(1);
   });
 
   test('re-arms after answer() re-evaluates the relay requirement', async () => {
@@ -1051,8 +1066,8 @@ describe('JsSipService media + instance id', () => {
         getAudioTracks: () => [{ kind: 'audio', _setVolume: setTrackVolume }],
       } as unknown as NonNullable<typeof call.remoteStream>;
 
-      service.setSpeakerVolume(150);
-      expect(setTrackVolume).toHaveBeenCalledWith(2);
+      service.setSpeakerVolume(195);
+      expect(setTrackVolume).toHaveBeenCalledWith(2.6);
 
       const fetchMock = globalThis.fetch as unknown as jest.Mock;
       fetchMock.mockClear();
@@ -1061,7 +1076,7 @@ describe('JsSipService media + instance id', () => {
 
       const volumeCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/call/volume'));
       expect(volumeCall).toBeTruthy();
-      expect(JSON.parse(volumeCall![1].body)).toMatchObject({ micGainDb: 24 });
+      expect(JSON.parse(volumeCall![1].body)).toMatchObject({ micGainDb: 31 });
     });
 
     test('logout cancels a pending handover and does not register again', async () => {
