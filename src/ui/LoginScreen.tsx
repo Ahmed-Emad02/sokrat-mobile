@@ -2,7 +2,7 @@
  * Sokrat VOICE — Login / Authentication Screen.
  * Full-screen standalone sign-in view.
  */
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,12 +15,15 @@ import { useTheme, themedStyles } from '../theme';
 import { useI18n } from '../i18n';
 import { CONFIG } from '../config';
 import { SettingsIcon, PhoneIcon } from './Icons';
+import type { SavedAccount } from '../storage/store';
 
 type Props = {
   onLogin: (ext: string, password: string, serverHost: string, fallbackHost?: string) => void;
   state: string;
   /** Optional status/error line (e.g. gateway approval pending). */
   message?: string | null;
+  /** Last successful/last-active account, prefilled after sign-out. */
+  initialAccount?: SavedAccount | null;
 };
 
 const LOGIN_OVERRIDES = {
@@ -29,15 +32,24 @@ const LOGIN_OVERRIDES = {
   buttonText: { color: 'onBrand' as const },
 };
 
-export function LoginScreen({ onLogin, state, message }: Props) {
+export function LoginScreen({ onLogin, state, message, initialAccount }: Props) {
   const { colors } = useTheme();
   const { t } = useI18n();
   const styles = useMemo(() => themedStyles(rawStyles, colors, LOGIN_OVERRIDES), [colors]);
-  const [extension, setExtension] = useState('');
-  const [password, setPassword] = useState('');
-  const [serverHost, setServerHost] = useState(CONFIG.sipDomain || '');
-  const [fallbackHost, setFallbackHost] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(!CONFIG.sipDomain);
+  const [extension, setExtension] = useState(initialAccount?.extension || '');
+  const [password, setPassword] = useState(initialAccount?.password || '');
+  const [serverHost, setServerHost] = useState(initialAccount?.serverHost || CONFIG.sipDomain || '');
+  const [fallbackHost, setFallbackHost] = useState(initialAccount?.fallbackHost || '');
+  const [showAdvanced, setShowAdvanced] = useState(!(initialAccount?.serverHost || CONFIG.sipDomain));
+
+  useEffect(() => {
+    if (!initialAccount) return;
+    setExtension(initialAccount.extension || '');
+    setPassword(initialAccount.password || '');
+    setServerHost(initialAccount.serverHost || CONFIG.sipDomain || '');
+    setFallbackHost(initialAccount.fallbackHost || '');
+    if (initialAccount.fallbackHost) setShowAdvanced(true);
+  }, [initialAccount]);
 
   const submit = () => {
     if (!serverHost.trim()) {

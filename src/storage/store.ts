@@ -56,6 +56,7 @@ export const DEFAULT_SPEED_DIAL: SpeedDialMap = {
 const KEYS = {
   ACCOUNT: '@sokrat_account',
   ACCOUNT_BACKUP: '@sokrat_account_backup',
+  LAST_LOGIN: '@sokrat_last_login',
   CALLS: '@sokrat_calls_history',
   CALLS_BACKUP: '@sokrat_calls_history_backup',
   CONTACTS: '@sokrat_contacts',
@@ -118,6 +119,23 @@ export const StorageService = {
     // not: surface it instead of pretending the user logged out.
     if (readError) throw readError;
     return null;
+  },
+
+  async getLastLogin(): Promise<SavedAccount | null> {
+    try {
+      const data = await AsyncStorage.getItem(KEYS.LAST_LOGIN);
+      if (!data) return null;
+      const parsed = JSON.parse(data) as SavedAccount;
+      return parsed && parsed.serverHost ? parsed : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async saveLastLogin(account: SavedAccount): Promise<void> {
+    try {
+      await AsyncStorage.setItem(KEYS.LAST_LOGIN, JSON.stringify(account));
+    } catch {}
   },
 
   async saveAccount(account: SavedAccount): Promise<void> {

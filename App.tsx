@@ -243,6 +243,7 @@ export default function App() {
 
   // App State
   const [account, setAccount] = useState<SavedAccount | null>(null);
+  const [lastAccount, setLastAccount] = useState<SavedAccount | null>(null);
   const accountRef = useRef<SavedAccount | null>(null);
   const accountGenerationRef = useRef(0);
   const enrollmentAbortRef = useRef<AbortController | null>(null);
@@ -1266,6 +1267,7 @@ export default function App() {
     });
     StorageService.getCallHistory().then(setCallsHistory);
     StorageService.getContacts().then(setContacts);
+    StorageService.getLastLogin().then(setLastAccount).catch(() => {});
 
     initPush((payload) => {
       const callId = payload.callId;
@@ -1664,6 +1666,11 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    const leavingAccount = accountRef.current;
+    if (leavingAccount) {
+      await StorageService.saveLastLogin(leavingAccount);
+      setLastAccount(leavingAccount);
+    }
     ++accountGenerationRef.current;
     enrollmentAbortRef.current?.abort();
     clearGatewayRetry();
@@ -1759,6 +1766,7 @@ export default function App() {
         <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <ToastContainer />
         <LoginScreen
+          initialAccount={lastAccount}
           onLogin={async (ext, password, serverHost, fallbackHost) => {
             setLoginMessage(null);
             setUiState('connecting');
@@ -1766,15 +1774,21 @@ export default function App() {
               // Gateway deployments enroll/await approval before any SIP work;
               // non-gateway hosts resolve to the existing direct-PBX login.
               const newAcc: SavedAccount = {
+                ...(lastAccount || {}),
                 extension: ext,
                 password,
                 serverHost: serverHost || '',
                 fallbackHost: fallbackHost || undefined,
-                useTls: false,
-                dnd: false,
-                autoAnswer: false,
+                useTls: lastAccount?.useTls ?? false,
+                dnd: lastAccount?.dnd ?? false,
+                autoAnswer: lastAccount?.autoAnswer ?? false,
+                preferredCodec: lastAccount?.preferredCodec,
+                micVolume: lastAccount?.micVolume,
+                speakerVolume: lastAccount?.speakerVolume,
               };
               await handleSaveAccount(newAcc);
+              await StorageService.saveLastLogin(newAcc);
+              setLastAccount(newAcc);
               setLoginMessage(null);
             } catch (err) {
               console.error('[app] login failed:', err);
