@@ -59,6 +59,7 @@ import {
   canUseFullScreenIntent,
   openFullScreenIntentSettings,
   requestIgnoreBatteryOptimizations,
+  isIgnoringBatteryOptimizations,
   getPendingNativeCalls,
   recordNativeCallAction,
   silenceNativeCallNotification,
@@ -161,6 +162,8 @@ export default function App() {
   const [gatewayState, setGatewayState] = useState<'restoring' | 'online' | 'offline' | 'blocked'>('restoring');
   const gatewayStateRef = useRef(gatewayState);
   const fullScreenPromptedRef = useRef(false);
+  const [missingCallPermissions, setMissingCallPermissions] = useState<{ fullScreen: boolean; battery: boolean } | null>(null);
+  const [callPermissionBannerDismissed, setCallPermissionBannerDismissed] = useState(false);
   const [gatewayMessage, setGatewayMessage] = useState('');
   const gatewayRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gatewayRetryAttemptRef = useRef(0);
@@ -826,6 +829,37 @@ export default function App() {
       );
     });
     return () => { cancelled = true; };
+  }, [account?.extension, account?.serverHost]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !account) {
+      setMissingCallPermissions(null);
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const [fullScreen, battery] = await Promise.all([
+          canUseFullScreenIntent(),
+          isIgnoringBatteryOptimizations(),
+        ]);
+        if (!cancelled) {
+          setMissingCallPermissions(fullScreen && battery
+            ? null
+            : { fullScreen: !fullScreen, battery: !battery });
+        }
+      } catch {
+        // Permission state is advisory only; calls still work where Android permits.
+      }
+    };
+    void refresh();
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') void refresh();
+    });
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
   }, [account?.extension, account?.serverHost]);
 
   useEffect(() => {
@@ -1694,6 +1728,40 @@ export default function App() {
           </TouchableOpacity>
         </View>
       )}
+      {missingCallPermissions && !callPermissionBannerDismissed && (
+        <View
+          accessibilityRole="alert"
+          style={[
+            styles.gatewayBanner,
+            styles.callPermissionBanner,
+            { top: gatewayState === 'online' ? 48 : 104, backgroundColor: colors.warningSoft, borderColor: colors.warningBorder },
+          ]}
+        >
+          <Text style={[styles.gatewayBannerText, { color: colors.warningText }]}>
+            {missingCallPermissions.fullScreen
+              ? 'Full-screen calls are blocked. Incoming calls may not wake the locked screen.'
+              : 'Battery optimization may prevent incoming calls in the background.'}
+          </Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => {
+              if (missingCallPermissions.fullScreen) void openFullScreenIntentSettings();
+              else void requestIgnoreBatteryOptimizations();
+            }}
+            style={styles.gatewayRetry}
+          >
+            <Text style={[styles.gatewayRetryText, { color: colors.text }]}>Fix</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss call permission warning"
+            onPress={() => setCallPermissionBannerDismissed(true)}
+            style={styles.callPermissionDismiss}
+          >
+            <Text style={[styles.gatewayRetryText, { color: colors.text }]}>×</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       <StandardPhoneScreen
         account={account}
         state={uiState}
@@ -1856,5 +1924,12 @@ const styles = StyleSheet.create({
   gatewayRetryText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  callPermissionBanner: {
+    zIndex: 51,
+  },
+  callPermissionDismiss: {
+    paddingVertical: 5,
+    paddingHorizontal: 7,
   },
 });
