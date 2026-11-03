@@ -56,6 +56,8 @@ import {
   dismissNativeCallNotification,
   showOngoingCallNotification,
   dismissOngoingCallNotification,
+  canUseFullScreenIntent,
+  openFullScreenIntentSettings,
   requestIgnoreBatteryOptimizations,
   getPendingNativeCalls,
   recordNativeCallAction,
@@ -158,6 +160,7 @@ export default function App() {
   const enrollmentAbortRef = useRef<AbortController | null>(null);
   const [gatewayState, setGatewayState] = useState<'restoring' | 'online' | 'offline' | 'blocked'>('restoring');
   const gatewayStateRef = useRef(gatewayState);
+  const fullScreenPromptedRef = useRef(false);
   const [gatewayMessage, setGatewayMessage] = useState('');
   const gatewayRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gatewayRetryAttemptRef = useRef(0);
@@ -806,6 +809,24 @@ export default function App() {
     terminalCallTimersRef.current.clear();
     terminalCallIdsRef.current.clear();
   }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !account || fullScreenPromptedRef.current) return;
+    fullScreenPromptedRef.current = true;
+    let cancelled = false;
+    void canUseFullScreenIntent().then(allowed => {
+      if (cancelled || allowed) return;
+      Alert.alert(
+        'Allow full-screen incoming calls',
+        'Android can block the incoming-call screen while the phone is locked. Allow full-screen notifications so calls can wake the display.',
+        [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Open settings', onPress: () => { void openFullScreenIntentSettings(); } },
+        ],
+      );
+    });
+    return () => { cancelled = true; };
+  }, [account?.extension, account?.serverHost]);
 
   useEffect(() => {
     if (Platform.OS === 'android') {
