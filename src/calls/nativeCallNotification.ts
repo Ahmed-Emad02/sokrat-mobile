@@ -64,6 +64,16 @@ export function showIncomingCallNotification(
   }
 }
 
+export function showMissedCallNotification(callerId: string, callerName: string, extension: string, timestamp?: number) {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.showMissedCallNotification) return;
+  try {
+    mod.showMissedCallNotification(callerId, callDisplayName(callerId, callerName), extension, timestamp || Date.now());
+  } catch (error) {
+    console.warn('[native-call] showMissedCallNotification failed:', error);
+  }
+}
+
 export function updateNativeIncomingCallNotification(callId: string, callerName: string) {
   const mod = getModule();
   if (Platform.OS !== 'android' || !mod?.updateIncomingCallNotification) return;

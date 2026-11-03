@@ -622,6 +622,17 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     }
 
     @ReactMethod
+    fun showMissedCallNotification(callerId: String, callerName: String, extension: String, timestamp: Double) {
+        IncomingCallNotificationHelper.showMissedCallNotification(
+            reactApplicationContext,
+            callerId,
+            callerName,
+            extension,
+            timestamp.toLong()
+        )
+    }
+
+    @ReactMethod
     fun updateIncomingCallNotification(callId: String, callerName: String) {
         if (!IncomingCallStore.isValidCallId(callId)) return
         IncomingCallNotificationHelper.updateCallNotification(

@@ -45,6 +45,7 @@ interface ConvRowProps {
 const ConvRow = React.memo(function ConvRow({ item, unread, pinned, muted, onPress, onLongPress }: ConvRowProps) {
   const { colors } = useTheme();
   const displayName = item.name || item.extension;
+  const showExt = displayName !== item.extension;
   const preview = item.last_message?.body ?? '';
   const ts = item.last_message?.created_at ?? item.updated_at;
 
@@ -61,6 +62,11 @@ const ConvRow = React.memo(function ConvRow({ item, unread, pinned, muted, onPre
             <Text style={[styles.rowName, { color: colors.text }]} numberOfLines={1}>
               {displayName}
             </Text>
+            {showExt ? (
+              <Text style={[styles.rowExt, { color: colors.textMuted }]} numberOfLines={1}>
+                · {item.extension}
+              </Text>
+            ) : null}
             {pinned ? <Text style={[styles.rowFlag, { color: colors.brand }]}>PINNED</Text> : null}
             {muted ? <Text style={[styles.rowFlag, { color: colors.textMuted }]}>MUTED</Text> : null}
           </View>
@@ -364,6 +370,7 @@ const styles = StyleSheet.create({
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rowNameWrap: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 6 },
   rowName: { fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  rowExt: { fontSize: 12, fontWeight: '500', flexShrink: 0 },
   rowFlag: { fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
   rowTime: { fontSize: 12, marginLeft: 8 },
   rowBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },

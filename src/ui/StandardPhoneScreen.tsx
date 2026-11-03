@@ -993,6 +993,17 @@ function StandardPhoneScreenInner({
     });
   }, []);
 
+  const chatConversationsWithNames = useMemo(() => {
+    return chatConversations.map((conversation) => {
+      const extension = conversation.extension.trim();
+      const contact = contacts.find((item) => item.extension.trim() === extension);
+      const server = serverExtensions.find((item) => item.extension.trim() === extension);
+      const resolved = contact?.name?.trim() || server?.name?.trim();
+      if (!resolved || resolved === conversation.extension) return conversation;
+      return { ...conversation, name: resolved };
+    });
+  }, [chatConversations, contacts, serverExtensions]);
+
   const fetchExtensions = async () => {
     try {
       const host = account?.serverHost;
@@ -1075,7 +1086,7 @@ function StandardPhoneScreenInner({
 
   // Stable list renderers keep visible rows from re-rendering on every
   // dialpad keystroke or transient screen state change.
-  const recentCalls = useMemo(() => displayedCalls.slice(0, 40), [displayedCalls]);
+  const recentCalls = displayedCalls;
   const dialSearchMatches = useMemo(() => searchContacts(contacts, digits), [contacts, digits]);
   const showDialSearch = digits.replace(/\D/g, '').length > 0;
   const recentKeyExtractor = useCallback((item: CallRecord) => item.id, []);
@@ -2395,7 +2406,7 @@ function StandardPhoneScreenInner({
             client={chatClient ?? null}
             cache={chatCache ?? null}
             unread={chatUnread}
-            conversations={chatConversations}
+            conversations={chatConversationsWithNames}
             onOpenThread={setOpenThread}
             onRefresh={onChatRefresh ?? (() => Promise.resolve())}
           />

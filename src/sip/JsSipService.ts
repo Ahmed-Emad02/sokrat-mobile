@@ -1688,7 +1688,13 @@ export class JsSipService {
       options.mediaStream = localStream;
       // Teardown of a just-ended call can arrive after this point. Capture the
       // relay mode for the new session so that old-call cleanup cannot flip it.
-      this.pendingRelayRequired = this.mediaRelayRequired;
+      // A cached gateway configuration also implies relay even when the
+      // previous session's teardown already cleared mediaRelayRequired.
+      const cachedGateway = this.mediaConfigurationCache?.key.startsWith('gateway:') === true;
+      this.pendingRelayRequired = cachedGateway
+        || this.mediaRelayRequired
+        || this.gatewaySession !== null
+        || mediaConfiguration.iceTransportPolicy === 'relay';
       this.ua.call(targetUri, options);
     } catch (err) {
       this.pendingRelayRequired = null;

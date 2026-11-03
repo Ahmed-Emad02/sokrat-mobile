@@ -19,6 +19,8 @@ object IncomingCallNotificationHelper {
     const val CHANNEL_NAME = "Incoming Calls"
     const val ONGOING_CHANNEL_ID = "sokrat_active_call_v3"
     const val ONGOING_CHANNEL_NAME = "Active Call"
+    const val MISSED_CHANNEL_ID = "sokrat_missed_calls_v1"
+    const val MISSED_CHANNEL_NAME = "Missed Calls"
     private const val NOTIFICATION_ID_BASE = 2000
     private const val ONGOING_NOTIFICATION_ID = 2099
     private var screenWakeLock: android.os.PowerManager.WakeLock? = null
@@ -105,6 +107,59 @@ object IncomingCallNotificationHelper {
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
         manager.createNotificationChannel(channel)
+    }
+
+    fun createMissedNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return
+        if (manager.getNotificationChannel(MISSED_CHANNEL_ID) != null) return
+        val channel = NotificationChannel(
+            MISSED_CHANNEL_ID,
+            MISSED_CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = "Missed Sokrat VOICE calls"
+            enableVibration(true)
+            setShowBadge(true)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    fun showMissedCallNotification(
+        context: Context,
+        callerId: String,
+        callerName: String,
+        extension: String,
+        timestamp: Long
+    ) {
+        createMissedNotificationChannel(context)
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(
+            context,
+            (timestamp and 0x7fffffff).toInt(),
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val who = callerName.ifBlank { callerId.ifBlank { "Unknown" } }
+        val notification = NotificationCompat.Builder(context, MISSED_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_call)
+            .setColor(0xFFEB1235.toInt())
+            .setContentTitle("Missed call")
+            .setContentText("$who · Ext $extension")
+            .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .setWhen(timestamp)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify((timestamp and 0x7fffffff).toInt(), notification)
+        } catch (error: SecurityException) {
+            error.printStackTrace()
+        }
     }
 
     fun showOngoingCallNotification(

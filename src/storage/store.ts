@@ -57,10 +57,44 @@ const KEYS = {
   ACCOUNT: '@sokrat_account',
   ACCOUNT_BACKUP: '@sokrat_account_backup',
   CALLS: '@sokrat_calls_history',
+  CALLS_BACKUP: '@sokrat_calls_history_backup',
   CONTACTS: '@sokrat_contacts',
   SPEED_DIAL: '@sokrat_speed_dial',
   WHATSAPP: '@sokrat_whatsapp_prefs',
 };
+const MAX_CALL_HISTORY = 1000;
+
+function parseCallHistory(raw: string | null): CallRecord[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is CallRecord =>
+      !!item && typeof item === 'object' &&
+      typeof (item as CallRecord).id === 'string' &&
+      typeof (item as CallRecord).timestamp === 'number');
+  } catch {
+    return [];
+  }
+}
+
+async function persistCallHistory(records: CallRecord[]): Promise<void> {
+  const payload = JSON.stringify(records.slice(0, MAX_CALL_HISTORY));
+  await Promise.all([
+    AsyncStorage.setItem(KEYS.CALLS, payload),
+    AsyncStorage.setItem(KEYS.CALLS_BACKUP, payload),
+  ]);
+}
+
+// Serialize read-modify-write mutations. Two calls ending together otherwise
+// both read the same list and the second write silently drops the first call.
+let callHistoryMutation: Promise<unknown> = Promise.resolve();
+function mutateCallHistory<T>(mutation: () => Promise<T>): Promise<T> {
+  const run = callHistoryMutation.then(mutation, mutation);
+  callHistoryMutation = run.catch(() => undefined);
+  return run;
+}
+
 export const StorageService = {
   async getAccount(): Promise<SavedAccount | null> {
     let readError: unknown = null;
@@ -107,31 +141,52 @@ export const StorageService = {
 
   async getCallHistory(): Promise<CallRecord[]> {
     try {
-      const data = await AsyncStorage.getItem(KEYS.CALLS);
-      return data ? JSON.parse(data) : [];
+      const [primaryRaw, backupRaw] = await Promise.all([
+        AsyncStorage.getItem(KEYS.CALLS),
+        AsyncStorage.getItem(KEYS.CALLS_BACKUP),
+      ]);
+      const primary = parseCallHistory(primaryRaw);
+      const backup = parseCallHistory(backupRaw);
+      const merged: CallRecord[] = [];
+      const seen = new Set<string>();
+      for (const record of [...primary, ...backup]) {
+        if (!record?.id || seen.has(record.id)) continue;
+        seen.add(record.id);
+        merged.push(record);
+      }
+      merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      const bounded = merged.slice(0, MAX_CALL_HISTORY);
+      // Restore the primary copy if an interrupted write or a build change
+      // left only the backup behind.
+      if (!primaryRaw && bounded.length) {
+        await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(bounded));
+      }
+      return bounded;
     } catch {
       return [];
     }
   },
 
   async addCallRecord(record: Omit<CallRecord, 'id'>): Promise<CallRecord[]> {
-    try {
+    return mutateCallHistory(async () => {
       const current = await this.getCallHistory();
+      // CDR reconciliation can see a call that the live SIP path already
+      // recorded. The PBX uniqueid is the stable identity for that case.
+      if (record.callId && current.some((item) => item.callId === record.callId)) {
+        return current;
+      }
       const newRecord: CallRecord = {
         ...record,
         id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
       };
-      const updated = [newRecord, ...current].slice(0, 100);
-      await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(updated));
+      const updated = [newRecord, ...current].slice(0, MAX_CALL_HISTORY);
+      await persistCallHistory(updated);
       return updated;
-    } catch (err) {
-      console.warn('[storage] addCallRecord failed:', err);
-      return [];
-    }
+    });
   },
 
   async updateCallRecordName(callId: string, name: string): Promise<CallRecord[]> {
-    try {
+    return mutateCallHistory(async () => {
       const current = await this.getCallHistory();
       let changed = false;
       const updated = current.map((record) => {
@@ -139,31 +194,28 @@ export const StorageService = {
         changed = true;
         return { ...record, name };
       });
-      if (changed) await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(updated));
+      if (changed) await persistCallHistory(updated);
       return updated;
-    } catch (err) {
-      console.warn('[storage] updateCallRecordName failed:', err);
-      return [];
-    }
+    });
   },
 
   async clearCallHistory(): Promise<void> {
-    try {
-      await AsyncStorage.removeItem(KEYS.CALLS);
-    } catch {}
-  },
-  async deleteCallRecord(id: string): Promise<CallRecord[]> {
-    try {
-      const current = await this.getCallHistory();
-      const updated = current.filter((c) => c.id !== id);
-      await AsyncStorage.setItem(KEYS.CALLS, JSON.stringify(updated));
-      return updated;
-    } catch (err) {
-      console.warn('[storage] deleteCallRecord failed:', err);
-      return [];
-    }
+    await mutateCallHistory(async () => {
+      await Promise.all([
+        AsyncStorage.removeItem(KEYS.CALLS),
+        AsyncStorage.removeItem(KEYS.CALLS_BACKUP),
+      ]);
+    });
   },
 
+  async deleteCallRecord(id: string): Promise<CallRecord[]> {
+    return mutateCallHistory(async () => {
+      const current = await this.getCallHistory();
+      const updated = current.filter((c) => c.id !== id);
+      await persistCallHistory(updated);
+      return updated;
+    });
+  },
 
   async getContacts(): Promise<Contact[]> {
     try {

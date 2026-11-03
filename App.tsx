@@ -3,6 +3,7 @@
  * Standard Phone Dialer UI with JsSIP WebRTC Engine & FCM Push-to-Wake.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, AppStateStatus, Permission, Linking, View, Text, TouchableOpacity } from 'react-native';
 import { useTheme, applySystemBars } from './src/theme';
@@ -40,6 +41,7 @@ import { startConnectionService, stopConnectionService } from './src/calls/conne
 import { prepareLogin } from './src/gateway/enrollment';
 import { describeEnrollmentError, isTerminalEnrollmentError } from './src/gateway/errors';
 import { getOrLoadGatewaySession, resetGatewaySession, getPersistedGatewayRecord, sendGatewayTelemetry } from './src/gateway/session';
+import { gatewayAuthHeaders } from './src/gateway/urls';
 import { getDeviceUuid } from './src/storage/deviceId';
 import {
   setupCallKeep,
@@ -55,6 +57,7 @@ import {
   clearNativeCallWindow,
   dismissNativeCallNotification,
   showOngoingCallNotification,
+  showMissedCallNotification,
   dismissOngoingCallNotification,
   canUseFullScreenIntent,
   openFullScreenIntentSettings,
@@ -130,6 +133,90 @@ function formatCallFailureReason(cause?: string, details?: CallEndDetails): { ti
       return { title: 'Call Ended', message: cause || 'Call failed' };
   }
 }
+const MISSED_SYNC_KEY = '@sokrat/missed-call-sync';
+let missedSyncInFlight = false;
+
+/**
+ * Reconcile calls that ended while this device had no SIP registration. The
+ * gateway reads Asterisk CDR, so no PBX credentials live on the phone.
+ */
+async function reconcileMissedCalls(
+  account: SavedAccount,
+  applyHistory: (records: CallRecord[]) => void,
+): Promise<void> {
+  if (missedSyncInFlight) return;
+  missedSyncInFlight = true;
+  try {
+    const storedSince = await AsyncStorage.getItem(MISSED_SYNC_KEY).catch(() => null);
+    const parsedSince = storedSince ? new Date(storedSince) : null;
+    const since = parsedSince && !Number.isNaN(parsedSince.getTime()) ? parsedSince : new Date();
+    let url: string;
+    let headers: Record<string, string> = {};
+    const gateway = await getOrLoadGatewaySession(account.serverHost, account.extension).catch(() => null);
+    if (gateway) {
+      url = `${gateway.apiURL}/api/gateway/missed-calls` +
+        `?since=${encodeURIComponent(since.toISOString())}`;
+      headers = gatewayAuthHeaders({ claimSecret: gateway.claimSecret, deviceId: gateway.deviceId });
+    } else {
+      const deviceUuid = await getDeviceUuid().catch(() => '');
+      if (!deviceUuid) return;
+      url = `${getPushGateway(account.serverHost)}/api/push/missed-calls` +
+        `?extension=${encodeURIComponent(account.extension)}` +
+        `&deviceUuid=${encodeURIComponent(deviceUuid)}` +
+        `&since=${encodeURIComponent(since.toISOString())}`;
+    }
+    const response = await fetch(url, { headers }).catch(() => null);
+    if (!response?.ok) return;
+    const json = await response.json() as {
+      missedCalls?: Array<{
+        callId?: string; callerId?: string; callerName?: string;
+        timestamp?: number; disposition?: string;
+      }>;
+    };
+    const missed = Array.isArray(json.missedCalls) ? json.missedCalls : [];
+    if (!missed.length) {
+      await AsyncStorage.setItem(MISSED_SYNC_KEY, new Date().toISOString()).catch(() => {});
+      return;
+    }
+    const existing = await StorageService.getCallHistory();
+    const known = new Set(existing.map((item) => item.callId).filter(Boolean));
+    for (const item of missed) {
+      if (!item.callId || known.has(item.callId)) continue;
+      const timestamp = Number(item.timestamp) || Date.now();
+      const callerId = String(item.callerId || 'Unknown');
+      const callerName = String(item.callerName || callerId);
+      // The live SIP path already records missed calls while the app is
+      // online. Match those by caller and nearby start time because the local
+      // call id and the PBX CDR uniqueid are different namespaces.
+      const liveDuplicate = existing.some((record) =>
+        record.direction === 'missed' &&
+        record.number === callerId &&
+        Math.abs((record.timestamp || 0) - timestamp) < 120_000);
+      if (liveDuplicate) continue;
+      await StorageService.addCallRecord({
+        callId: item.callId,
+        number: callerId,
+        name: callDisplayName(callerId, callerName),
+        direction: 'missed',
+        timestamp,
+      });
+      showMissedCallNotification(callerId, callerName, account.extension, timestamp);
+      showToast({
+        type: 'info',
+        title: 'Missed call',
+        message: `${callDisplayName(callerId, callerName)} · Ext ${account.extension}`,
+        duration: 3500,
+      });
+    }
+    applyHistory(await StorageService.getCallHistory());
+    await AsyncStorage.setItem(MISSED_SYNC_KEY, new Date().toISOString()).catch(() => {});
+  } catch (error) {
+    console.warn('[app] missed-call reconciliation failed:', error);
+  } finally {
+    missedSyncInFlight = false;
+  }
+}
+
 export default function App() {
   const { colors, isDark } = useTheme();
   useEffect(() => {
@@ -203,6 +290,7 @@ export default function App() {
           void sipRef.current?.reconnectIfDisconnected();
           if (!chatSocketRef.current?.connected) chatSocketRef.current?.reconnectNow();
           if (gatewayStateRef.current === 'offline') retryGatewayRef.current?.();
+          void reconcileMissedCalls(accountRef.current, setCallsHistory);
         }
       }
     };
@@ -882,7 +970,12 @@ export default function App() {
       });
     }
     const sip = getSharedJsSipService({
-      onStateChange: (state) => setUiState(state),
+      onStateChange: (state) => {
+        setUiState(state);
+        if (state === 'registered' && accountRef.current) {
+          void reconcileMissedCalls(accountRef.current, setCallsHistory);
+        }
+      },
       onIncomingCall: (info) => {
         const callId = info.callId;
         if (isTerminalCall(callId)) {
