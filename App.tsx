@@ -8,7 +8,7 @@ import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, A
 import { useTheme, applySystemBars } from './src/theme';
 import { initI18n } from './src/i18n';
 import { resolveCallerName } from './src/calls/callerNameResolver';
-import { callDisplayName } from './src/calls/callerName';
+import { callDisplayName, providerCallerName } from './src/calls/callerName';
 import {
   JsSipService,
   getSharedJsSipService,
@@ -28,17 +28,18 @@ import {
   bindChatPushHandler,
   normalizeChatPayload,
   repairPushRegistration,
+  getPushDiagnostics,
 } from './src/push/pushHandler';
 import type { CancelPayload } from './src/push/pushHandler';
 import { ChatClient } from './src/chat/client';
 import { ChatCache } from './src/chat/cache';
 import { ChatSocket } from './src/chat/socket';
 import type { ChatConversation, UnreadSummary } from './src/chat/types';
-import { CONFIG, getSipWss, getPushGateway } from './src/config';
+import { CONFIG, getSipWss, getPushGateway, hydrateAppVersion } from './src/config';
 import { startConnectionService, stopConnectionService } from './src/calls/connectionService';
 import { prepareLogin } from './src/gateway/enrollment';
 import { describeEnrollmentError, isTerminalEnrollmentError } from './src/gateway/errors';
-import { getOrLoadGatewaySession, resetGatewaySession, getPersistedGatewayRecord } from './src/gateway/session';
+import { getOrLoadGatewaySession, resetGatewaySession, getPersistedGatewayRecord, sendGatewayTelemetry } from './src/gateway/session';
 import { getDeviceUuid } from './src/storage/deviceId';
 import {
   setupCallKeep,
@@ -77,7 +78,7 @@ import {
   AudioDeviceState,
   AudioRouteType,
 } from './src/calls/incall';
-import { subscribeNetworkChanges, NetworkState } from './src/calls/network';
+import { getNetworkState, subscribeNetworkChanges, NetworkState } from './src/calls/network';
 import { subscribeGsmCallState, GsmCallState } from './src/calls/telephony';
 import {
   StorageService,
@@ -194,6 +195,7 @@ export default function App() {
         if (!currentCall) dismissOngoingCallNotification();
         if (accountRef.current) {
           void sipRef.current?.reconnectIfDisconnected();
+          if (!chatSocketRef.current?.connected) chatSocketRef.current?.reconnectNow();
           if (gatewayStateRef.current === 'offline') retryGatewayRef.current?.();
         }
       }
@@ -336,6 +338,47 @@ export default function App() {
   const [answerRequested, setAnswerRequested] = useState(false);
   const [activeCallUUID, setActiveCallUUID] = useState<string | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+
+  useEffect(() => {
+    void hydrateAppVersion();
+  }, []);
+
+  // Diagnostic heartbeat: authenticated, token-free state for the gateway
+  // dashboard. It reports transport/SIP/push health, never secrets or tokens.
+  useEffect(() => {
+    if (!account) return;
+    let cancelled = false;
+    const report = async () => {
+      try {
+        const net = await getNetworkState();
+        if (cancelled) return;
+        const push = getPushDiagnostics();
+        await sendGatewayTelemetry(account.serverHost, account.extension, {
+          appVersion: CONFIG.appVersion,
+          sipState: uiState,
+          gatewayState,
+          appState: AppState.currentState || 'unknown',
+          networkConnected: String(net.isConnected),
+          networkType: net.networkType,
+          activeCall: activeCall ? `${activeCall.status}:${activeCall.direction}` : 'none',
+          fcmTokenPresent: String(push.fcmTokenPresent),
+          fcmLastTokenAt: String(push.lastFcmTokenAt),
+          fcmLastError: push.lastFcmError.slice(0, 160),
+          pushRegisteredAt: String(push.lastPushRegisteredAt),
+          pushLastError: push.lastPushRegisterError.slice(0, 160),
+          reportedAt: new Date().toISOString(),
+        });
+      } catch {
+        // Diagnostics must never affect call signaling.
+      }
+    };
+    void report();
+    const timer = setInterval(() => { void report(); }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [account?.serverHost, account?.extension, activeCall?.id, activeCall?.status, gatewayState, uiState]);
   const [attendedTransferState, setAttendedTransferState] = useState<AttendedTransferState | null>(null);
   const attendedTransferStateRef = useRef<AttendedTransferState | null>(null);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
@@ -372,6 +415,7 @@ export default function App() {
       sipRef.current?.handleNetworkChange(netState);
       if (netState.isConnected && accountRef.current) {
         bindExtension(accountRef.current.extension);
+        chatSocketRef.current?.reconnectNow();
         if (gatewayStateRef.current === 'offline') retryGatewayRef.current?.();
       }
     });
@@ -469,7 +513,10 @@ export default function App() {
   };
 
   const updateIncoming = (value: IncomingCallInfo | null) => {
-    if (value && isTerminalCall(value.callId)) return;
+    if (value && isTerminalCall(value.callId)) {
+      console.warn(`[app][callId=${value.callId}] incoming update ignored: call is terminal`);
+      return;
+    }
     if (!value) setAnswerRequested(false);
     if (value) {
       const current = sipRef.current?.activeCall;
@@ -481,11 +528,12 @@ export default function App() {
     const initial = value
       ? {
           ...value,
-          callerName: existing?.callerName || callDisplayName(value.callerId),
+          callerName: providerCallerName(value.callerId, value.callerName, existing?.callerName),
         }
       : null;
     incomingRef.current = initial;
     setIncoming(initial);
+    console.log(`[app][callId=${value?.callId || 'none'}] incoming state ${initial ? 'set' : 'cleared'}`);
     if (value) {
       const lookupAccount = accountRef.current;
       if (lookupAccount) {
@@ -634,10 +682,16 @@ export default function App() {
     console.log(`[app][callId=${callId}] native end requested`);
     const current = sipRef.current?.activeCall;
     if (current) {
-      // Ongoing notifications can carry the pre-answer push id on some
-      // notification paths. There is only one live leg; end the live leg.
       if (current.id !== callId) {
-        console.warn(`[app][callId=${callId}] end id differs from live call ${current.id}`);
+        // Never let a stale push/native id terminate the live leg. A second
+        // call is rejected at the SIP layer; this action belongs to that
+        // rejected call, not to the active one.
+        console.warn(`[app][callId=${callId}] end id differs from live call ${current.id}; ignoring`);
+        markCallTerminal(callId);
+        if (incomingRef.current?.callId === callId) updateIncoming(null);
+        dismissNativeCallNotification(callId);
+        void clearPendingIncomingCall(callId);
+        return;
       }
       const ended = await sipRef.current?.hangup(current.id);
       if (!ended) Alert.alert('Call not ended', 'Unable to end the call. Please try again.');
@@ -688,7 +742,21 @@ export default function App() {
     setGatewayState('restoring');
     setGatewayMessage('Connecting to gateway…');
     try {
-      await getOrLoadGatewaySession(activeAccount.serverHost, activeAccount.extension);
+      // Re-run the login preparation so a local fallback can create its own
+      // enrollment record when the cloud is unreachable. getOrLoad alone has
+      // no SIP password and therefore cannot auto-enroll a new local gateway.
+      const prepared = await prepareLogin({
+        host: activeAccount.serverHost,
+        extension: activeAccount.extension,
+        password: activeAccount.password,
+        fallbackHost: activeAccount.fallbackHost,
+      });
+      // A host without gateway capabilities is a valid direct-PBX account.
+      // Only surface enrollment failure when the gateway actually rejected
+      // the account; `legacy` means there is no gateway to enroll with.
+      if (prepared.mode !== 'gateway' && prepared.mode !== 'legacy') {
+        throw new Error('Gateway enrollment unavailable');
+      }
       if (generation !== accountGenerationRef.current) return;
       accountRef.current = activeAccount;
       setAccount(activeAccount);
@@ -777,6 +845,30 @@ export default function App() {
           return;
         }
 
+        // The phone has one call UI and one live SIP session slot. Accepting a
+        // second INVITE would replace the visible call while leaving the first
+        // PBX bridge alive with no way to return to it. Reject the additional
+        // call instead; the active call must remain intact.
+        const active = sipRef.current?.activeCall;
+        const alreadyRinging = incomingRef.current;
+        const isDuplicate = active?.id === callId || alreadyRinging?.callId === callId;
+        if ((active || alreadyRinging) && !isDuplicate) {
+          console.warn(`[app][callId=${callId}] rejected additional incoming call while call active`);
+          void sip.decline(callId).then((declined) => {
+            if (!declined) return;
+            markCallTerminal(callId);
+            dismissNativeCallNotification(callId);
+            void clearPendingIncomingCall(callId);
+          });
+          showToast({
+            type: 'info',
+            title: 'Call waiting',
+            message: 'Another call is already in progress.',
+            duration: 3500,
+          });
+          return;
+        }
+
         const existing = incomingRef.current?.callId === callId
           ? incomingRef.current
           : null;
@@ -788,7 +880,7 @@ export default function App() {
         };
         updateCallUUID(callId);
         updateIncoming(correlatedInfo);
-        console.log(`[app][callId=${callId}] SIP INVITE matched`);
+        console.log(`[app][callId=${callId}] SIP INVITE matched active=${sip.activeCall?.id || 'none'} incoming=${incomingRef.current?.callId || 'none'}`);
 
         if (Platform.OS === 'android' && AppState.currentState !== 'active' &&
             pendingAnswerUUIDRef.current !== callId) {
@@ -907,8 +999,17 @@ export default function App() {
         }
         pendingAnswerUUIDRef.current = null;
         pendingEndUUIDRef.current = null;
-        updateCallUUID(null);
-        updateIncoming(null);
+        // A late end event for an older call must not erase a newer incoming
+        // call. Only clear the incoming UI when it belongs to the ended call.
+        const incomingIsNewer = !!currentIncoming &&
+          !!resolvedCallId &&
+          currentIncoming.callId !== resolvedCallId;
+        if (!incomingIsNewer) {
+          updateCallUUID(null);
+          updateIncoming(null);
+        } else {
+          console.log(`[app][callId=${resolvedCallId}] kept newer incoming=${currentIncoming?.callId}`);
+        }
         setIsSpeakerOn(false);
         desiredRouteRef.current = 'EARPIECE';
         stopCallManagers();
@@ -1027,6 +1128,16 @@ export default function App() {
       }
       // A late copy of the push must not reopen an established call's overlay.
       if (sip.activeCall?.id === callId && sip.activeCall.status === 'active') return;
+      // Never open a second ringing UI while another call is live. The SIP
+      // layer rejects the eventual second INVITE with 486 Busy; acknowledge and
+      // dismiss this push so it cannot become a ring/hangup target.
+      if (sip.activeCall && sip.activeCall.id !== callId) {
+        console.warn(`[app][callId=${callId}] push ignored while active=${sip.activeCall.id}`);
+        markCallTerminal(callId);
+        dismissNativeCallNotification(callId);
+        void clearPendingIncomingCall(callId);
+        return;
+      }
       console.log(`[app][callId=${callId}] push wake received`);
       updateCallUUID(callId);
       updateIncoming({
@@ -1100,6 +1211,15 @@ export default function App() {
         return;
       }
       console.log(`[app][callId=${callId}] native action=${payload.action}`);
+      if (sip.activeCall && sip.activeCall.id !== callId) {
+        console.warn(`[app][callId=${callId}] native action ignored while active=${sip.activeCall.id}`);
+        markCallTerminal(callId);
+        acknowledgeNativeCallAction(callId, payload.action === 'ANSWER' ? 'DECLINE' : payload.action);
+        dismissNativeCallNotification(callId);
+        void clearPendingIncomingCall(callId);
+        if (pendingAnswerUUIDRef.current === callId) pendingAnswerUUIDRef.current = null;
+        return;
+      }
       if (payload.action === 'END') {
         if (sip.activeCall?.id === callId) {
           void endSipCall(callId);
@@ -1380,8 +1500,8 @@ export default function App() {
     } catch (error) {
       if (generation !== accountGenerationRef.current) throw error;
       if (!previous) {
-        // Initial login: there is no existing account to preserve.
-        setAccount(null);
+        // Initial login: there is no existing account to preserve. Never call
+        // setAccount(null) here; the only sign-out path is handleLogout.
         throw error;
       }
       // Preserve the previous account and keep the user on the main screen.

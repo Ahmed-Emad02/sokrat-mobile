@@ -21,11 +21,30 @@ export function normalizeCallerNumber(value: string): string {
   return number.replace(/[\s().-]/g, '').replace(/^00/, '+');
 }
 
+/**
+ * Canonical comparison form for phone numbers. It intentionally changes only
+ * unambiguous local/international variants: +20/0020/20/0 and Arabic digits.
+ * Feature codes stay verbatim so *88 and 88 are never conflated.
+ */
+export function canonicalCallerNumber(value: string): string {
+  const normalized = normalizeCallerNumber(value);
+  if (!normalized) return '';
+  if (/[*#]/.test(normalized)) return normalized;
+  const digits = normalized.replace(/\D/g, '');
+  if (!digits) return normalized;
+  if (normalized.startsWith('+')) return `+${digits}`;
+  if (digits.startsWith('00')) return `+${digits.slice(2)}`;
+  // Egyptian local forms: 0XXXXXXXXXX and 1XXXXXXXXX (mobile without leading 0).
+  if (digits.startsWith('0') && digits.length >= 10) return `+20${digits.slice(1)}`;
+  if (digits.length === 10 && digits.startsWith('1')) return `+20${digits}`;
+  return `+${digits}`;
+}
+
 export function callerNameFromContacts(number: string, contacts: Contact[]): string {
-  const key = normalizeCallerNumber(number);
+  const key = canonicalCallerNumber(number);
   if (!key) return 'Unknown';
   const match = contacts.find(contact =>
-    normalizeCallerNumber(contact.extension) === key && contact.name.trim());
+    canonicalCallerNumber(contact.extension) === key && contact.name.trim());
   return match?.name.trim() || 'Unknown';
 }
 

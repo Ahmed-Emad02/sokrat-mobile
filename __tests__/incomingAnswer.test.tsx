@@ -5,6 +5,7 @@ import App from '../App';
 import { RingingScreen } from '../src/ui/RingingScreen';
 import { SipEvents, ActiveCall, IncomingCallInfo } from '../src/sip/JsSipService';
 import { CallActionPayload } from '../src/calls/nativeCallNotification';
+import { resolveCallerName } from '../src/calls/callerNameResolver';
 
 let mockEvents: SipEvents;
 let mockNativeAction: (payload: CallActionPayload) => void;
@@ -81,8 +82,9 @@ jest.mock('../src/calls/nativeCallNotification', () => ({
   silenceNativeCallNotification: (...args: any[]) => mockSilence(...args),
   dismissNativeCallNotification: (...args: any[]) => mockDismiss(...args),
 }));
-jest.mock('../src/calls/callerNameResolver', () => ({ resolveCallerName: async () => 'Saved caller' }));
-jest.mock('../src/ui/RingingScreen', () => ({ RingingScreen: () => null }));
+jest.mock('../src/calls/callerNameResolver', () => ({ resolveCallerName: jest.fn(async () => 'Saved caller') }));
+let mockRingingProps: any = null;
+jest.mock('../src/ui/RingingScreen', () => ({ RingingScreen: (props: any) => { mockRingingProps = props; return null; } }));
 jest.mock('../src/ui/StandardPhoneScreen', () => ({ StandardPhoneScreen: () => null }));
 jest.mock('../src/ui/LoginScreen', () => ({ LoginScreen: () => null }));
 
@@ -164,6 +166,17 @@ describe('notification Answer / pending INVITE coordination', () => {
     expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
   });
 
+  test('supplied PBX/incoming caller name is rendered when directory lookup misses', async () => {
+    (resolveCallerName as jest.Mock).mockResolvedValueOnce('Unknown');
+    await act(async () => {
+      mockEvents.onIncomingCall({
+        type: 'incoming-call', callId, callerId: '110', callerName: 'PBX Display',
+        extension: 'employee', timestamp: Date.now(),
+      } as IncomingCallInfo);
+    });
+    expect(mockRingingProps?.callerName).toBe('PBX Display');
+  });
+
   test('decline while waiting for INVITE cancels the pending Answer', async () => {
     await act(async () => { mockNativeAction(native('ANSWER')); });
     await act(async () => { mockNativeAction(native('DECLINE')); });
@@ -204,6 +217,49 @@ describe('notification Answer / pending INVITE coordination', () => {
     expect(Alert.alert).toHaveBeenCalledWith('Call not ended', expect.any(String));
   });
 
+
+  test('push and native actions for another call cannot open UI or hang the active call', async () => {
+    const activeId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const otherId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const active: ActiveCall = {
+      id: activeId, target: 'caller-a', targetName: 'Caller A', direction: 'outbound',
+      status: 'active', isMuted: false, isHeld: false, session: {},
+    };
+    mockSip.activeCall = active;
+    await act(async () => { mockEvents.onCallEstablished(active); });
+
+    // Push B arrives before B's INVITE. It must be suppressed and dismissed.
+    await act(async () => {
+      mockPush({
+        type: 'incoming-call', callId: otherId, callerId: 'caller-b',
+        callerName: 'Caller B', extension: 'employee', timestamp: String(Date.now()),
+      });
+    });
+    expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
+    expect(mockDismiss).toHaveBeenCalledWith(otherId);
+
+    // Native DECLINE for B must not reach A's active leg.
+    await act(async () => {
+      mockNativeAction({
+        action: 'DECLINE', callId: otherId, callerId: 'caller-b',
+        callerName: 'Caller B', extension: 'employee', timestamp: String(Date.now()),
+      });
+    });
+    expect(mockSip.hangup).not.toHaveBeenCalled();
+    expect(mockSip.decline).not.toHaveBeenCalledWith(otherId);
+    expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
+
+    // Even when B's INVITE finally arrives, only B is declined; A is untouched.
+    await act(async () => {
+      mockEvents.onIncomingCall({
+        type: 'incoming-call', callId: otherId, callerId: 'caller-b',
+        callerName: 'Caller B', extension: 'employee', timestamp: Date.now(),
+      } as IncomingCallInfo);
+    });
+    expect(mockSip.decline).toHaveBeenCalledWith(otherId);
+    expect(mockSip.hangup).not.toHaveBeenCalled();
+    expect(mockSip.activeCall?.id).toBe(activeId);
+  });
 
   test('dispatched answer that never confirms times out and cleans up', async () => {
     let call!: ActiveCall;

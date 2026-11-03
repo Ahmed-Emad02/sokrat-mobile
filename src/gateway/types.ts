@@ -70,6 +70,8 @@ export type GatewaySession = {
   /** Configured device-facing WSS endpoint for this session. */
   sipWssUrl?: string;
   endpointId?: string;
+  /** Endpoint host whose credential produced this session. */
+  endpointHost?: string;
 };
 
 export type EnrollResponse = {

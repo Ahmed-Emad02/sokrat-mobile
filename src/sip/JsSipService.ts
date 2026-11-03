@@ -22,7 +22,7 @@ import {
 import { dismissNativeCallNotification } from '../calls/nativeCallNotification';
 import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
-import { callDisplayName } from '../calls/callerName';
+import { callDisplayName, providerCallerName } from '../calls/callerName';
 import { getDeviceUuid } from '../storage/deviceId';
 import { getSecureRandomHex } from '../gateway/secureRandom';
 import { appendQuery, gatewayAuthHeaders } from '../gateway/urls';
@@ -289,7 +289,7 @@ export class JsSipService {
   private reconnectAttempt = 0;
   private reconnectTimer: number | null = null;
   private keepAliveTimer: number | null = null;
-  private lastNetworkState: { isConnected: boolean; networkType: string } | null = null;
+  private lastNetworkState: { isConnected: boolean; networkType: string; networkId?: string } | null = null;
   private extension = '';
   private password = '';
   private serverHost = '';
@@ -302,6 +302,7 @@ export class JsSipService {
   private useTls = false;
   /** True when the active media configuration is TURN/relay-only. */
   private mediaRelayRequired = false;
+  private pendingRelayRequired: boolean | null = null;
   /** Short-lived prefetched ICE/TURN configuration shared by calls. */
   private mediaConfigurationCache: {
     key: string;
@@ -552,7 +553,9 @@ export class JsSipService {
 
     const remoteId = session.remote_identity;
     const target = remoteId?.uri?.user || 'Unknown';
-    const targetName = callDisplayName(target);
+    // Preserve a human PBX-assigned display name when the INVITE carries one;
+    // never let a trunk/routing label replace the caller's number.
+    const targetName = providerCallerName(target, remoteId?.display_name);
 
     // ------------------------------------------------------------------
     // Consultation session routing: if we are waiting for a consult dial
@@ -593,6 +596,21 @@ export class JsSipService {
     // ------------------------------------------------------------------
     // Normal (primary) session path
     // ------------------------------------------------------------------
+    // The app currently has one visible call and one session slot. A second
+    // incoming INVITE must not replace the active session, otherwise the
+    // first PBX bridge can remain up without a UI or hangup path.
+    if (session.direction === 'incoming' && this.activeCall &&
+        this.activeCall.session !== session) {
+      console.warn(
+        `[sip][callId=${callId}] rejected incoming while active=${this.activeCall.id}`,
+      );
+      try {
+        session.terminate({ status_code: 486, reason_phrase: 'Busy Here' });
+      } catch (error) {
+        console.warn('[sip] busy rejection failed:', error);
+      }
+      return;
+    }
     this.currentSession = session;
     this.answerDispatchedSession = null;
 
@@ -617,22 +635,25 @@ export class JsSipService {
     if (session.direction === 'outgoing') {
       startCallManagers();
       // Publish the call immediately; contact/network lookup never delays dialing.
-      call.targetName = callDisplayName(target);
+      call.targetName = providerCallerName(target, remoteId?.display_name);
       this.events.onCallStatusChange?.(call);
       void resolveCallerName(target, {
         extension: this.extension, password: this.password, serverHost: this.serverHost,
         useTls: this.useTls, dnd: false, autoAnswer: false,
       }).then(name => {
         if (this.currentSession !== session || this.activeCall !== call) return;
-        call.targetName = callDisplayName(target, name);
+        call.targetName = providerCallerName(target, name, call.targetName);
         this.events.onCallStatusChange?.(call);
       });
     }
 
     // Relay sessions use bounded ICE gathering: first relay candidate + short
     // grace, with a hard cap (a relay-less SDP is never sent). Direct-PBX
-    // sessions keep JsSIP's default gathering.
-    this.attachIceGathering(session, call.id);
+    // sessions keep JsSIP's default gathering. Consume the captured mode so a
+    // previous call's teardown cannot change this session's media policy.
+    const relayRequired = this.pendingRelayRequired ?? this.mediaRelayRequired;
+    this.pendingRelayRequired = null;
+    this.attachIceGathering(session, call.id, relayRequired);
     this.watchCallHandover(session);
 
     // Attach peerconnection remote audio track listeners and codec preferences
@@ -1234,8 +1255,8 @@ export class JsSipService {
   private attachIceGathering(
     session: IceGatheringSession,
     callId: string,
+    relayRequired = this.mediaRelayRequired,
   ) {
-    const relayRequired = this.mediaRelayRequired;
 
     // A session may be re-armed once its actual media mode is known (inbound
     // sessions only learn it inside answer()).
@@ -1550,7 +1571,11 @@ export class JsSipService {
     };
     this.mediaConfigurationCache = entry;
     try {
-      return await promise;
+      const mediaConfiguration = await promise;
+      this.mediaRelayRequired = gatewaySession
+        ? true
+        : mediaConfiguration.iceTransportPolicy === 'relay';
+      return mediaConfiguration;
     } catch (error) {
       if (this.mediaConfigurationCache === entry) this.mediaConfigurationCache = null;
       throw error;
@@ -1661,8 +1686,12 @@ export class JsSipService {
         sessionTimersExpires: 120,
       };
       options.mediaStream = localStream;
+      // Teardown of a just-ended call can arrive after this point. Capture the
+      // relay mode for the new session so that old-call cleanup cannot flip it.
+      this.pendingRelayRequired = this.mediaRelayRequired;
       this.ua.call(targetUri, options);
     } catch (err) {
+      this.pendingRelayRequired = null;
       this.mediaRelayRequired = false;
       this.releaseLocalStream();
       console.error('[sip] outbound call dispatch failed:', err);
@@ -1979,11 +2008,19 @@ export class JsSipService {
     }
   }
 
-  handleNetworkChange(network: { isConnected: boolean; networkType: string }): void {
+  handleNetworkChange(network: { isConnected: boolean; networkType: string; networkId?: string }): void {
     const previous = this.lastNetworkState;
+    // networkId catches Wi-Fi A → Wi-Fi B and cell A → cell B, where Android
+    // reports the same transport type but the default network has changed.
     const changed = previous !== null &&
-      (previous.isConnected !== network.isConnected || previous.networkType !== network.networkType);
-    this.lastNetworkState = { isConnected: network.isConnected, networkType: network.networkType };
+      (previous.isConnected !== network.isConnected ||
+       previous.networkType !== network.networkType ||
+       (previous.networkId || '') !== (network.networkId || ''));
+    this.lastNetworkState = {
+      isConnected: network.isConnected,
+      networkType: network.networkType,
+      networkId: network.networkId,
+    };
 
     console.log(`[sip] network state: connected=${network.isConnected}, type=${network.networkType}${changed ? ' (changed)' : ''}`);
 

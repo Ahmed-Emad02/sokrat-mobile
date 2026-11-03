@@ -207,7 +207,10 @@ object IncomingCallNotificationHelper {
             acquireScreenWakeLock(context)
             createNotificationChannel(context)
         }
-        val title = CallerDisplayName.resolve(callerId, callerName)
+        // SIP/push may arrive with only a number. Resolve the address book here
+        // so the first notification frame already has the contact name.
+        val deviceName = DeviceContactLookup.lookup(context, callerId)
+        val title = CallerDisplayName.resolve(callerId, deviceName.ifBlank { callerName })
         val subtitle = if (callerId.isNotBlank() && callerId != title) {
             "Incoming call from $callerId"
         } else {

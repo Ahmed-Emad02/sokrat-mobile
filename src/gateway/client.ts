@@ -36,6 +36,8 @@ export type GatewayClientOptions = {
 };
 
 export type EnrollInput = {
+  /** Local fallback only: short-lived PBX extension HMAC proof headers. */
+  extensionAuth?: Record<string, string>;
   claimSecret: string;
   platform: 'android' | 'ios';
   deviceUuid: string;
@@ -198,7 +200,7 @@ export class GatewayClient {
   async enroll(input: EnrollInput): Promise<EnrollResponse> {
     const { status, body } = await this.call('/api/gateway/enrollment/enroll', {
       method: 'POST',
-      headers: gatewayAuthHeaders({ claimSecret: input.claimSecret, json: true }),
+      headers: { ...gatewayAuthHeaders({ claimSecret: input.claimSecret, json: true }), ...(input.extensionAuth || {}) },
       body: JSON.stringify(input),
     });
 

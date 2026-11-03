@@ -55,6 +55,7 @@ export const DEFAULT_SPEED_DIAL: SpeedDialMap = {
 
 const KEYS = {
   ACCOUNT: '@sokrat_account',
+  ACCOUNT_BACKUP: '@sokrat_account_backup',
   CALLS: '@sokrat_calls_history',
   CONTACTS: '@sokrat_contacts',
   SPEED_DIAL: '@sokrat_speed_dial',
@@ -62,17 +63,34 @@ const KEYS = {
 };
 export const StorageService = {
   async getAccount(): Promise<SavedAccount | null> {
-    try {
-      const data = await AsyncStorage.getItem(KEYS.ACCOUNT);
-      return data ? JSON.parse(data) : null;
-    } catch {
-      return null;
+    let readError: unknown = null;
+    for (const key of [KEYS.ACCOUNT, KEYS.ACCOUNT_BACKUP]) {
+      try {
+        const data = await AsyncStorage.getItem(key);
+        if (!data) continue;
+        const parsed = JSON.parse(data) as SavedAccount;
+        if (parsed && parsed.serverHost) {
+          // Repair the primary copy when only the backup survived.
+          if (key === KEYS.ACCOUNT_BACKUP) {
+            void AsyncStorage.setItem(KEYS.ACCOUNT, data);
+          }
+          return parsed;
+        }
+      } catch (error) {
+        readError = error;
+      }
     }
+    // A missing key is a legitimate first-run state. A read/JSON failure is
+    // not: surface it instead of pretending the user logged out.
+    if (readError) throw readError;
+    return null;
   },
 
   async saveAccount(account: SavedAccount): Promise<void> {
+    const payload = JSON.stringify(account);
     try {
-      await AsyncStorage.setItem(KEYS.ACCOUNT, JSON.stringify(account));
+      await AsyncStorage.setItem(KEYS.ACCOUNT, payload);
+      await AsyncStorage.setItem(KEYS.ACCOUNT_BACKUP, payload);
     } catch (err) {
       console.warn('[storage] saveAccount failed:', err);
     }
@@ -80,7 +98,10 @@ export const StorageService = {
 
   async clearAccount(): Promise<void> {
     try {
-      await AsyncStorage.removeItem(KEYS.ACCOUNT);
+      await Promise.all([
+        AsyncStorage.removeItem(KEYS.ACCOUNT),
+        AsyncStorage.removeItem(KEYS.ACCOUNT_BACKUP),
+      ]);
     } catch {}
   },
 

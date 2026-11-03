@@ -5,6 +5,7 @@ describe('mobile push token lifecycle', () => {
   let register: jest.Mock;
   let remove: jest.Mock;
   let getRecord: jest.Mock;
+  let getActive: jest.Mock;
   let onRefresh: (token: string) => void;
   let onState: (state: string) => void;
   let backgroundMessage: (message: unknown) => Promise<void>;
@@ -20,6 +21,7 @@ describe('mobile push token lifecycle', () => {
     register = jest.fn().mockResolvedValue(undefined);
     remove = jest.fn().mockResolvedValue(undefined);
     getRecord = jest.fn().mockResolvedValue(session);
+    getActive = jest.fn().mockReturnValue(null);
     jest.doMock('react-native', () => ({
       Platform: { OS: 'android' },
       AppState: { addEventListener: (_: string, handler: typeof onState) => { onState = handler; } },
@@ -35,6 +37,7 @@ describe('mobile push token lifecycle', () => {
     jest.doMock('../src/gateway/session', () => ({
       getPersistedGatewayRecord: getRecord,
       getOrLoadGatewaySession: jest.fn().mockResolvedValue(session),
+      getActiveGatewaySession: getActive,
       registerGatewayPushToken: register,
       removeGatewayPushToken: remove,
     }));
@@ -82,6 +85,19 @@ describe('mobile push token lifecycle', () => {
     }));
   });
 
+  it('repairs a token once after a 409 registration conflict', async () => {
+    register.mockRejectedValueOnce(Object.assign(new Error('token conflict'), { status: 409 }));
+    push.bindExtension('201');
+    await settle();
+    await jest.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(deleteToken).toHaveBeenCalledTimes(1);
+    expect(getToken).toHaveBeenCalledTimes(2);
+    expect(register).toHaveBeenLastCalledWith(session, expect.objectContaining({
+      extension: '201', token: 'test-fcm-token', platform: 'android',
+    }));
+  });
+
   it('waits for approval without falling back to the legacy endpoint', async () => {
     const legacy = jest.fn();
     const originalFetch = globalThis.fetch;
@@ -122,6 +138,23 @@ describe('mobile push token lifecycle', () => {
     expect(deleteToken).not.toHaveBeenCalled();
     expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sokrat/push-app-version', '1.0.15');
     expect(register).toHaveBeenCalledWith(session, expect.objectContaining({ token: 'test-fcm-token' }));
+  });
+
+  it('registers with the active local session before probing the cloud record', async () => {
+    const localSession = {
+      ...session,
+      deviceId: 'local-device',
+      apiURL: 'http://192.168.100.50:18080',
+      endpointId: 'fallback',
+      endpointHost: '192.168.100.50:18080',
+    };
+    getActive.mockReturnValue(localSession);
+    push.bindExtension('201');
+    await settle();
+    expect(register).toHaveBeenCalledWith(localSession, expect.objectContaining({
+      extension: '201', token: 'test-fcm-token', platform: 'android',
+    }));
+    expect(getRecord).not.toHaveBeenCalled();
   });
 
   it('manual repair deletes the token, fetches a new one, and registers it', async () => {

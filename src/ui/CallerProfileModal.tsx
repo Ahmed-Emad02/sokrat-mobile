@@ -41,7 +41,6 @@ import {
   EditIcon,
   PhoneIcon,
   TrashIcon,
-  UserIcon,
   UserPlusIcon,
   WhatsAppIcon,
 } from './Icons';
@@ -68,12 +67,6 @@ type ProfileCallSection = {
   data: CallRecord[];
 };
 
-function initialsFor(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
 
 export function CallerProfileModal({
   visible,
@@ -301,13 +294,6 @@ export function CallerProfileModal({
   const renderHeader = () => (
     <View>
       <View style={styles.identity}>
-        <View style={styles.avatar}>
-          {hasMeaningfulName ? (
-            <Text style={styles.avatarText}>{initialsFor(profile.displayName)}</Text>
-          ) : (
-            <UserIcon size={38} color={colors.brand} />
-          )}
-        </View>
         <Text style={styles.name} numberOfLines={1}>
           {profile.displayName}
         </Text>
@@ -601,22 +587,6 @@ const rawStyles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 24,
     paddingBottom: 18,
-  },
-  avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#18181b',
-    borderColor: '#27272a',
-    borderWidth: 1,
-    marginBottom: 12,
-  },
-  avatarText: {
-    color: '#ffffff',
-    fontSize: 30,
-    fontWeight: '700',
   },
   name: {
     color: '#ffffff',

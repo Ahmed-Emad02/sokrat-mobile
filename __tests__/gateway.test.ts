@@ -36,6 +36,7 @@ import {
   registerGatewayPushToken,
   removeGatewayPushToken,
   resetGatewaySession,
+  setActiveGatewaySession,
 } from '../src/gateway/session';
 import { loadEnrollmentRecord, saveEnrollmentRecord } from '../src/gateway/storage';
 import { getDeviceUuid } from '../src/storage/deviceId';
@@ -653,17 +654,98 @@ describe('automatic local gateway fallback', () => {
     expect(record?.fallback).toEqual(fallbackGatewayEndpoint(FALLBACK));
   });
 
-  test('revalidates the same device against the local endpoint when the public claim fails', async () => {
-    resetGatewaySession();
+  test('loads the approved local fallback twice with distinct cloud/local device IDs', async () => {
+    const switchHost = 'switch.example.com';
+    const fallbackHost = '192.168.100.52:18080';
+    const localEndpoint = fallbackGatewayEndpoint(fallbackHost)!;
+    const cloudAssignment = { ...ASSIGNMENT, deviceId: 'cloud-device' };
+    const localAssignment = { ...ASSIGNMENT, deviceId: 'local-device' };
     await saveEnrollmentRecord({
-      host: HOST, extension: '160', claimSecret: 'a'.repeat(64), deviceId: 'dev-1',
-      status: 'approved', gatewayMode: true, assignment: ASSIGNMENT,
-      fallback: fallbackGatewayEndpoint(FALLBACK), updatedAt: Date.now(),
+      host: switchHost, extension: '160', claimSecret: 'c'.repeat(64), deviceId: 'cloud-device',
+      status: 'approved', gatewayMode: true, assignment: cloudAssignment,
+      fallback: localEndpoint, updatedAt: Date.now(),
+    });
+    await saveEnrollmentRecord({
+      host: localEndpoint.host, extension: '160', claimSecret: 'd'.repeat(64), deviceId: 'local-device',
+      status: 'approved', gatewayMode: true, assignment: localAssignment, updatedAt: Date.now(),
+    });
+    resetGatewaySession();
+    const active = createGatewaySession(
+      switchHost, 'd'.repeat(64), 'local-device', localAssignment, localEndpoint,
+    );
+    setActiveGatewaySession(active);
+
+    const fetcher = jest.fn(async (url: string) => {
+      if (url.startsWith(`https://${switchHost}`)) throw new TypeError('cloud offline');
+      if (url.endsWith('/api/gateway/enrollment/claim')) {
+        return jsonResponse(200, { status: 'approved', assignment: localAssignment });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const original = globalThis.fetch;
+    globalThis.fetch = fetcher;
+    try {
+      const first = await getOrLoadGatewaySession(switchHost, '160');
+      const second = await getOrLoadGatewaySession(switchHost, '160');
+      expect(first?.deviceId).toBe('local-device');
+      expect(second?.deviceId).toBe('local-device');
+      expect(first?.apiURL).toBe('http://192.168.100.52:18080');
+      expect(second?.apiURL).toBe('http://192.168.100.52:18080');
+      expect((fetcher as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(4);
+    } finally {
+      globalThis.fetch = original;
+      resetGatewaySession();
+      await AsyncStorage.clear();
+    }
+  });
+
+  test('a local fallback rejection is persisted locally and never revokes the cloud record', async () => {
+    resetGatewaySession();
+    const localEndpointHost = '192.168.100.51:18080';
+    const local = fallbackGatewayEndpoint(localEndpointHost)!;
+    await saveEnrollmentRecord({
+      host: HOST, extension: '160', claimSecret: 'a'.repeat(64), deviceId: 'cloud-device',
+      status: 'approved', gatewayMode: true, assignment: ASSIGNMENT, fallback: local, updatedAt: Date.now(),
+    });
+    await saveEnrollmentRecord({
+      host: local.host, extension: '160', claimSecret: 'b'.repeat(64), deviceId: 'local-device',
+      status: 'approved', gatewayMode: true, assignment: { ...ASSIGNMENT, deviceId: 'local-device' }, updatedAt: Date.now(),
     });
     const fetcher = jest.fn(async (url: string) => {
       if (url.startsWith(`https://${HOST}`)) throw new TypeError('network request failed');
+      if (url.endsWith('/api/gateway/capabilities')) return jsonResponse(200, CAPABILITIES);
+      if (url.endsWith('/api/gateway/enrollment/claim')) return jsonResponse(403, { status: 'revoked' });
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    await expect(prepareLogin({ host: HOST, extension: '160', fallbackHost: localEndpointHost, fetcher }))
+      .rejects.toMatchObject({ kind: 'revoked' });
+    const cloud = await loadEnrollmentRecord(HOST, '160');
+    const fallbackRecord = await loadEnrollmentRecord(local.host, '160');
+    expect(cloud?.status).toBe('approved');
+    expect(cloud?.assignment).toEqual(ASSIGNMENT);
+    expect(fallbackRecord?.status).toBe('revoked');
+    expect(fallbackRecord?.assignment).toBeUndefined();
+  });
+
+  test('revalidates the separate local record when the public claim fails', async () => {
+    resetGatewaySession();
+    const local = fallbackGatewayEndpoint(FALLBACK)!;
+    const localAssignment = { ...ASSIGNMENT, deviceId: 'local-device' };
+    await saveEnrollmentRecord({
+      host: HOST, extension: '160', claimSecret: 'a'.repeat(64), deviceId: 'cloud-device',
+      status: 'approved', gatewayMode: true, assignment: ASSIGNMENT,
+      fallback: local, updatedAt: Date.now(),
+    });
+    await saveEnrollmentRecord({
+      host: local.host, extension: '160', claimSecret: 'b'.repeat(64), deviceId: 'local-device',
+      status: 'approved', gatewayMode: true, assignment: localAssignment, updatedAt: Date.now(),
+    });
+    const fetcher = jest.fn(async (url: string) => {
+      if (url.startsWith(`https://${HOST}`)) throw new TypeError('network request failed');
+      if (url.endsWith('/api/gateway/capabilities')) return jsonResponse(200, CAPABILITIES);
       if (url.endsWith('/api/gateway/enrollment/claim')) {
-        return jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT });
+        return jsonResponse(200, { status: 'approved', assignment: localAssignment });
       }
       throw new Error(`unexpected request ${url}`);
     }) as unknown as typeof fetch;
@@ -671,10 +753,12 @@ describe('automatic local gateway fallback', () => {
     globalThis.fetch = fetcher;
     try {
       const session = await getOrLoadGatewaySession(HOST, '160');
+      expect(session?.deviceId).toBe('local-device');
       expect(session?.apiURL).toBe('http://192.168.100.50:18080');
       expect(session?.sipWssUrl).toBe('ws://192.168.100.50:18088/ws');
     } finally {
       globalThis.fetch = original;
+      resetGatewaySession();
     }
   });
 });

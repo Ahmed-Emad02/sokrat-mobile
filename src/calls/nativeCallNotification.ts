@@ -28,6 +28,26 @@ function getEmitter(): NativeEventEmitter | null {
   }
   return cachedEmitter;
 }
+export async function canUseFullScreenIntent(): Promise<boolean> {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.canUseFullScreenIntent) return true;
+  try {
+    return Boolean(await mod.canUseFullScreenIntent());
+  } catch {
+    return true;
+  }
+}
+
+export async function openFullScreenIntentSettings(): Promise<boolean> {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.openFullScreenIntentSettings) return false;
+  try {
+    return Boolean(await mod.openFullScreenIntentSettings());
+  } catch {
+    return false;
+  }
+}
+
 export function showIncomingCallNotification(
   callId: string,
   callerId: string,

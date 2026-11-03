@@ -93,13 +93,13 @@ type FakeSession = {
   };
 };
 
-function createSession(direction: 'incoming' | 'outgoing' = 'outgoing'): FakeSession {
+function createSession(direction: 'incoming' | 'outgoing' = 'outgoing', displayName = ''): FakeSession {
   const handlers: Record<string, Array<(data?: unknown) => void>> = {};
   const pcHandlers: Record<string, Array<() => void>> = {};
   const session: FakeSession = {
     id: `session-${direction}`,
     direction,
-    remote_identity: { uri: { user: '102' }, display_name: 'Sales' },
+    remote_identity: { uri: { user: '102' }, display_name: displayName },
     handlers,
     on: jest.fn((event: string, handler: (data?: unknown) => void) => {
       (handlers[event] = handlers[event] || []).push(handler);
@@ -216,6 +216,23 @@ describe('JsSipService media + instance id', () => {
     expect(events.onCallEnded).toHaveBeenCalledWith(session.id, 'Terminated', expect.anything());
   });
 
+  test('rejects a second incoming call while a call is already active', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const first = createSession('outgoing');
+    first.id = 'first-active';
+    mockUaInstances[0].emit('newRTCSession', { session: first, request: {} });
+
+    const second = createSession('incoming');
+    second.id = 'second-incoming';
+    mockUaInstances[0].emit('newRTCSession', { session: second, request: {} });
+
+    expect(second.terminate).toHaveBeenCalledWith({ status_code: 486, reason_phrase: 'Busy Here' });
+    expect(service.activeCall?.id).toBe(first.id);
+    expect(events.onIncomingCall).not.toHaveBeenCalledWith(expect.objectContaining({ callId: second.id }));
+  });
+
   test('outbound hangup dispatches termination and retains a leg when dispatch throws', async () => {
     const service = createService();
     await service.connect('160', 'pw', 'pbx.example.com', false);
@@ -268,6 +285,18 @@ describe('JsSipService media + instance id', () => {
     await Promise.resolve();
     expect(service.activeCall?.targetName).toBe('102');
     expect(service.activeCall?.target).toBe('102');
+  });
+
+  test('incoming call uses a human PBX display name when supplied', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming', 'PBX Contact');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    expect(service.activeCall?.targetName).toBe('PBX Contact');
+    expect(events.onIncomingCall).toHaveBeenCalledWith(expect.objectContaining({
+      callerId: '102', callerName: 'PBX Contact',
+    }));
   });
 
   test('incoming call starts with the number until app/VoIP contact lookup resolves', async () => {
@@ -1012,6 +1041,17 @@ describe('JsSipService media + instance id', () => {
       expect(reconnect).not.toHaveBeenCalled();
       service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
       service.handleNetworkChange({ isConnected: true, networkType: 'CELLULAR' });
+      await jest.advanceTimersByTimeAsync(350);
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    });
+
+    test('same transport on a different Android network triggers handover', async () => {
+      const { service, reconnect } = await activeSession();
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI', networkId: 'wifi-a' });
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI', networkId: 'wifi-a' });
+      await jest.advanceTimersByTimeAsync(500);
+      expect(reconnect).not.toHaveBeenCalled();
+      service.handleNetworkChange({ isConnected: true, networkType: 'WIFI', networkId: 'wifi-b' });
       await jest.advanceTimersByTimeAsync(350);
       expect(reconnect).toHaveBeenCalledTimes(1);
     });

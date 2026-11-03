@@ -78,6 +78,27 @@ export class ChatCache {
     await this.saveMessages(conversationId, existing);
   }
 
+  // ---- Conversation preferences ----
+
+  async getConversationPrefs(): Promise<{ pinned: string[]; muted: string[] }> {
+    try {
+      const raw = await AsyncStorage.getItem(scopeKey(this.scope, 'prefs'));
+      if (!raw) return { pinned: [], muted: [] };
+      const parsed: unknown = JSON.parse(raw);
+      const value = parsed as { pinned?: unknown; muted?: unknown };
+      return {
+        pinned: Array.isArray(value.pinned) ? value.pinned.filter((id): id is string => typeof id === 'string') : [],
+        muted: Array.isArray(value.muted) ? value.muted.filter((id): id is string => typeof id === 'string') : [],
+      };
+    } catch {
+      return { pinned: [], muted: [] };
+    }
+  }
+
+  async saveConversationPrefs(prefs: { pinned: string[]; muted: string[] }): Promise<void> {
+    await AsyncStorage.setItem(scopeKey(this.scope, 'prefs'), JSON.stringify(prefs));
+  }
+
   // ---- Unread ----
 
   async getUnread(): Promise<UnreadSummary> {

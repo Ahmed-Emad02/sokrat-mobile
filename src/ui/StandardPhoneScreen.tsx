@@ -86,7 +86,7 @@ import {
   SlidersIcon,
 } from './Icons';
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
-import { fetchDeviceContacts, getNativeSpeakerVolume, SpeakerVolumeState } from '../calls/nativeCallNotification';
+import { canUseFullScreenIntent, fetchDeviceContacts, getNativeSpeakerVolume, openFullScreenIntentSettings, SpeakerVolumeState } from '../calls/nativeCallNotification';
 import {
   micPercentToDb,
   speakerGainToDb,
@@ -96,6 +96,7 @@ import {
 import { searchContacts } from '../utils/dialSearch';
 import { nameCallRecords } from '../utils/callLog';
 import { callDisplayName } from '../calls/callerName';
+import { orderContactsForList } from '../contacts/order';
 import { editDialInput, type DialSelection } from '../utils/dialInput';
 import type { ChatClient } from '../chat/client';
 import type { ChatCache } from '../chat/cache';
@@ -385,12 +386,12 @@ const InCallTimerDisplay = React.memo(function InCallTimerDisplay({
   status?: string;
 }) {
   const styles = useScreenStyles();
-  const isConnected = status === 'active';
+  const isConnected = status === 'active' || status === 'held';
   const isRinging = status === 'ringing';
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    if (status !== 'active') {
+    if (status !== 'active' && status !== 'held') {
       setElapsed(0);
       return;
     }
@@ -733,6 +734,7 @@ function StandardPhoneScreenInner({
     }
   }, [showMenu, menuAnim]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [fullScreenCallsAllowed, setFullScreenCallsAllowed] = useState(true);
   const [showAddContactModal, setShowAddContactModal] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [contactSearch, setContactSearch] = useState('');
@@ -954,9 +956,10 @@ function StandardPhoneScreenInner({
   }, [callsHistory, contacts, historyFilter]);
 
   const filteredContacts = useMemo(() => {
+    const ordered = orderContactsForList(contacts);
     const q = contactSearch.trim().toLowerCase();
-    if (!q) return contacts;
-    return contacts.filter((c) =>
+    if (!q) return ordered;
+    return ordered.filter((c) =>
       c.name.toLowerCase().includes(q) || c.extension.includes(q)
     );
   }, [contacts, contactSearch]);
@@ -1179,6 +1182,15 @@ function StandardPhoneScreenInner({
     });
     setEditWhatsAppCountryCode(clean);
   }, []);
+
+  useEffect(() => {
+    if (!showSettingsModal) return;
+    let cancelled = false;
+    void canUseFullScreenIntent().then(allowed => {
+      if (!cancelled) setFullScreenCallsAllowed(allowed);
+    });
+    return () => { cancelled = true; };
+  }, [showSettingsModal]);
 
   const openSettings = useCallback(() => {
     setEditWhatsAppCountryCode(whatsappPrefs.countryCode);
@@ -1457,25 +1469,22 @@ function StandardPhoneScreenInner({
       <SafeAreaView style={styles.inCallContainer}>
         {/* Top Status & Hero Info */}
         <View style={styles.inCallTop}>
-          <View style={styles.inCallBadgePill}>
-            <View
-              style={[
-                styles.inCallBadgeDot,
-                (isCallingState || isRingingState) && styles.inCallBadgeDotCalling,
-                isHeldState && styles.inCallBadgeDotHeld,
-              ]}
-            />
-            <Text style={styles.inCallBadgeText}>
-              {callStatusBadgeText}
-            </Text>
-          </View>
+          {(activeCall.isGsmInterrupted || isHeldState) && (
+            <View style={styles.inCallBadgePill}>
+              <View
+                style={[
+                  styles.inCallBadgeDot,
+                  (isCallingState || isRingingState) && styles.inCallBadgeDotCalling,
+                  isHeldState && styles.inCallBadgeDotHeld,
+                ]}
+              />
+              <Text style={styles.inCallBadgeText}>
+                {callStatusBadgeText}
+              </Text>
+            </View>
+          )}
 
           <InCallTimerDisplay startTime={activeCall.startTime} status={activeCall.status} />
-          <View style={styles.inCallAvatar}>
-            <Text style={styles.inCallAvatarText}>
-              {displayName.charAt(0).toUpperCase()}
-            </Text>
-          </View>
 
           <Text style={styles.inCallName} numberOfLines={1}>
             {displayName}
@@ -2740,6 +2749,17 @@ function StandardPhoneScreenInner({
                         style={styles.dialogCancelBtn}
                       >
                         <Text style={styles.dialogCancelText}>{t('Repair notifications')}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {!fullScreenCallsAllowed ? (
+                      <TouchableOpacity
+                        onPress={async () => {
+                          await openFullScreenIntentSettings();
+                          setFullScreenCallsAllowed(await canUseFullScreenIntent());
+                        }}
+                        style={styles.dialogCancelBtn}
+                      >
+                        <Text style={styles.dialogCancelText}>{t('Allow full-screen calls')}</Text>
                       </TouchableOpacity>
                     ) : null}
                     {account ? (
@@ -4053,7 +4073,8 @@ const rawStyles = StyleSheet.create({
   },
   inCallTop: {
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 28,
+    paddingTop: 4,
   },
   inCallBadgePill: {
     flexDirection: 'row',
@@ -4099,33 +4120,14 @@ const rawStyles = StyleSheet.create({
     color: '#38bdf8',
     letterSpacing: 0.5,
   },
-  inCallAvatar: {
-    width: 114,
-    height: 114,
-    borderRadius: 57,
-    backgroundColor: '#18181b',
-    borderColor: '#38bdf8',
-    borderWidth: 2.5,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 18,
-    elevation: 12,
-    shadowColor: '#38bdf8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-  },
-  inCallAvatarText: {
-    color: '#38bdf8',
-    fontSize: 48,
-    fontWeight: '800',
-  },
   inCallName: {
     color: '#ffffff',
-    fontSize: 28,
+    fontSize: 30,
+    lineHeight: 36,
     fontWeight: '700',
     textAlign: 'center',
-    marginBottom: 6,
+    marginTop: 10,
+    marginBottom: 8,
     paddingHorizontal: 20,
   },
   inCallNumberBadge: {
@@ -4153,6 +4155,7 @@ const rawStyles = StyleSheet.create({
     paddingHorizontal: 12,
     gap: 18,
     marginHorizontal: 8,
+    marginTop: 12,
   },
   inCallRow: {
     flexDirection: 'row',

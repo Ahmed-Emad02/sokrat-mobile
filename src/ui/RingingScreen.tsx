@@ -22,62 +22,18 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
   const { colors } = useTheme();
   const { t } = useI18n();
   const styles = useMemo(() => themedStyles(rawStyles, colors), [colors]);
-  const ripple1 = useRef(new Animated.Value(0)).current;
-  const ripple2 = useRef(new Animated.Value(0)).current;
-  const ripple3 = useRef(new Animated.Value(0)).current;
-  const bounceAnim = useRef(new Animated.Value(1)).current;
   const textFadeAnim = useRef(new Animated.Value(0.5)).current;
 
   useEffect(() => {
-    const createRipple = (anim: Animated.Value, delay: number) => {
-      return Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(anim, {
-            toValue: 1,
-            duration: 2400,
-            useNativeDriver: true,
-          }),
-          Animated.timing(anim, {
-            toValue: 0,
-            duration: 0,
-            useNativeDriver: true,
-          }),
-        ])
-      );
-    };
-
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(bounceAnim, { toValue: 1.07, duration: 900, useNativeDriver: true }),
-        Animated.timing(bounceAnim, { toValue: 1.0, duration: 900, useNativeDriver: true }),
-      ])
-    );
-
     const textBreath = Animated.loop(
       Animated.sequence([
         Animated.timing(textFadeAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
         Animated.timing(textFadeAnim, { toValue: 0.45, duration: 900, useNativeDriver: true }),
       ])
     );
-
-    const r1 = createRipple(ripple1, 0);
-    const r2 = createRipple(ripple2, 800);
-    const r3 = createRipple(ripple3, 1600);
-    r1.start();
-    r2.start();
-    r3.start();
-    pulse.start();
     textBreath.start();
-
-    return () => {
-      r1.stop();
-      r2.stop();
-      r3.stop();
-      pulse.stop();
-      textBreath.stop();
-    };
-  }, [ripple1, ripple2, ripple3, bounceAnim, textFadeAnim]);
+    return () => textBreath.stop();
+  }, [textFadeAnim]);
   useEffect(() => {
     if (answerRequested) stopRingtone();
     else startRingtone();
@@ -118,7 +74,6 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
 
   const displayName = callDisplayName(callerId, callerName);
   const displayExt = callerId.trim() || callerName.trim();
-  const initial = displayName.charAt(0).toUpperCase() || '?';
   return (
     <SafeAreaView style={styles.container}>
       {/* Top Protocol Badge */}
@@ -129,78 +84,8 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
         </View>
       </View>
 
-      {/* Center Radar Waves & Avatar Hero */}
-      <View style={styles.centerHero} pointerEvents="box-none">
-        <View style={styles.avatarWrapper} pointerEvents="box-none">
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.rippleRing,
-              {
-                transform: [
-                  {
-                    scale: ripple1.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [1, 2.5],
-                    }),
-                  },
-                ],
-                opacity: ripple1.interpolate({
-                  inputRange: [0, 0.5, 1],
-                  outputRange: [0.65, 0.25, 0],
-                }),
-              },
-            ]}
-          />
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.rippleRing,
-              {
-                transform: [
-                  {
-                    scale: ripple2.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [1, 2.5],
-                    }),
-                  },
-                ],
-                opacity: ripple2.interpolate({
-                  inputRange: [0, 0.5, 1],
-                  outputRange: [0.65, 0.25, 0],
-                }),
-              },
-            ]}
-          />
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.rippleRing,
-              {
-                transform: [
-                  {
-                    scale: ripple3.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [1, 2.5],
-                    }),
-                  },
-                ],
-                opacity: ripple3.interpolate({
-                  inputRange: [0, 0.5, 1],
-                  outputRange: [0.65, 0.25, 0],
-                }),
-              },
-            ]}
-          />
-
-          <Animated.View
-            pointerEvents="none"
-            style={[styles.avatarCircle, { transform: [{ scale: bounceAnim }] }]}
-          >
-            <Text style={styles.avatarInitial}>{initial}</Text>
-          </Animated.View>
-        </View>
-
+      {/* Caller information */}
+      <View style={styles.centerHero}>
         {/* Caller Info */}
         <Text style={styles.callerName} numberOfLines={1}>
           {displayName}
@@ -236,36 +121,21 @@ export function RingingScreen({ callerId, callerName, onAnswer, onDecline, answe
 
         {/* Answer Action */}
         <View style={styles.actionCol}>
-          <View style={styles.answerBtnWrap}>
-            <Animated.View
-              style={[
-                styles.answerHalo,
-                {
-                  transform: [{ scale: bounceAnim }],
-                  opacity: bounceAnim.interpolate({
-                    inputRange: [1.0, 1.07],
-                    outputRange: [0.35, 0.75],
-                  }),
-                },
-              ]}
-              pointerEvents="none"
-            />
-            <TouchableOpacity
-              style={[styles.actionBtn, styles.answerBtn, answerPending && { opacity: 0.6 }]}
-              onPress={handleAnswerPress}
-              delayPressIn={0}
-              hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-              activeOpacity={0.7}
-              disabled={answerPending}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: answerPending, busy: answerPending }}
-              accessibilityLabel={answerPending ? 'Connecting call' : 'Answer incoming call'}
-            >
-              {answerPending
-                ? <ActivityIndicator size={30} color={colors.onBrand} />
-                : <PhoneAnswerIcon size={32} color={colors.onBrand} />}
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.answerBtn, answerPending && { opacity: 0.6 }]}
+            onPress={handleAnswerPress}
+            delayPressIn={0}
+            hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+            activeOpacity={0.7}
+            disabled={answerPending}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: answerPending, busy: answerPending }}
+            accessibilityLabel={answerPending ? 'Connecting call' : 'Answer incoming call'}
+          >
+            {answerPending
+              ? <ActivityIndicator size={30} color={colors.onBrand} />
+              : <PhoneAnswerIcon size={32} color={colors.onBrand} />}
+          </TouchableOpacity>
           <Text style={styles.actionLabel}>{answerPending ? t('Connecting…') : t('Answer')}</Text>
         </View>
       </View>
@@ -306,50 +176,17 @@ const rawStyles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     justifyContent: 'center',
-  },
-  avatarWrapper: {
-    width: 136,
-    height: 136,
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-    marginBottom: 28,
-  },
-  rippleRing: {
-    position: 'absolute',
-    width: 136,
-    height: 136,
-    borderRadius: 68,
-    borderWidth: 2,
-    borderColor: '#38bdf8',
-  },
-  avatarCircle: {
-    width: 124,
-    height: 124,
-    borderRadius: 62,
-    backgroundColor: '#18181b',
-    borderColor: '#38bdf8',
-    borderWidth: 2.5,
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 14,
-    shadowColor: '#38bdf8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.45,
-    shadowRadius: 12,
-  },
-  avatarInitial: {
-    color: '#38bdf8',
-    fontSize: 54,
-    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingVertical: 24,
   },
   callerName: {
     color: '#ffffff',
-    fontSize: 30,
+    fontSize: 32,
+    lineHeight: 38,
     fontWeight: '700',
     textAlign: 'center',
     paddingHorizontal: 16,
-    marginBottom: 8,
+    marginBottom: 14,
   },
   extBadge: {
     flexDirection: 'row',
@@ -361,7 +198,7 @@ const rawStyles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 12,
     borderRadius: 14,
-    marginBottom: 16,
+    marginBottom: 20,
   },
   extBadgeText: {
     color: '#a1a1aa',
@@ -379,7 +216,8 @@ const rawStyles = StyleSheet.create({
     justifyContent: 'space-around',
     alignItems: 'center',
     paddingHorizontal: 36,
-    marginBottom: 28,
+    paddingTop: 12,
+    marginBottom: 36,
     zIndex: 100,
     elevation: 20,
   },
@@ -402,24 +240,8 @@ const rawStyles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 10,
   },
-  answerBtnWrap: {
-    position: 'relative',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  answerHalo: {
-    position: 'absolute',
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-    backgroundColor: '#16a34a',
-  },
   answerBtn: {
     backgroundColor: '#16a34a',
-    shadowColor: '#16a34a',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
   },
   actionLabel: {
     color: '#a1a1aa',

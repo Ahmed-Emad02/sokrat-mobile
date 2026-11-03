@@ -14,13 +14,14 @@ import {
   onTokenRefresh,
   requestPermission,
 } from '@react-native-firebase/messaging';
-import { CONFIG } from '../config';
-import { callDisplayName } from '../calls/callerName';
+import { CONFIG, hydrateAppVersion } from '../config';
+import { callDisplayName, providerCallerName } from '../calls/callerName';
 import { getDeviceUuid, UUID_PATTERN } from '../storage/deviceId';
 import type { SavedAccount } from '../storage/store';
 import {
   getOrLoadGatewaySession,
   getPersistedGatewayRecord,
+  getActiveGatewaySession,
   registerGatewayPushToken,
   removeGatewayPushToken,
   sendGatewayHeartbeat,
@@ -86,12 +87,18 @@ let onChatMessage: ChatPushHandler | null = null;
 let currentExtension = '';
 let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
+let lastFcmTokenAt = 0;
+let lastFcmError = '';
+let lastPushRegisteredAt = 0;
+let lastPushRegisterError = '';
 let pendingAndroidPayload: PushPayload | null = null;
 let lastDeliveredCallId = '';
 let lastWakeTimestamp = 0;
 const registrationRetry = createRegistrationRetry();
 const tokenRetry = createRegistrationRetry();
 let tokenListenersInitialized = false;
+let repairInFlight = false;
+let repairQueued = false;
 
 function registerCachedToken() {
   const extension = currentExtension;
@@ -109,9 +116,12 @@ function refreshAndroidToken() {
   tokenRetry.start(async () => {
     try {
       fcmTokenCache = await getToken(getMessaging());
+      lastFcmTokenAt = Date.now();
+      lastFcmError = '';
       registerCachedToken();
       return true;
-    } catch {
+    } catch (error) {
+      lastFcmError = error instanceof Error ? error.message : String(error);
       console.warn('[push] FCM token unavailable; retry scheduled');
       return false;
     }
@@ -138,16 +148,43 @@ async function refreshAndroidTokenForAppVersion() {
  * Explicit repair path for settings/operator use. This is the only operation
  * that should delete a healthy token outside an app-version change.
  */
+/** Sanitized diagnostics only; never expose the raw FCM token. */
+export function getPushDiagnostics(): {
+  fcmTokenPresent: boolean;
+  lastFcmTokenAt: number;
+  lastFcmError: string;
+  lastPushRegisteredAt: number;
+  lastPushRegisterError: string;
+} {
+  return {
+    fcmTokenPresent: Boolean(fcmTokenCache),
+    lastFcmTokenAt,
+    lastFcmError,
+    lastPushRegisteredAt,
+    lastPushRegisterError,
+  };
+}
+
+function queueTokenConflictRepair(): void {
+  if (repairInFlight || repairQueued) return;
+  repairQueued = true;
+  setTimeout(() => {
+    repairQueued = false;
+    void repairPushRegistration();
+  }, 0);
+}
+
 export async function repairPushRegistration(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !currentExtension) return false;
+  if (Platform.OS !== 'android' || !currentExtension || repairInFlight) return false;
+  repairInFlight = true;
   const extension = currentExtension;
   const host = CONFIG.sipDomain;
-  // Repair is an explicit one-shot operation. Drain normal registration
-  // retries first so deleteToken/getToken/register cannot race a foreground or
-  // token-refresh registration.
-  await registrationRetry.stop();
-  await tokenRetry.stop();
   try {
+    // Repair is an explicit one-shot operation. Drain normal registration
+    // retries first so deleteToken/getToken/register cannot race a foreground or
+    // token-refresh registration.
+    await registrationRetry.stop();
+    await tokenRetry.stop();
     await deleteToken(getMessaging());
     const token = await getToken(getMessaging());
     if (currentExtension !== extension || CONFIG.sipDomain !== host) return false;
@@ -159,6 +196,8 @@ export async function repairPushRegistration(): Promise<boolean> {
   } catch {
     console.warn('[push] push registration repair failed');
     return false;
+  } finally {
+    repairInFlight = false;
   }
 }
 
@@ -171,7 +210,7 @@ function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
     type: 'incoming-call',
     msg: 'incoming-call',
     callerId: data.callerId || 'Unknown',
-    callerName: callDisplayName(data.callerId || ''),
+    callerName: providerCallerName(data.callerId || '', data.callerName),
     extension: data.extension || '',
     timestamp: data.timestamp || String(Date.now()),
     sipWss: data.sipWss,
@@ -356,7 +395,8 @@ if (Platform.OS === 'android') {
   }
 }
 
-export function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandler) {
+export async function initPush(onIncomingCall: PushHandler, onCancelCall?: CancelHandler) {
+  await hydrateAppVersion();
   onIncoming = onIncomingCall;
   onCancel = onCancelCall || null;
 
@@ -462,6 +502,11 @@ async function resolvePushGateway(
   extension: string,
 ): Promise<GatewaySession | null | undefined> {
   if (!host) return undefined;
+  // Prefer the approved active session. After local fallback the active
+  // session has the local deviceId; probing the cloud record first would hit
+  // "Gateway account changed" and incorrectly skip local token registration.
+  const active = getActiveGatewaySession(host, extension);
+  if (active) return active;
   try {
     const record = await getPersistedGatewayRecord(host, extension);
     if (!record) return undefined;
@@ -506,6 +551,8 @@ export async function sendTokenToGateway(
 
     if (gateway) {
       await registerGatewayPushToken(gateway, body);
+      lastPushRegisteredAt = Date.now();
+      lastPushRegisterError = '';
       console.log('[push] tenant token registration confirmed');
       return true;
     }
@@ -521,18 +568,23 @@ export async function sendTokenToGateway(
       });
       const json = await response.json();
       if (!response.ok || !json.success) {
+        lastPushRegisterError = `HTTP ${response.status}`;
         console.warn('[push] gateway registration failed; retry scheduled, HTTP', response.status);
         return false;
       }
     } finally {
       clearTimeout(timer);
     }
+    lastPushRegisteredAt = Date.now();
+    lastPushRegisterError = '';
     console.log('[push] token registration confirmed');
     return true;
   } catch (error) {
     const status = (error as { status?: unknown } | null)?.status;
+    lastPushRegisterError = `HTTP ${typeof status === 'number' ? status : 0}`;
     console.warn('[push] token registration failed; retry scheduled, HTTP',
       typeof status === 'number' ? status : 0);
+    if (status === 409) queueTokenConflictRepair();
     return false;
   }
 }

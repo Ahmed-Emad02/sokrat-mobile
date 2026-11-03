@@ -30,6 +30,7 @@ export class ChatSocket {
   private socket: Socket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  private generation = 0;
 
   constructor(
     private readonly gatewayBase: string,
@@ -39,16 +40,22 @@ export class ChatSocket {
 
   async connect(): Promise<void> {
     if (this.disposed) return;
-    this.disconnect();
+    // A network handover can overlap an in-flight connect. Invalidate the old
+    // attempt so it cannot install a stale socket after the new one.
+    const generation = ++this.generation;
+    this.closeSocket();
 
     let token: string;
     try {
       token = await this.client.ensureToken();
     } catch {
-      console.warn('[chat-socket] could not get PBX token; retry scheduled');
-      this.scheduleReconnect();
+      if (generation === this.generation) {
+        console.warn('[chat-socket] could not get PBX token; retry scheduled');
+        this.scheduleReconnect();
+      }
       return;
     }
+    if (this.disposed || generation !== this.generation) return;
 
     let ticketQuery: Record<string, string> = {};
     try {
@@ -58,6 +65,7 @@ export class ChatSocket {
       // Gateway ticket endpoint not yet available; connect without it
       console.warn('[chat-socket] ticket endpoint unavailable; connecting without ticket');
     }
+    if (this.disposed || generation !== this.generation) return;
 
     const socket = io(`${this.gatewayBase}/chat`, {
       path: '/api/gateway/chat/socket.io',
@@ -69,30 +77,36 @@ export class ChatSocket {
     });
 
     socket.on('connect', () => {
+      if (this.socket !== socket) return;
       console.log('[chat-socket] connected');
       this.handlers.onConnected();
     });
 
     socket.on('disconnect', (reason) => {
+      if (this.socket !== socket) return;
       console.log('[chat-socket] disconnected:', reason);
       this.handlers.onDisconnected();
       if (!this.disposed) this.scheduleReconnect();
     });
 
     socket.on('connect_error', (err) => {
+      if (this.socket !== socket) return;
       console.warn('[chat-socket] connect_error:', err.message);
       if (!this.disposed) this.scheduleReconnect();
     });
 
     socket.on('chat:message', (payload: { conversation_id?: number | string; message?: unknown }) => {
+      if (this.socket !== socket) return;
       const msg = this.client.normalizeMessage(payload?.message);
       if (msg.id && msg.conversation_id) { this.handlers.onMessage(msg); this.messageListeners.forEach(fn => fn(msg)); }
     });
     socket.on('chat:conversation', (payload: { conversation?: unknown }) => {
+      if (this.socket !== socket) return;
       const conv = this.client.normalizeConversation(payload?.conversation);
       if (conv.id) this.handlers.onConversationUpdated(conv);
     });
     socket.on('chat:typing', (payload: { conversation_id?: number | string; extension?: string; typing?: boolean }) => {
+      if (this.socket !== socket) return;
       if (payload?.conversation_id && payload.extension) {
         const event = { conversationId: String(payload.conversation_id), extension: String(payload.extension), isTyping: Boolean(payload.typing) };
         this.handlers.onTyping(event); this.typingListeners.forEach(fn => fn(event));
@@ -100,6 +114,12 @@ export class ChatSocket {
     });
 
     this.socket = socket;
+  }
+
+  /** Reconnect immediately after a network handover instead of waiting for
+   * Socket.IO's idle timeout or the fixed backoff timer. */
+  reconnectNow(): void {
+    if (!this.disposed) void this.connect();
   }
 
   private readonly messageListeners = new Set<(msg: ChatMessage) => void>();
@@ -119,7 +139,7 @@ export class ChatSocket {
     this.socket?.emit('chat:typing', { conversation_id: Number(conversationId), typing: isTyping });
   }
 
-  disconnect(): void {
+  private closeSocket(): void {
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.socket) {
@@ -127,6 +147,11 @@ export class ChatSocket {
       this.socket.disconnect();
       this.socket = null;
     }
+  }
+
+  disconnect(): void {
+    this.generation++;
+    this.closeSocket();
   }
 
   dispose(): void {

@@ -1,12 +1,20 @@
 import { StorageService, type SavedAccount, type Contact } from '../storage/store';
 import { extensionHeaders, isPrivateHost, splitHost } from '../network';
 import { getOrLoadGatewaySession } from '../gateway/session';
-import { callerNameFromContacts } from './callerName';
+import { callerNameFromContacts, callDisplayName } from './callerName';
+import { lookupDeviceContactName } from './nativeCallNotification';
 
 export const CONTACTS_PATH = '/api/extension/v1/contacts?limit=2000';
 
 /** A lookup failure is not a call failure. Never use a SIP display label here. */
 export async function resolveCallerName(number: string, account: SavedAccount | null): Promise<string> {
+  try {
+    const device = await lookupDeviceContactName(number);
+    if (device) {
+      const resolved = callDisplayName(number, device);
+      if (resolved !== callDisplayName(number)) return resolved;
+    }
+  } catch { /* Contacts permission or lookup failure falls back below. */ }
   try {
     const local = callerNameFromContacts(number, await StorageService.getContacts());
     if (local !== 'Unknown') return local;

@@ -15,6 +15,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Animated,
+  Clipboard,
   Modal,
   Image,
   Linking,
@@ -57,15 +59,19 @@ interface BubbleProps {
   msg: ChatMessage;
   ownExtension: string;
   client: ChatClient;
+  onRetry: (msg: ChatMessage) => void;
+  onMenu: (msg: ChatMessage) => void;
 }
 
-const Bubble = React.memo(function Bubble({ msg, ownExtension, client }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ msg, ownExtension, client, onRetry, onMenu }: BubbleProps) {
   const { colors } = useTheme();
   const isMine = msg.sender_extension === ownExtension;
 
   return (
     <View style={[styles.bubbleWrap, isMine ? styles.bubbleWrapRight : styles.bubbleWrapLeft]}>
-      <View
+      <TouchableOpacity
+        activeOpacity={0.9}
+        onLongPress={() => onMenu(msg)}
         style={[
           styles.bubble,
           isMine
@@ -87,9 +93,14 @@ const Bubble = React.memo(function Bubble({ msg, ownExtension, client }: BubbleP
           </Text>
           {msg.pending && <Text style={styles.bubbleSending}> ···</Text>}
           {msg.failed && (
-            <View style={styles.bubbleStatusIcon}>
+            <TouchableOpacity
+              onPress={() => onRetry(msg)}
+              accessibilityRole="button"
+              accessibilityLabel="Retry failed message"
+              style={styles.bubbleStatusIcon}
+            >
               <CloseIcon size={11} color="#ef4444" />
-            </View>
+            </TouchableOpacity>
           )}
           {isMine && msg.read_at && (
             <View style={styles.bubbleStatusIcon}>
@@ -97,7 +108,7 @@ const Bubble = React.memo(function Bubble({ msg, ownExtension, client }: BubbleP
             </View>
           )}
         </View>
-      </View>
+      </TouchableOpacity>
     </View>
   );
 });
@@ -172,6 +183,35 @@ function AttachmentRow({ att, isMine, client }: { att: ChatAttachment; isMine: b
   );
 }
 
+function SoundWave({ active }: { active: boolean }) {
+  const bars = React.useRef(Array.from({ length: 7 }, () => new Animated.Value(0.3))).current;
+  React.useEffect(() => {
+    if (!active) {
+      bars.forEach(bar => bar.setValue(0.3));
+      return;
+    }
+    const animations = bars.map((bar, index) => Animated.loop(Animated.sequence([
+      Animated.timing(bar, { toValue: 1, duration: 260 + index * 35, useNativeDriver: true }),
+      Animated.timing(bar, { toValue: 0.25, duration: 240 + index * 30, useNativeDriver: true }),
+    ])));
+    const timers = animations.map((animation, index) => setTimeout(() => animation.start(), index * 45));
+    return () => {
+      timers.forEach(clearTimeout);
+      animations.forEach(animation => animation.stop());
+    };
+  }, [active, bars]);
+  return (
+    <View style={styles.soundWave} accessibilityLabel="Recording voice note">
+      {bars.map((bar, index) => (
+        <Animated.View
+          key={index}
+          style={[styles.soundWaveBar, { transform: [{ scaleY: bar }] }]}
+        />
+      ))}
+    </View>
+  );
+}
+
 function TypingDots() {
   const { colors } = useTheme();
   return (
@@ -206,13 +246,24 @@ export function ChatThreadScreen({
   const { colors } = useTheme();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [text, setText] = useState('');
+  const [toast, setToast] = useState('');
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  const [forwardTo, setForwardTo] = useState('');
+  const [forwardingBusy, setForwardingBusy] = useState(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sending, setSending] = useState(false);
   const [typingPeers, setTypingPeers] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [recording, setRecording] = useState(false);
+  const [recordingPaused, setRecordingPaused] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const recorderRef = useRef<typeof Sound | null>(null);
+  const startingRecordingRef = useRef(false);
+  const stoppingRecordingRef = useRef(false);
   const flatRef = useRef<FlatList<ChatMessage>>(null);
   const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -227,6 +278,7 @@ export function ChatThreadScreen({
         const fresh = await client.getMessages(conversation.id);
         if (cancelled) return;
         setMessages(fresh);
+        setHasMore(fresh.length >= 50);
         await cache.saveMessages(conversation.id, fresh);
         // Mark latest as read
         const last = fresh[fresh.length - 1];
@@ -349,7 +401,9 @@ export function ChatThreadScreen({
         setUploadProgress(prev => ({ ...prev, [cid]: fraction }));
       });
       const sent = await client.sendAttachment(conversation.id, '', cid, [attachment.id]);
-      setMessages(prev => [...prev, sent]);
+      setMessages(prev => prev.some(m => m.id === sent.id || m.client_id === cid)
+        ? prev.map(m => (m.id === sent.id || m.client_id === cid) ? sent : m)
+        : [...prev, sent]);
       await cache.upsertMessage(conversation.id, sent);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     } catch (error) {
@@ -364,6 +418,7 @@ export function ChatThreadScreen({
   }, [client, conversation.id, cache]);
 
   const pickImage = useCallback(async () => {
+    setShowAttachMenu(false);
     try {
       const result = await launchImageLibrary({ mediaType: 'photo', selectionLimit: 1 });
       const asset = result.assets?.[0];
@@ -380,6 +435,7 @@ export function ChatThreadScreen({
   }, [uploadAndSend]);
 
   const pickFile = useCallback(async () => {
+    setShowAttachMenu(false);
     try {
       const [file] = await pick({ type: [types.allFiles], allowMultiSelection: false });
       if (!file?.uri) return;
@@ -398,15 +454,12 @@ export function ChatThreadScreen({
   }, [uploadAndSend]);
 
   const handleAttachPress = useCallback(() => {
-    Alert.alert('Attach', undefined, [
-      { text: 'Image', onPress: () => { void pickImage(); } },
-      { text: 'File (max 50 MB)', onPress: () => { void pickFile(); } },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }, [pickImage, pickFile]);
+    setShowAttachMenu(true);
+  }, []);
 
   const startRecording = useCallback(async () => {
-    if (recording) return;
+    if (recording || startingRecordingRef.current) return;
+    startingRecordingRef.current = true;
     try {
       const recorder = recorderRef.current ?? Sound;
       recorderRef.current = recorder;
@@ -414,16 +467,23 @@ export function ChatThreadScreen({
       await recorder.startRecorder(path);
       recorder.addRecordBackListener((event: { currentPosition?: number }) => setRecordSeconds(Math.floor((event.currentPosition || 0) / 1000)));
       setRecordSeconds(0);
+      setRecordingPaused(false);
       setRecording(true);
     } catch (error) {
       Alert.alert('Voice recorder', String((error as Error)?.message || error));
+    } finally {
+      startingRecordingRef.current = false;
     }
   }, [recording]);
 
   const stopRecording = useCallback(async () => {
+    if (stoppingRecordingRef.current) return;
     const recorder = recorderRef.current;
     if (!recorder) return;
+    stoppingRecordingRef.current = true;
+    recorderRef.current = null;
     setRecording(false);
+    setRecordingPaused(false);
     recorder.removeRecordBackListener();
     try {
       const path = await recorder.stopRecorder();
@@ -433,12 +493,115 @@ export function ChatThreadScreen({
       Alert.alert('Voice note', String((error as Error)?.message || error));
     } finally {
       setRecordSeconds(0);
+      stoppingRecordingRef.current = false;
     }
   }, [uploadAndSend]);
 
+  const toggleRecordingPause = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    try {
+      if (recordingPaused) {
+        await recorder.resumeRecorder();
+        setRecordingPaused(false);
+      } else {
+        await recorder.pauseRecorder();
+        setRecordingPaused(true);
+      }
+    } catch (error) {
+      Alert.alert('Voice note', String((error as Error)?.message || error));
+    }
+  }, [recordingPaused]);
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(message);
+    toastTimer.current = setTimeout(() => {
+      setToast('');
+      toastTimer.current = null;
+    }, 2200);
+  }, []);
+
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, []);
+
+  const copyMessage = useCallback((msg: ChatMessage) => {
+    if (!msg.body) return;
+    Clipboard.setString(msg.body);
+    showToast('Message copied');
+  }, [showToast]);
+
+  const openMessageActions = useCallback((msg: ChatMessage) => {
+    const actions: Array<{ text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }> = [];
+    if (msg.body) actions.push({ text: 'Copy', onPress: () => copyMessage(msg) });
+    actions.push({ text: 'Forward', onPress: () => { setForwarding(msg); setForwardTo(''); } });
+    actions.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert('Message', undefined, actions);
+  }, [copyMessage]);
+
+  const forwardMessage = useCallback(async () => {
+    const target = forwardTo.trim();
+    if (!forwarding || !target || forwardingBusy) return;
+    setForwardingBusy(true);
+    try {
+      const conv = await client.createConversation(target);
+      const cid = clientId();
+      if (forwarding.attachments?.length) {
+        await client.sendAttachment(conv.id, forwarding.body || '', cid, forwarding.attachments.map(a => a.id));
+      } else {
+        await client.sendText(conv.id, forwarding.body || '', cid);
+      }
+      setForwarding(null);
+      setForwardTo('');
+      showToast(`Forwarded to ${target}`);
+    } catch (error) {
+      Alert.alert('Forward failed', String((error as Error)?.message || error));
+    } finally {
+      setForwardingBusy(false);
+    }
+  }, [client, forwarding, forwardingBusy, forwardTo, showToast]);
+
+  const retryMessage = useCallback(async (msg: ChatMessage) => {
+    if (!msg.body || !msg.client_id || sending) return;
+    setMessages(prev => prev.map(m => m.client_id === msg.client_id
+      ? { ...m, pending: true, failed: false } : m));
+    try {
+      const sent = await client.sendText(conversation.id, msg.body, msg.client_id);
+      setMessages(prev => prev.map(m => m.client_id === msg.client_id ? sent : m));
+      await cache.upsertMessage(conversation.id, sent);
+    } catch {
+      setMessages(prev => prev.map(m => m.client_id === msg.client_id
+        ? { ...m, pending: false, failed: true } : m));
+    }
+  }, [client, cache, conversation.id, sending]);
+
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder || !hasMore || messages.length === 0) return;
+    setLoadingOlder(true);
+    try {
+      const older = await client.getMessages(conversation.id, 50, messages[0].created_at);
+      setMessages(prev => {
+        const known = new Set(prev.map(m => m.id));
+        return [...older.filter(m => !known.has(m.id)), ...prev];
+      });
+      setHasMore(older.length >= 50);
+    } catch {
+      // keep the current thread; the user can retry
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [client, conversation.id, hasMore, loadingOlder, messages]);
+
   const renderItem = useCallback(({ item }: { item: ChatMessage }) => (
-    <Bubble msg={item} ownExtension={ownExtension} client={client} />
-  ), [ownExtension]);
+    <Bubble
+      msg={item}
+      ownExtension={ownExtension}
+      client={client}
+      onRetry={retryMessage}
+      onMenu={openMessageActions}
+    />
+  ), [client, openMessageActions, ownExtension, retryMessage]);
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
@@ -452,36 +615,39 @@ export function ChatThreadScreen({
           keyboardVerticalOffset={0}
         >
         {/* Header */}
-        <View style={[styles.threadHeader, { borderBottomColor: colors.border, backgroundColor: colors.surface ?? '#18181b' }]}>
-          <TouchableOpacity
-            onPress={onClose}
-            style={styles.backBtn}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityRole="button"
-            accessibilityLabel="Back to chats"
-          >
-            <View style={styles.backRow}>
-              <BackIcon size={20} color={colors.brand} />
-              <Text style={[styles.backText, { color: colors.brand }]}>Back</Text>
-            </View>
-          </TouchableOpacity>
+        <View style={[styles.threadHeader, { backgroundColor: 'transparent' }]}>
+          <View style={styles.headerSide}>
+            <TouchableOpacity
+              onPress={onClose}
+              style={styles.backBtn}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityRole="button"
+              accessibilityLabel="Back to chats"
+            >
+              <View style={styles.backRow}>
+                <BackIcon size={20} color={colors.brand} />
+              </View>
+            </TouchableOpacity>
+          </View>
           <View style={styles.headerCenter}>
             <Text style={[styles.headerName, { color: colors.text }]} numberOfLines={1}>
               {conversation.name || conversation.extension}
             </Text>
             <Text style={[styles.headerExt, { color: colors.textMuted }]}>ext {conversation.extension}</Text>
           </View>
-          {onCall && (
-            <TouchableOpacity
-              onPress={() => onCall(conversation.extension)}
-              style={[styles.callBtn, { backgroundColor: colors.brandSoft ?? '#0c2738' }]}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel={`Call ${conversation.name || conversation.extension}`}
-            >
-              <PhoneIcon size={18} color={colors.brand} />
-            </TouchableOpacity>
-          )}
+          <View style={[styles.headerSide, styles.headerSideRight]}>
+            {onCall ? (
+              <TouchableOpacity
+                onPress={() => onCall(conversation.extension)}
+                style={[styles.callBtn, { borderColor: colors.brand }]}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel={`Call ${conversation.name || conversation.extension}`}
+              >
+                <PhoneIcon size={18} color={colors.brand} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
 
         {/* Messages */}
@@ -499,74 +665,158 @@ export function ChatThreadScreen({
             initialNumToRender={20}
             maxToRenderPerBatch={15}
             windowSize={5}
-            onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
+            ListHeaderComponent={hasMore ? (
+              <TouchableOpacity
+                onPress={loadOlder}
+                disabled={loadingOlder}
+                style={styles.loadOlderBtn}
+                accessibilityRole="button"
+              >
+                {loadingOlder
+                  ? <ActivityIndicator size="small" color={colors.brand} />
+                  : <Text style={[styles.loadOlderText, { color: colors.brand }]}>Load earlier messages</Text>}
+              </TouchableOpacity>
+            ) : undefined}
             ListFooterComponent={typingPeers.length > 0 ? TypingDots : undefined}
           />
         )}
 
-        {/* Upload progress bars */}
-        {Object.entries(uploadProgress).map(([cid, frac]) => (
-          <View key={cid} style={[styles.uploadBar, { backgroundColor: colors.border }]}>
-            <View style={[styles.uploadFill, { width: `${Math.round(frac * 100)}%` as `${number}%`, backgroundColor: colors.brand }]} />
+        {/* Upload and copy popups */}
+        {Object.keys(uploadProgress).length > 0 ? (
+          <View style={[styles.floatingPopup, styles.uploadPopup, { backgroundColor: colors.surface ?? '#18181b', borderColor: colors.brand }]}>
+            <Text style={[styles.popupTitle, { color: colors.text }]}>Uploading attachment…</Text>
+            {Object.entries(uploadProgress).map(([cid, frac]) => (
+              <View key={cid} style={[styles.uploadBar, { backgroundColor: colors.border }]}>
+                <View style={[styles.uploadFill, { width: `${Math.round(frac * 100)}%` as `${number}%`, backgroundColor: colors.brand }]} />
+              </View>
+            ))}
           </View>
-        ))}
+        ) : null}
+        {toast ? (
+          <View style={[styles.floatingPopup, styles.copyPopup, { backgroundColor: colors.surface ?? '#18181b', borderColor: colors.brand }]}>
+            <Text style={[styles.popupTitle, { color: colors.text }]}>{toast}</Text>
+          </View>
+        ) : null}
 
         {/* Composer */}
         <View style={[styles.composer, { borderTopColor: colors.border, backgroundColor: colors.surface ?? '#18181b' }]}>
           <TouchableOpacity
             onPress={handleAttachPress}
-            style={styles.attachBtn}
+            style={[styles.composerAction, { borderColor: colors.brand }]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             accessibilityRole="button"
             accessibilityLabel="Attach file"
           >
-            <PaperclipIcon size={22} color={colors.textMuted} />
+            <PaperclipIcon size={22} color={colors.brand} />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={recording ? stopRecording : startRecording}
-            style={[styles.voiceBtn, recording && styles.voiceBtnActive]}
+            style={[styles.composerAction, recording && styles.composerActionActive, { borderColor: colors.brand }]}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             accessibilityRole="button"
             accessibilityLabel={recording ? 'Stop voice recording' : 'Record voice note'}
           >
             {recording ? (
-              <View style={styles.voiceRecording}>
-                <StopIcon size={14} color="#ffffff" />
-                <Text style={styles.voiceTimer}>{recordSeconds}s</Text>
-              </View>
+              <StopIcon size={18} color={colors.brand} />
             ) : (
-              <MicIcon size={20} color={colors.textMuted} />
+              <MicIcon size={21} color={colors.brand} />
             )}
           </TouchableOpacity>
-          <TextInput
-            style={[styles.composerInput, { color: colors.text, backgroundColor: colors.bg, borderColor: colors.border }]}
-            value={text}
-            onChangeText={(v) => {
-              setText(v);
-              emitTyping(v.length > 0);
-            }}
-            onBlur={() => emitTyping(false)}
-            placeholder="Message…"
-            placeholderTextColor={colors.textFaint ?? colors.textMuted}
-            multiline
-            maxLength={4000}
-            returnKeyType="default"
-          />
+          {recording ? (
+            <View style={[styles.recordingBar, { borderColor: colors.brand, backgroundColor: colors.bg }]}>
+              <SoundWave active={!recordingPaused} />
+              <Text style={[styles.recordingTimer, { color: colors.brand }]}>
+                {Math.floor(recordSeconds / 60)}:{String(recordSeconds % 60).padStart(2, '0')}
+              </Text>
+              <TouchableOpacity
+                onPress={toggleRecordingPause}
+                style={styles.pauseRecordingBtn}
+                accessibilityRole="button"
+                accessibilityLabel={recordingPaused ? 'Resume voice recording' : 'Pause voice recording'}
+              >
+                <Text style={[styles.pauseRecordingText, { color: colors.brand }]}>
+                  {recordingPaused ? 'Resume' : 'Pause'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TextInput
+              style={[styles.composerInput, { color: colors.text, backgroundColor: colors.bg, borderColor: colors.border }]}
+              value={text}
+              onChangeText={(v) => {
+                setText(v);
+                emitTyping(v.length > 0);
+              }}
+              onBlur={() => emitTyping(false)}
+              placeholder="Message…"
+              placeholderTextColor={colors.textFaint ?? colors.textMuted}
+              multiline
+              maxLength={4000}
+              returnKeyType="default"
+            />
+          )}
           <TouchableOpacity
             onPress={sendText}
-            disabled={!text.trim() || sending}
-            style={[styles.sendBtn, { backgroundColor: text.trim() ? colors.brand : (colors.border ?? '#27272a') }]}
+            disabled={!text.trim() || sending || recording}
+            style={[styles.composerAction, { borderColor: colors.brand, opacity: (!text.trim() || recording) ? 0.45 : 1 }]}
             accessibilityRole="button"
             accessibilityLabel="Send message"
           >
             {sending ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <ActivityIndicator color={colors.brand} size="small" />
             ) : (
-              <SendIcon size={18} color="#ffffff" />
+              <SendIcon size={19} color={colors.brand} />
             )}
           </TouchableOpacity>
         </View>
         </KeyboardAvoidingView>
+
+        <Modal visible={showAttachMenu} transparent animationType="fade" onRequestClose={() => setShowAttachMenu(false)}>
+          <TouchableOpacity activeOpacity={1} style={styles.attachBackdrop} onPress={() => setShowAttachMenu(false)}>
+            <View style={[styles.attachMenu, { backgroundColor: colors.surface ?? '#18181b', borderColor: colors.border }]}>
+              <Text style={[styles.attachTitle, { color: colors.text }]}>Attach to chat</Text>
+              <TouchableOpacity style={[styles.attachOption, { borderColor: colors.border }]} onPress={() => { setShowAttachMenu(false); void pickImage(); }}>
+                <Text style={[styles.attachOptionTitle, { color: colors.text }]}>Photo</Text>
+                <Text style={[styles.attachOptionSub, { color: colors.textMuted }]}>Choose an image from the gallery</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.attachOption, { borderColor: colors.border }]} onPress={() => { setShowAttachMenu(false); void pickFile(); }}>
+                <Text style={[styles.attachOptionTitle, { color: colors.text }]}>File</Text>
+                <Text style={[styles.attachOptionSub, { color: colors.textMuted }]}>Share any document up to 50 MB</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.attachCancel} onPress={() => setShowAttachMenu(false)}>
+                <Text style={[styles.attachCancelText, { color: colors.textMuted }]}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal visible={forwarding !== null} transparent animationType="fade" onRequestClose={() => setForwarding(null)}>
+          <View style={styles.forwardBackdrop}>
+            <View style={[styles.forwardCard, { backgroundColor: colors.surface ?? '#18181b', borderColor: colors.border }]}>
+              <Text style={[styles.forwardTitle, { color: colors.text }]}>Forward message</Text>
+              <Text style={[styles.forwardSub, { color: colors.textMuted }]} numberOfLines={2}>
+                {forwarding?.body || 'Attachment'}
+              </Text>
+              <TextInput
+                style={[styles.forwardInput, { color: colors.text, backgroundColor: colors.bg, borderColor: colors.border }]}
+                value={forwardTo}
+                onChangeText={setForwardTo}
+                placeholder="Destination extension"
+                placeholderTextColor={colors.textFaint ?? colors.textMuted}
+                keyboardType="number-pad"
+                autoFocus
+              />
+              <View style={styles.forwardActions}>
+                <TouchableOpacity style={styles.forwardCancel} onPress={() => setForwarding(null)}>
+                  <Text style={[styles.forwardCancelText, { color: colors.textMuted }]}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.forwardSend, { backgroundColor: colors.brand }]} onPress={forwardMessage} disabled={!forwardTo.trim() || forwardingBusy}>
+                  {forwardingBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.forwardSendText}>Forward</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </Modal>
   );
@@ -579,19 +829,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    gap: 8,
-    paddingTop: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 0,
+    minHeight: 58,
   },
-  backBtn: { paddingRight: 4 },
+  headerSide: { width: 48, alignItems: 'flex-start', justifyContent: 'center' },
+  headerSideRight: { alignItems: 'flex-end' },
+  backBtn: { padding: 4 },
   backRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  backText: { fontSize: 15, fontWeight: '600' },
   headerCenter: { flex: 1, alignItems: 'center' },
   headerName: { fontSize: 16, fontWeight: '700' },
   headerExt: { fontSize: 12, marginTop: 1 },
-  callBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  callBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
   messagesList: { paddingHorizontal: 12, paddingVertical: 12, flexGrow: 1 },
+  loadOlderBtn: { alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 16 },
+  loadOlderText: { fontSize: 13, fontWeight: '600' },
   bubbleWrap: { marginVertical: 3, maxWidth: '80%' },
   bubbleWrapRight: { alignSelf: 'flex-end' },
   bubbleWrapLeft: { alignSelf: 'flex-start' },
@@ -619,32 +871,58 @@ const styles = StyleSheet.create({
   attachSize: { fontSize: 11 },
   typingWrap: { paddingHorizontal: 16, paddingVertical: 8 },
   typingText: { fontSize: 13, fontStyle: 'italic' },
-  uploadBar: { height: 3, marginHorizontal: 12, marginBottom: 4, borderRadius: 2, overflow: 'hidden' },
+  uploadBar: { height: 4, marginTop: 8, borderRadius: 2, overflow: 'hidden' },
   uploadFill: { height: '100%' },
   composer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8,
     gap: 8,
     borderTopWidth: 1,
   },
-  attachBtn: { paddingBottom: 6 },
-  voiceBtn: { paddingBottom: 6, paddingHorizontal: 2 },
-  voiceBtnActive: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 12 },
-  voiceRecording: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  voiceTimer: { color: '#ffffff', fontSize: 11, fontWeight: '700' },
+  composerAction: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5 },
+  composerActionActive: { backgroundColor: 'rgba(235,18,53,0.10)' },
+  recordingBar: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 20, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  soundWave: { flexDirection: 'row', alignItems: 'center', gap: 4, height: 24 },
+  soundWaveBar: { width: 4, height: 22, borderRadius: 2, backgroundColor: '#EB1235' },
+  recordingTimer: { fontSize: 12, fontWeight: '700', marginLeft: 10 },
+  pauseRecordingBtn: { paddingHorizontal: 8, paddingVertical: 6, marginLeft: 6 },
+  pauseRecordingText: { fontSize: 12, fontWeight: '700' },
   imageWrap: { marginBottom: 4, borderRadius: 10, overflow: 'hidden' },
   image: { width: 220, height: 160 },
+  floatingPopup: { position: 'absolute', left: 16, right: 16, bottom: 78, zIndex: 10, borderWidth: 1, borderRadius: 14, padding: 12, elevation: 8, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } },
+  uploadPopup: {},
+  copyPopup: { alignSelf: 'center', alignItems: 'center', left: 40, right: 40 },
+  popupTitle: { fontSize: 13, fontWeight: '700' },
+  attachBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  attachMenu: { borderWidth: 1, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 18, paddingBottom: 30 },
+  attachTitle: { fontSize: 17, fontWeight: '700', marginBottom: 12 },
+  attachOption: { borderWidth: 1, borderRadius: 12, padding: 14, marginBottom: 9 },
+  attachOptionTitle: { fontSize: 15, fontWeight: '700' },
+  attachOptionSub: { fontSize: 12, marginTop: 3 },
+  attachCancel: { alignItems: 'center', paddingVertical: 10, marginTop: 2 },
+  attachCancelText: { fontSize: 14, fontWeight: '600' },
+  forwardBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', padding: 24 },
+  forwardCard: { borderWidth: 1, borderRadius: 18, padding: 18 },
+  forwardTitle: { fontSize: 18, fontWeight: '700' },
+  forwardSub: { fontSize: 13, marginTop: 6, marginBottom: 14 },
+  forwardInput: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  forwardActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 16 },
+  forwardCancel: { paddingHorizontal: 14, paddingVertical: 10 },
+  forwardCancelText: { fontSize: 14, fontWeight: '600' },
+  forwardSend: { borderRadius: 10, paddingHorizontal: 18, paddingVertical: 10, minWidth: 92, alignItems: 'center' },
+  forwardSendText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
   composerInput: {
     flex: 1,
     borderWidth: 1,
     borderRadius: 20,
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingVertical: 10,
     fontSize: 15,
     maxHeight: 120,
     lineHeight: 20,
+    textAlignVertical: 'center',
   },
   sendBtn: {
     width: 38,

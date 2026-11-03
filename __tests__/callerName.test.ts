@@ -16,6 +16,24 @@ test('supports local numbers, extensions and Arabic digits without a hardcoded c
   expect(callerNameFromContacts('204', [{ id: 'b', name: 'Colleague', extension: '204' }])).toBe('Colleague');
 });
 
+test('matches Egyptian international, 00, country-code and local variants', () => {
+  const contact = [{ id: 'eg', name: 'Egypt Contact', extension: '+20 101 234 5678' }];
+  for (const number of [
+    '+201012345678',
+    '00201012345678',
+    '201012345678',
+    '01012345678',
+    '1012345678',
+  ]) {
+    expect(callerNameFromContacts(number, contact)).toBe('Egypt Contact');
+  }
+});
+
+test('rejects a partial suffix instead of resolving the wrong contact', () => {
+  const contact = [{ id: 'eg', name: 'Egypt Contact', extension: '+201012345678' }];
+  expect(callerNameFromContacts('0101234567', contact)).toBe('Unknown');
+});
+
 test('matches app contacts that use feature-code numbers', () => {
   expect(callerNameFromContacts('*88', [{ id: 'echo', name: 'Echo Audio Test', extension: '*88' }])).toBe('Echo Audio Test');
 });

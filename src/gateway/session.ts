@@ -47,6 +47,15 @@ async function invalidateSession(session: GatewaySession, error: unknown): Promi
   if (!(error instanceof GatewayError) || !['unauthorized', 'revoked', 'rejected', 'expired', 'pbx_disabled'].includes(error.kind)) return;
   assertCurrentSession(session);
   resetGatewaySession();
+  // Local and cloud credentials are separate. A local failure updates only
+  // the local enrollment record; the cloud record is never touched.
+  if (session.endpointId === 'fallback') {
+    const local = await loadEnrollmentRecord(session.endpointHost || session.host, session.extension);
+    if (local && local.deviceId === session.deviceId) {
+      await saveEnrollmentRecord({ ...local, status: error.kind === 'pbx_disabled' ? 'pbx_disabled' : 'revoked', assignment: undefined });
+    }
+    return;
+  }
   const record = await loadEnrollmentRecord(session.host, session.extension);
   if (record && record.deviceId === session.deviceId) {
     await saveEnrollmentRecord({ ...record, status: error.kind === 'pbx_disabled' ? 'pbx_disabled' : 'revoked', assignment: undefined });
@@ -90,6 +99,7 @@ export function createGatewaySession(
     apiURL: selected.apiURL,
     sipWssUrl: selected.sipWssUrl,
     endpointId: selected.id,
+    endpointHost: selected.host,
   };
   generations.set(session, sessionGeneration);
   return session;
@@ -115,14 +125,14 @@ export function getActiveGatewaySession(
   return activeSession;
 }
 
-function sessionFromRecord(record: EnrollmentRecord, endpoint?: GatewayEndpoint): GatewaySession {
+function sessionFromRecord(record: EnrollmentRecord, endpoint?: GatewayEndpoint, hostOverride?: string): GatewaySession {
   if (record.status !== 'approved' || !record.assignment || record.assignment.extension !== record.extension) {
     throw failClosed('Device approval is still pending; direct PBX fallback is disabled');
   }
   if (!record.deviceId) {
     throw failClosed('Enrollment record has no device id');
   }
-  return createGatewaySession(record.host, record.claimSecret, record.deviceId, record.assignment, endpoint);
+  return createGatewaySession(hostOverride || record.host, record.claimSecret, record.deviceId, record.assignment, endpoint);
 }
 
 /**
@@ -161,14 +171,41 @@ export async function getOrLoadGatewaySession(
   const endpoints = [primary, record.fallback].filter(Boolean) as GatewayEndpoint[];
   let lastError: unknown = null;
   for (const endpoint of endpoints) {
-    const session = sessionFromRecord(record, endpoint);
+    const endpointRecord = endpoint.role === 'fallback'
+      ? await loadEnrollmentRecord(endpoint.host, extension)
+      : record;
+    if (!endpointRecord) {
+      if (endpoint.role === 'fallback') {
+        lastError = new GatewayError('network', 'Local gateway enrollment is unavailable');
+        continue;
+      }
+      throw failClosed('Gateway enrollment record is unavailable');
+    }
     // Approval is mutable: revalidate at the selected endpoint before SIP.
+    let session: GatewaySession;
+    try {
+      session = sessionFromRecord(endpointRecord, endpoint, host);
+    } catch (error) {
+      // A pending/unclaimed primary record must not prevent trying the
+      // approved local fallback. A local record without approval is terminal
+      // for this attempt.
+      if (endpoint.role === 'fallback') throw error;
+      lastError = error;
+      continue;
+    }
     const client = new GatewayClient({ baseUrl: session.apiURL, deviceId: session.deviceId, claimSecret: session.claimSecret });
     try {
-      const claim = await sessionRequest(session, () => client.claim(session.deviceId));
+      // Endpoint selection is allowed to switch between the cloud and local
+      // device identities. The active-session guard is for calls made with the
+      // already-selected session, not for claims against candidate endpoints;
+      // applying it here made the primary candidate throw 'aborted' before the
+      // loader could ever try the local fallback.
+      const claim = await client.claim(session.deviceId);
       assertGatewaySessionGeneration(generation);
       if (claim.status !== 'approved' || claim.assignment.extension !== extension.trim()) {
-        await saveEnrollmentRecord({ ...record, status: claim.status, assignment: undefined });
+        // Local and cloud records are separate; never overwrite cloud status
+        // with a local pending/disabled response.
+        await saveEnrollmentRecord({ ...endpointRecord, status: claim.status, assignment: undefined });
         resetGatewaySession();
         throw failClosed('Gateway approval is required for this account');
       }
@@ -276,6 +313,24 @@ export async function sendGatewayHeartbeat(
     claimSecret: session.claimSecret,
   });
   await sessionRequest(session, () => client.heartbeat({ sipState }));
+  return true;
+}
+
+/** Send sanitized connection/FCM diagnostics for the active approved device. */
+export async function sendGatewayTelemetry(
+  host: string,
+  extension: string,
+  telemetry: Record<string, string>,
+): Promise<boolean> {
+  const session = getActiveGatewaySession(host, extension) ||
+    await getOrLoadGatewaySession(host, extension);
+  if (!session) return false;
+  const client = new GatewayClient({
+    baseUrl: session.apiURL,
+    deviceId: session.deviceId,
+    claimSecret: session.claimSecret,
+  });
+  await sessionRequest(session, () => client.heartbeat(telemetry));
   return true;
 }
 

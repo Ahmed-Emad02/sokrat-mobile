@@ -9,6 +9,8 @@
 import { Platform } from 'react-native';
 import { CONFIG } from '../config';
 import { getDeviceUuid } from '../storage/deviceId';
+import { extensionHeaders } from '../network';
+import { randomHex } from './entropy';
 import { DEFAULT_BUSY_RETRY_MS, DEFAULT_CLAIM_POLL_MS, GatewayClient } from './client';
 import { GatewayError, failClosed } from './errors';
 import { assertGatewaySessionGeneration, createGatewaySession, getGatewaySessionGeneration, resetGatewaySession, setActiveGatewaySession } from './session';
@@ -165,7 +167,29 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   checkCurrent();
   let record: EnrollmentRecord = await getOrCreateEnrollmentRecord(host, extension, deviceUuid);
   checkCurrent();
-  if (fallback && JSON.stringify(record.fallback) !== JSON.stringify(fallback)) {
+  const cloudRecord = record;
+  // The local gateway is a separate enrollment authority. Never reuse or
+  // overwrite the cloud device credential while selecting the fallback.
+  if (selectedEndpoint?.role === 'fallback') {
+    if (fallback && JSON.stringify(cloudRecord.fallback) !== JSON.stringify(fallback)) {
+      await saveEnrollmentRecord({ ...cloudRecord, fallback, updatedAt: Date.now() });
+      checkCurrent();
+    }
+    let local = await loadEnrollmentRecord(selectedEndpoint.host, extension);
+    if (!local || local.status === 'revoked' || local.status === 'rejected') {
+      local = {
+        host: selectedEndpoint.host,
+        extension,
+        claimSecret: await randomHex(),
+        deviceUuid,
+        status: 'unclaimed',
+        gatewayMode: true,
+        updatedAt: Date.now(),
+      };
+      await saveEnrollmentRecord(local);
+    }
+    record = local;
+  } else if (fallback && JSON.stringify(record.fallback) !== JSON.stringify(fallback)) {
     record = { ...record, fallback, updatedAt: Date.now() };
     await saveEnrollmentRecord(record);
     checkCurrent();
@@ -192,6 +216,17 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
         extension,
         deviceName,
         appVersion,
+        // Local fallback only: send a short-lived HMAC proof; the local
+        // gateway verifies it through the PBX whoami endpoint. The SIP secret
+        // never leaves the handset.
+        ...(selectedEndpoint?.role === 'fallback' && options.password
+          ? { extensionAuth: extensionHeaders({
+              extension,
+              password: options.password,
+              path: '/api/extension/v1/whoami',
+              method: 'GET',
+            }) }
+          : {}),
       });
       checkCurrent();
       record = {
@@ -304,6 +339,10 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
       }
 
       if (error.kind === 'rejected' || error.kind === 'revoked' || error.kind === 'unauthorized') {
+        // `record` is the local record when the fallback authority is active,
+        // so persisting it never touches the cloud record. Both authorities
+        // must record a terminal rejection; otherwise an approved cache can
+        // retry forever after the authority has rejected it.
         record = {
           ...record,
           status: error.kind === 'unauthorized' ? 'revoked' : error.kind,

@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.Context
 import android.content.IntentFilter
@@ -45,6 +46,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastEmittedConnected: Boolean? = null
     private var lastEmittedNetworkType: String? = null
+    private var lastEmittedNetworkId: String? = null
     private var telephonyCallback: Any? = null
     private var phoneStateListener: PhoneStateListener? = null
     private var lastGsmState: String = "IDLE"
@@ -71,16 +73,16 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    emitNetworkChange(true, getNetworkType(cm, network))
+                    emitNetworkChange(true, getNetworkType(cm, network), getNetworkId(network))
                 }
 
                 override fun onLost(network: Network) {
-                    emitNetworkChange(false, "NONE")
+                    emitNetworkChange(false, "NONE", "NONE")
                 }
 
                 override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
                     val hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    emitNetworkChange(hasInternet, getNetworkTypeFromCapabilities(capabilities))
+                    emitNetworkChange(hasInternet, getNetworkTypeFromCapabilities(capabilities), getNetworkId(network))
                 }
             }
 
@@ -110,6 +112,8 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         return getNetworkTypeFromCapabilities(caps)
     }
 
+    private fun getNetworkId(network: Network): String = network.networkHandle.toString()
+
     private fun getNetworkTypeFromCapabilities(caps: NetworkCapabilities): String {
         return when {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
@@ -121,15 +125,19 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         }
     }
 
-    private fun emitNetworkChange(isConnected: Boolean, networkType: String) {
-        if (isConnected == lastEmittedConnected && networkType == lastEmittedNetworkType) {
+    private fun emitNetworkChange(isConnected: Boolean, networkType: String, networkId: String) {
+        if (isConnected == lastEmittedConnected &&
+            networkType == lastEmittedNetworkType &&
+            networkId == lastEmittedNetworkId) {
             return
         }
         lastEmittedConnected = isConnected
         lastEmittedNetworkType = networkType
+        lastEmittedNetworkId = networkId
         val params = Arguments.createMap().apply {
             putBoolean("isConnected", isConnected)
             putString("networkType", networkType)
+            putString("networkId", networkId)
         }
         emitEvent("onNetworkStateChanged", params)
     }
@@ -202,6 +210,26 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     }
 
     @ReactMethod
+    fun getAppVersion(promise: Promise) {
+        try {
+            val info = reactApplicationContext.packageManager
+                .getPackageInfo(reactApplicationContext.packageName, 0)
+            val map = Arguments.createMap().apply {
+                putString("versionName", info.versionName ?: "")
+                putInt("versionCode", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    info.longVersionCode.toInt()
+                } else {
+                    @Suppress("DEPRECATION")
+                    info.versionCode
+                })
+            }
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("APP_VERSION_ERROR", e.message, e)
+        }
+    }
+
+    @ReactMethod
     fun getNetworkState(promise: Promise) {
         try {
             val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -217,9 +245,11 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             val caps = if (activeNetwork != null) cm.getNetworkCapabilities(activeNetwork) else null
             val isConnected = caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             val networkType = if (caps != null) getNetworkTypeFromCapabilities(caps) else "NONE"
+            val networkId = activeNetwork?.let { getNetworkId(it) } ?: "NONE"
             val map = Arguments.createMap().apply {
                 putBoolean("isConnected", isConnected)
                 putString("networkType", networkType)
+                putString("networkId", networkId)
             }
             promise.resolve(map)
         } catch (e: Exception) {
@@ -483,6 +513,36 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             }
         }
         bluetoothReceiver = null
+    }
+
+    @ReactMethod
+    fun canUseFullScreenIntent(promise: Promise) {
+        try {
+            val manager = reactApplicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val allowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                manager?.canUseFullScreenIntent() == true
+            promise.resolve(allowed)
+        } catch (error: Exception) {
+            promise.reject("FULL_SCREEN_INTENT_STATE", error.message, error)
+        }
+    }
+
+    @ReactMethod
+    fun openFullScreenIntentSettings(promise: Promise) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            promise.resolve(false)
+            return
+        }
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                data = Uri.parse("package:${reactApplicationContext.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            reactApplicationContext.startActivity(intent)
+            promise.resolve(true)
+        } catch (error: Exception) {
+            promise.reject("FULL_SCREEN_INTENT_SETTINGS", error.message, error)
+        }
     }
 
     @ReactMethod

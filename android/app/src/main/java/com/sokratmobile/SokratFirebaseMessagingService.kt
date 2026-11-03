@@ -33,8 +33,12 @@ class SokratFirebaseMessagingService : ReactNativeFirebaseMessagingService() {
 
         val canonicalCallId = callId!!
         val callerId = data["callerId"] ?: "Unknown"
-        // Keep a human provider name; contact enrichment can improve it later.
-        val callerName = CallerDisplayName.resolve(callerId, data["callerName"] ?: "")
+        // Prefer the phone's address book; provider/push labels are only a fallback.
+        val deviceName = DeviceContactLookup.lookup(applicationContext, callerId)
+        val callerName = CallerDisplayName.resolve(
+            callerId,
+            deviceName.ifBlank { data["callerName"] ?: "" }
+        )
         val extension = data["extension"] ?: ""
         val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 

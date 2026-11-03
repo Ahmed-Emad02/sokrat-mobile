@@ -12,6 +12,7 @@ import {
   Modal,
   ActivityIndicator,
   Platform,
+  Alert,
 } from 'react-native';
 import { useTheme } from '../theme';
 import type { ChatConversation, PbxExtension, UnreadSummary } from './types';
@@ -35,17 +36,20 @@ function formatTimestamp(iso: string): string {
 interface ConvRowProps {
   item: ChatConversation;
   unread: number;
+  pinned: boolean;
+  muted: boolean;
   onPress: (conv: ChatConversation) => void;
+  onLongPress: (conv: ChatConversation) => void;
 }
 
-const ConvRow = React.memo(function ConvRow({ item, unread, onPress }: ConvRowProps) {
+const ConvRow = React.memo(function ConvRow({ item, unread, pinned, muted, onPress, onLongPress }: ConvRowProps) {
   const { colors } = useTheme();
   const displayName = item.name || item.extension;
   const preview = item.last_message?.body ?? '';
   const ts = item.last_message?.created_at ?? item.updated_at;
 
   return (
-    <TouchableOpacity style={styles.row} onPress={() => onPress(item)} activeOpacity={0.75}>
+    <TouchableOpacity style={styles.row} onPress={() => onPress(item)} onLongPress={() => onLongPress(item)} activeOpacity={0.75}>
       <View style={[styles.avatar, { backgroundColor: colors.brandSoft ?? '#0c2738' }]}>
         <Text style={[styles.avatarText, { color: colors.brand }]}>
           {displayName.charAt(0).toUpperCase()}
@@ -53,9 +57,13 @@ const ConvRow = React.memo(function ConvRow({ item, unread, onPress }: ConvRowPr
       </View>
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
-          <Text style={[styles.rowName, { color: colors.text }]} numberOfLines={1}>
-            {displayName}
-          </Text>
+          <View style={styles.rowNameWrap}>
+            <Text style={[styles.rowName, { color: colors.text }]} numberOfLines={1}>
+              {displayName}
+            </Text>
+            {pinned ? <Text style={[styles.rowFlag, { color: colors.brand }]}>PINNED</Text> : null}
+            {muted ? <Text style={[styles.rowFlag, { color: colors.textMuted }]}>MUTED</Text> : null}
+          </View>
           <Text style={[styles.rowTime, { color: colors.textMuted }]}>{formatTimestamp(ts)}</Text>
         </View>
         <View style={styles.rowBottom}>
@@ -144,7 +152,7 @@ export interface ChatTabProps {
 export function ChatTab({
   account,
   client,
-  cache: _cache,
+  cache,
   unread,
   onOpenThread,
   conversations,
@@ -157,14 +165,55 @@ export function ChatTab({
   const [extensions, setExtensions] = useState<PbxExtension[]>([]);
   const [extLoading, setExtLoading] = useState(false);
   const [creatingExt, setCreatingExt] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
+  const [muted, setMuted] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!cache) return;
+    let cancelled = false;
+    void cache.getConversationPrefs().then(prefs => {
+      if (cancelled) return;
+      setPinned(new Set(prefs.pinned));
+      setMuted(new Set(prefs.muted));
+    });
+    return () => { cancelled = true; };
+  }, [cache]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    if (!q) return conversations;
-    return conversations.filter(c =>
-      c.extension.includes(q) || (c.name ?? '').toLowerCase().includes(q),
-    );
-  }, [conversations, search]);
+    const rows = !q ? conversations : conversations.filter(c =>
+      c.extension.includes(q) || (c.name ?? '').toLowerCase().includes(q));
+    return [...rows].sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)));
+  }, [conversations, pinned, search]);
+
+  const updatePrefs = useCallback(async (nextPinned: Set<string>, nextMuted: Set<string>) => {
+    setPinned(nextPinned);
+    setMuted(nextMuted);
+    await cache?.saveConversationPrefs({
+      pinned: [...nextPinned],
+      muted: [...nextMuted],
+    });
+  }, [cache]);
+
+  const togglePin = useCallback((conv: ChatConversation) => {
+    const next = new Set(pinned);
+    if (next.has(conv.id)) next.delete(conv.id); else next.add(conv.id);
+    void updatePrefs(next, muted);
+  }, [muted, pinned, updatePrefs]);
+
+  const toggleMute = useCallback((conv: ChatConversation) => {
+    const next = new Set(muted);
+    if (next.has(conv.id)) next.delete(conv.id); else next.add(conv.id);
+    void updatePrefs(pinned, next);
+  }, [muted, pinned, updatePrefs]);
+
+  const openConversationActions = useCallback((conv: ChatConversation) => {
+    Alert.alert(conv.name || conv.extension, undefined, [
+      { text: pinned.has(conv.id) ? 'Unpin' : 'Pin', onPress: () => togglePin(conv) },
+      { text: muted.has(conv.id) ? 'Unmute' : 'Mute', onPress: () => toggleMute(conv) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [muted, pinned, toggleMute, togglePin]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -202,9 +251,12 @@ export function ChatTab({
     <ConvRow
       item={item}
       unread={unread.per_conversation[item.id] ?? 0}
+      pinned={pinned.has(item.id)}
+      muted={muted.has(item.id)}
       onPress={onOpenThread}
+      onLongPress={openConversationActions}
     />
-  ), [unread, onOpenThread]);
+  ), [muted, openConversationActions, pinned, unread, onOpenThread]);
 
   if (!account) {
     return (
@@ -310,7 +362,9 @@ const styles = StyleSheet.create({
   avatarText: { fontSize: 18, fontWeight: '700' },
   rowBody: { flex: 1 },
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  rowName: { fontSize: 15, fontWeight: '600', flex: 1 },
+  rowNameWrap: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 6 },
+  rowName: { fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  rowFlag: { fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
   rowTime: { fontSize: 12, marginLeft: 8 },
   rowBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
   rowPreview: { fontSize: 13, flex: 1 },
