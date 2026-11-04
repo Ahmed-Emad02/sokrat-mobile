@@ -20,6 +20,7 @@ import {
   CallEndDetails,
 } from './src/sip/JsSipService';
 import { ToastContainer, showToast } from './src/ui/Toast';
+import { fetchMissedCalls } from './src/calls/missedSync';
 import {
   initPush,
   bindExtension,
@@ -150,60 +151,30 @@ async function reconcileMissedCalls(
     const storedSince = await AsyncStorage.getItem(MISSED_SYNC_KEY).catch(() => null);
     const parsedSince = storedSince ? new Date(storedSince) : null;
     const since = parsedSince && !Number.isNaN(parsedSince.getTime()) ? parsedSince : new Date();
-    let headers: Record<string, string> = {};
-    let missed: Array<{
-      callId?: string; callerId?: string; callerName?: string;
-      timestamp?: number; startedAt?: number; recordedAt?: number; disposition?: string;
-    }> = [];
-    let nextCursor = new Date().toISOString();
     const gateway = await getOrLoadGatewaySession(account.serverHost, account.extension).catch(() => null);
+    let result;
     if (gateway) {
-      const url = `${gateway.apiURL}/api/gateway/missed-calls` +
-        `?since=${encodeURIComponent(since.toISOString())}`;
-      headers = gatewayAuthHeaders({ claimSecret: gateway.claimSecret, deviceId: gateway.deviceId });
-      const response = await fetch(url, { headers }).catch(() => null);
-      if (!response?.ok) return;
-      const json = await response.json() as {
-        missedCalls?: typeof missed;
-        nextSince?: string;
-      };
-      missed = Array.isArray(json.missedCalls) ? json.missedCalls : [];
-      const parsed = json.nextSince ? new Date(json.nextSince) : null;
-      nextCursor = parsed && !Number.isNaN(parsed.getTime())
-        ? parsed.toISOString()
-        : nextCursor;
+      result = await fetchMissedCalls({
+        since: since.toISOString(),
+        tenant: {
+          baseUrl: gateway.apiURL,
+          headers: gatewayAuthHeaders({ claimSecret: gateway.claimSecret, deviceId: gateway.deviceId }),
+        },
+      });
     } else {
       const deviceUuid = await getDeviceUuid().catch(() => '');
       if (!deviceUuid) return;
-      let offset = 0;
-      while (true) {
-        const url = `${getPushGateway(account.serverHost)}/api/push/missed-calls` +
-          `?extension=${encodeURIComponent(account.extension)}` +
-          `&deviceUuid=${encodeURIComponent(deviceUuid)}` +
-          `&since=${encodeURIComponent(since.toISOString())}` +
-          `&limit=100&offset=${offset}`;
-        const response = await fetch(url, { headers }).catch(() => null);
-        if (!response?.ok) return;
-        const json = await response.json() as {
-          missedCalls?: typeof missed;
-          nextSince?: string;
-          hasMore?: boolean;
-        };
-        const page = Array.isArray(json.missedCalls) ? json.missedCalls : [];
-        missed.push(...page);
-        if (!json.hasMore) {
-          const parsed = json.nextSince ? new Date(json.nextSince) : null;
-          nextCursor = parsed && !Number.isNaN(parsed.getTime())
-            ? parsed.toISOString()
-            : new Date().toISOString();
-          break;
-        }
-        if (!page.length) return;
-        // The server returns a full page when hasMore is true; advance by the
-        // server page size rather than the deduplicated visible count.
-        offset += 100;
-      }
+      result = await fetchMissedCalls({
+        since: since.toISOString(),
+        legacy: {
+          baseUrl: getPushGateway(account.serverHost),
+          extension: account.extension,
+          deviceUuid,
+        },
+      });
     }
+    const missed = result.missed;
+    const nextCursor = result.nextCursor;
     if (!missed.length) {
       await AsyncStorage.setItem(MISSED_SYNC_KEY, nextCursor).catch(() => {});
       return;
