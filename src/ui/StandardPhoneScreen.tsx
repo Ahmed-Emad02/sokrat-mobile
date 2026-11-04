@@ -455,6 +455,7 @@ type Props = {
   chatUnread?: UnreadSummary;
   chatSocket?: ChatSocket | null;
   onChatRefresh?: () => Promise<void>;
+  onChatRead?: () => void;
 };
 
 type BottomTab = 'phone' | 'contacts' | 'chat';
@@ -702,6 +703,7 @@ function StandardPhoneScreenInner({
   chatUnread = { total: 0, per_conversation: {} },
   chatSocket = null,
   onChatRefresh,
+  onChatRead,
 }: Props) {
   const styles = useScreenStyles();
   const { colors } = useTheme();
@@ -2424,6 +2426,7 @@ function StandardPhoneScreenInner({
           socket={chatSocket}
           onClose={() => setOpenThread(null)}
           onCall={(ext) => { setOpenThread(null); onCall(ext); }}
+          onUnreadChange={onChatRead}
         />
       )}
 

@@ -27,6 +27,7 @@ import { buildChatHmac } from '../src/chat/client';
 import { validateAttachment } from '../src/chat/attachments';
 import { ChatCache } from '../src/chat/cache';
 import { normalizeChatPayload } from '../src/push/pushHandler';
+import { mergeChatMessage } from '../src/chat/messageState';
 
 // ---------------------------------------------------------------------------
 // 1. HMAC signing
@@ -259,5 +260,37 @@ describe('BottomTab union', () => {
     expect(order.indexOf('phone')).toBe(0);
     expect(order.indexOf('contacts')).toBe(1);
     expect(order.indexOf('chat')).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message reconciliation
+// ---------------------------------------------------------------------------
+
+describe('mergeChatMessage', () => {
+  const optimistic = {
+    id: 'client-1', client_id: 'client-1', conversation_id: 'c1',
+    sender_extension: '111', type: 'text' as const, body: 'hello',
+    created_at: '2026-11-04T10:00:00.000Z', pending: true,
+  };
+
+  it('replaces an optimistic message with its socket echo', () => {
+    const echoed = { ...optimistic, id: 'server-1', pending: false };
+    const merged = mergeChatMessage([optimistic], echoed);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe('server-1');
+    expect(merged[0].pending).toBe(false);
+  });
+
+  it('ignores a duplicate socket echo by server id', () => {
+    const sent = { ...optimistic, id: 'server-1', pending: false };
+    const merged = mergeChatMessage([sent], sent);
+    expect(merged).toHaveLength(1);
+  });
+
+  it('keeps distinct messages', () => {
+    const other = { ...optimistic, id: 'client-2', client_id: 'client-2', body: 'second' };
+    const merged = mergeChatMessage([optimistic], other);
+    expect(merged).toHaveLength(2);
   });
 });

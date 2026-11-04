@@ -1994,6 +1994,7 @@ export default function App() {
         chatUnread={chatUnread}
         chatSocket={chatSocketRef.current}
         onChatRefresh={handleChatRefresh}
+        onChatRead={() => { void handleChatRefresh(); }}
       />
     </SafeAreaProvider>
   );

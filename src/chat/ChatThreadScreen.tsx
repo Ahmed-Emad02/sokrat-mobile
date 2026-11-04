@@ -44,6 +44,7 @@ import type { ChatClient } from './client';
 import type { ChatCache } from './cache';
 import type { ChatSocket } from './socket';
 import { validateAttachment } from './attachments';
+import { mergeChatMessage } from './messageState';
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -256,6 +257,7 @@ export function ChatThreadScreen({
   const [forwardingBusy, setForwardingBusy] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [typingPeers, setTypingPeers] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [recording, setRecording] = useState(false);
@@ -310,15 +312,7 @@ export function ChatThreadScreen({
   /** Called by parent when a new socket message arrives for this conversation. */
   const receiveMessage = useCallback((msg: ChatMessage) => {
     if (msg.conversation_id !== conversation.id) return;
-    setMessages(prev => {
-      const idx = prev.findIndex(m => m.id === msg.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = msg;
-        return next;
-      }
-      return [...prev, msg];
-    });
+    setMessages(prev => mergeChatMessage(prev, msg));
     void cache.upsertMessage(conversation.id, msg);
     void client.markRead(conversation.id, msg.id).then(() => {
       void cache.markConversationRead(conversation.id);
@@ -361,7 +355,10 @@ export function ChatThreadScreen({
 
   const sendText = useCallback(async () => {
     const body = text.trim();
-    if (!body || sending) return;
+    // State updates are asynchronous; a rapid tap/Enter can otherwise pass
+    // the `sending` check twice before React commits it.
+    if (!body || sending || sendingRef.current) return;
+    sendingRef.current = true;
     setText('');
     setSending(true);
     const cid = clientId();
@@ -379,11 +376,12 @@ export function ChatThreadScreen({
     setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     try {
       const sent = await client.sendText(conversation.id, body, cid);
-      setMessages(prev => prev.map(m => (m.client_id === cid ? sent : m)));
+      setMessages(prev => mergeChatMessage(prev, sent));
       await cache.upsertMessage(conversation.id, sent);
     } catch {
       setMessages(prev => prev.map(m => m.client_id === cid ? { ...m, pending: false, failed: true } : m));
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }, [text, sending, conversation.id, ownExtension, client, cache]);
@@ -401,9 +399,7 @@ export function ChatThreadScreen({
         setUploadProgress(prev => ({ ...prev, [cid]: fraction }));
       });
       const sent = await client.sendAttachment(conversation.id, '', cid, [attachment.id]);
-      setMessages(prev => prev.some(m => m.id === sent.id || m.client_id === cid)
-        ? prev.map(m => (m.id === sent.id || m.client_id === cid) ? sent : m)
-        : [...prev, sent]);
+      setMessages(prev => mergeChatMessage(prev, sent));
       await cache.upsertMessage(conversation.id, sent);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     } catch (error) {
@@ -568,7 +564,7 @@ export function ChatThreadScreen({
       ? { ...m, pending: true, failed: false } : m));
     try {
       const sent = await client.sendText(conversation.id, msg.body, msg.client_id);
-      setMessages(prev => prev.map(m => m.client_id === msg.client_id ? sent : m));
+      setMessages(prev => mergeChatMessage(prev, sent));
       await cache.upsertMessage(conversation.id, sent);
     } catch {
       setMessages(prev => prev.map(m => m.client_id === msg.client_id
