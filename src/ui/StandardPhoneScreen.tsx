@@ -455,7 +455,7 @@ type Props = {
   chatUnread?: UnreadSummary;
   chatSocket?: ChatSocket | null;
   onChatRefresh?: () => Promise<void>;
-  onChatRead?: () => void;
+  onChatRead?: (conversationId?: string) => void;
 };
 
 type BottomTab = 'phone' | 'contacts' | 'chat';

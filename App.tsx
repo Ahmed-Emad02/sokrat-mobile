@@ -2001,7 +2001,17 @@ export default function App() {
         chatUnread={chatUnread}
         chatSocket={chatSocketRef.current}
         onChatRefresh={handleChatRefresh}
-        onChatRead={() => { void handleChatRefresh(); }}
+        onChatRead={(conversationId) => {
+          if (!conversationId) return;
+          setChatUnread(prev => {
+            const count = prev.per_conversation[conversationId] ?? 0;
+            if (!count) return prev;
+            return {
+              total: Math.max(0, prev.total - count),
+              per_conversation: { ...prev.per_conversation, [conversationId]: 0 },
+            };
+          });
+        }}
       />
     </SafeAreaProvider>
   );

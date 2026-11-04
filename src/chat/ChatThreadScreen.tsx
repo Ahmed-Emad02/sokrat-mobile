@@ -231,7 +231,7 @@ export interface ChatThreadScreenProps {
   onClose: () => void;
   onCall?: (extension: string) => void;
   /** Called when unread changes so the tab badge updates. */
-  onUnreadChange?: () => void;
+  onUnreadChange?: (conversationId?: string) => void;
 }
 
 export function ChatThreadScreen({
@@ -283,11 +283,13 @@ export function ChatThreadScreen({
         setHasMore(fresh.length >= 50);
         await cache.saveMessages(conversation.id, fresh);
         // Mark latest as read
-        const last = fresh[fresh.length - 1];
+        const last = fresh[fresh.length - 1] || cached[cached.length - 1];
         if (last) {
-          await client.markRead(conversation.id, last.id);
+          // Clear the local badge even if the server read request is delayed
+          // or fails; the cached unread summary is authoritative for the UI.
+          void client.markRead(conversation.id, last.id).catch(() => {});
           await cache.markConversationRead(conversation.id);
-          onUnreadChange?.();
+          onUnreadChange?.(conversation.id);
         }
       } catch {
         // already showing cached
@@ -314,9 +316,9 @@ export function ChatThreadScreen({
     if (msg.conversation_id !== conversation.id) return;
     setMessages(prev => mergeChatMessage(prev, msg));
     void cache.upsertMessage(conversation.id, msg);
-    void client.markRead(conversation.id, msg.id).then(() => {
-      void cache.markConversationRead(conversation.id);
-      onUnreadChange?.();
+    void client.markRead(conversation.id, msg.id).catch(() => {});
+    void cache.markConversationRead(conversation.id).then(() => {
+      onUnreadChange?.(conversation.id);
     });
     setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
   }, [conversation.id, cache, client, onUnreadChange]);
