@@ -170,19 +170,24 @@ async function reconcileMissedCalls(
     const json = await response.json() as {
       missedCalls?: Array<{
         callId?: string; callerId?: string; callerName?: string;
-        timestamp?: number; disposition?: string;
+        timestamp?: number; startedAt?: number; recordedAt?: number; disposition?: string;
       }>;
+      nextSince?: string;
     };
     const missed = Array.isArray(json.missedCalls) ? json.missedCalls : [];
+    const parsedNextSince = json.nextSince ? new Date(json.nextSince) : null;
+    const nextCursor = parsedNextSince && !Number.isNaN(parsedNextSince.getTime())
+      ? parsedNextSince.toISOString()
+      : new Date().toISOString();
     if (!missed.length) {
-      await AsyncStorage.setItem(MISSED_SYNC_KEY, new Date().toISOString()).catch(() => {});
+      await AsyncStorage.setItem(MISSED_SYNC_KEY, nextCursor).catch(() => {});
       return;
     }
     const existing = await StorageService.getCallHistory();
     const known = new Set(existing.map((item) => item.callId).filter(Boolean));
     for (const item of missed) {
       if (!item.callId || known.has(item.callId)) continue;
-      const timestamp = Number(item.timestamp) || Date.now();
+      const timestamp = Number(item.startedAt ?? item.timestamp) || Date.now();
       const callerId = String(item.callerId || 'Unknown');
       const callerName = String(item.callerName || callerId);
       // The live SIP path already records missed calls while the app is
@@ -209,7 +214,7 @@ async function reconcileMissedCalls(
       });
     }
     applyHistory(await StorageService.getCallHistory());
-    await AsyncStorage.setItem(MISSED_SYNC_KEY, new Date().toISOString()).catch(() => {});
+    await AsyncStorage.setItem(MISSED_SYNC_KEY, nextCursor).catch(() => {});
   } catch (error) {
     console.warn('[app] missed-call reconciliation failed:', error);
   } finally {
