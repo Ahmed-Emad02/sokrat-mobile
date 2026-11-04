@@ -78,7 +78,6 @@ import {
   stopCallManagers,
   startRingtone,
   stopRingtone,
-  setSpeakerphone,
   setMicrophoneMute,
   chooseAudioRoute,
   getAudioDeviceState,
@@ -493,6 +492,19 @@ export default function App() {
     selectedDevice: 'EARPIECE',
     hasBluetooth: false,
   });
+  const audioRouteRequestRef = useRef(0);
+
+  const applyAudioRoute = async (route: AudioRouteType) => {
+    const request = ++audioRouteRequestRef.current;
+    setAudioDeviceState((current) => ({ ...current, selectedDevice: route }));
+    setIsSpeakerOn(route === 'SPEAKER_PHONE');
+    const newState = await chooseAudioRoute(route);
+    if (request === audioRouteRequestRef.current) {
+      setAudioDeviceState(newState);
+      setIsSpeakerOn(newState.selectedDevice === 'SPEAKER_PHONE');
+    }
+    return newState;
+  };
 
   useEffect(() => {
     setCallWindowActive(Boolean(activeCall || incoming));
@@ -1080,10 +1092,7 @@ export default function App() {
         // Re-apply the user's route choice (speaker/Bluetooth) after the audio
         // session initialisation, which otherwise forces the earpiece.
         if (desiredRouteRef.current !== 'EARPIECE') {
-          void chooseAudioRoute(desiredRouteRef.current).then((state) => {
-            setAudioDeviceState(state);
-            setIsSpeakerOn(state.selectedDevice === 'SPEAKER_PHONE');
-          });
+          void applyAudioRoute(desiredRouteRef.current);
         }
         // Keep an End Call action available even when the answer intent
         // brought the app to the foreground. The active-call UI can be behind
@@ -1169,6 +1178,7 @@ export default function App() {
         }
         setIsSpeakerOn(false);
         desiredRouteRef.current = 'EARPIECE';
+        ++audioRouteRequestRef.current;
         stopCallManagers();
 
         if (currentCall) {
@@ -1913,11 +1923,7 @@ export default function App() {
             nextRoute = audioDeviceState.selectedDevice === 'SPEAKER_PHONE' ? 'EARPIECE' : 'SPEAKER_PHONE';
           }
           desiredRouteRef.current = nextRoute;
-          setAudioDeviceState({ ...audioDeviceState, selectedDevice: nextRoute });
-          setIsSpeakerOn(nextRoute === 'SPEAKER_PHONE');
-          const newState = await chooseAudioRoute(nextRoute);
-          setAudioDeviceState(newState);
-          setIsSpeakerOn(newState.selectedDevice === 'SPEAKER_PHONE');
+          await applyAudioRoute(nextRoute);
           const targetSpeakerVol = accountRef.current?.speakerVolume ?? 85;
           setTimeout(() => {
             void setNativeSpeakerVolume(targetSpeakerVol);
@@ -1931,12 +1937,7 @@ export default function App() {
             return getAudioDeviceState();
           }
           desiredRouteRef.current = route;
-          setAudioDeviceState({ ...audioDeviceState, selectedDevice: route });
-          setIsSpeakerOn(route === 'SPEAKER_PHONE');
-          const newState = await chooseAudioRoute(route);
-          setAudioDeviceState(newState);
-          setIsSpeakerOn(route === 'SPEAKER_PHONE');
-          return newState;
+          return applyAudioRoute(route);
         }}
         onSendDtmf={(d: string) => sipRef.current?.sendDTMF(d)}
         onBlindTransfer={(t: string) => {

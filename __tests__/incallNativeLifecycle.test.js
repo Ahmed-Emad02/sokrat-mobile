@@ -39,3 +39,10 @@ it('serializes late prepare callbacks with release before changing routing or st
   expect(player).toMatch(/released = true;[\s\S]*super\.release\(\)/);
   expect(player).not.toMatch(/^\s+(stop|reset)\(\);/m);
 });
+
+it('does not start InCallManager Bluetooth routing when automatic routing is off', () => {
+  const guard = fs.readFileSync(path.join(root, 'scripts/patch-incall-route.js'), 'utf8');
+  expect(guard).toContain('if (automatic)');
+  expect(guard).toContain('bluetoothManager.start();');
+  expect(source).toContain('if (automatic)');
+});

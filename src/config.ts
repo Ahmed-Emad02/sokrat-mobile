@@ -39,5 +39,5 @@ export const CONFIG = {
   pushGateway: '',
   registerExpires: 120,
   apnsTopic: 'com.sokrat.voice.voip',
-  appVersion: '1.0.15',
+  appVersion: '1.2.0',
 };

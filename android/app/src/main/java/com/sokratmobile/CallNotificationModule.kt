@@ -256,6 +256,17 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             promise.reject("NETWORK_ERROR", e.message, e)
         }
     }
+    @Suppress("DEPRECATION")
+    private fun stopBluetoothSco(audioManager: AudioManager) {
+        try {
+            if (audioManager.isBluetoothScoOn) {
+                audioManager.stopBluetoothSco()
+            }
+            audioManager.isBluetoothScoOn = false
+        } catch (_: Exception) {
+        }
+    }
+
     @ReactMethod
     fun setSpeakerphone(enable: Boolean, promise: Promise) {
         try {
@@ -268,6 +279,8 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
+
+            stopBluetoothSco(audioManager)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (enable) {
@@ -291,9 +304,10 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                         audioManager.clearCommunicationDevice()
                     }
                 }
+            } else {
+                audioManager.isSpeakerphoneOn = enable
             }
 
-            audioManager.isSpeakerphoneOn = enable
             promise.resolve(enable)
         } catch (e: Exception) {
             android.util.Log.e("CallNotificationModule", "setSpeakerphone failed", e)
@@ -314,44 +328,52 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
 
+            val normalized = route.uppercase()
+            val btCommTypes = setOf(
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_BLE_HEADSET,
+                AudioDeviceInfo.TYPE_HEARING_AID
+            )
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val btCommTypes = setOf(
-                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                    AudioDeviceInfo.TYPE_BLE_HEADSET,
-                    AudioDeviceInfo.TYPE_HEARING_AID
-                )
-                if (route.uppercase() == "BLUETOOTH" &&
-                    audioManager.availableCommunicationDevices.none { it.type in btCommTypes }) {
-                    // The headset is paired and connected but the SCO link has
-                    // not been started yet, so wake it before enumerating.
-                    try {
-                        @Suppress("DEPRECATION")
-                        audioManager.startBluetoothSco()
-                        @Suppress("DEPRECATION")
-                        audioManager.isBluetoothScoOn = true
+                if (normalized == "BLUETOOTH") {
+                    val available = try {
+                        audioManager.availableCommunicationDevices
                     } catch (_: Exception) {
+                        emptyList()
                     }
+                    if (available.none { it.type in btCommTypes }) {
+                        // The headset is paired but its SCO link has not started.
+                        // Starting SCO is asynchronous; resolve the actual route
+                        // from the communication-device list after it connects.
+                        try {
+                            @Suppress("DEPRECATION")
+                            audioManager.startBluetoothSco()
+                        } catch (_: Exception) {
+                        }
+                    }
+                } else {
+                    // Leaving Bluetooth must stop SCO explicitly. Otherwise the
+                    // legacy isBluetoothScoOn flag can keep reporting Bluetooth
+                    // after the communication device moved to earpiece/speaker.
+                    stopBluetoothSco(audioManager)
                 }
 
-                val routeCandidates = ArrayList<AudioDeviceInfo>()
-                try {
-                    routeCandidates.addAll(audioManager.availableCommunicationDevices)
+                val candidates = try {
+                    audioManager.availableCommunicationDevices
                 } catch (_: Exception) {
-                }
-                try {
-                    audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).forEach { routeCandidates.add(it) }
-                } catch (_: Exception) {
+                    emptyList()
                 }
 
-                val targetDevice = when (route.uppercase()) {
-                    "BLUETOOTH" -> routeCandidates.firstOrNull { it.type in btCommTypes }
-                    "SPEAKER_PHONE" -> routeCandidates.firstOrNull {
+                val targetDevice = when (normalized) {
+                    "BLUETOOTH" -> candidates.firstOrNull { it.type in btCommTypes }
+                    "SPEAKER_PHONE" -> candidates.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                     }
-                    "EARPIECE" -> routeCandidates.firstOrNull {
+                    "EARPIECE" -> candidates.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
                     }
-                    "WIRED_HEADSET" -> routeCandidates.firstOrNull {
+                    "WIRED_HEADSET" -> candidates.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                         it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
                         it.type == AudioDeviceInfo.TYPE_USB_HEADSET
@@ -361,16 +383,26 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
 
                 if (targetDevice != null) {
                     val success = audioManager.setCommunicationDevice(targetDevice)
-                    android.util.Log.d("CallNotificationModule", "setCommunicationDevice($route, name=${targetDevice.productName}) result: $success")
+                    android.util.Log.d("CallNotificationModule", "setCommunicationDevice($normalized, name=${targetDevice.productName}) result: $success")
                 } else {
-                    if (route.uppercase() == "EARPIECE") {
+                    if (normalized == "EARPIECE") {
                         audioManager.clearCommunicationDevice()
                     }
-                    android.util.Log.w("CallNotificationModule", "No device found for route: $route")
+                    android.util.Log.w("CallNotificationModule", "No communication device found for route: $normalized")
                 }
+            } else {
+                if (normalized == "BLUETOOTH") {
+                    try {
+                        @Suppress("DEPRECATION")
+                        audioManager.startBluetoothSco()
+                    } catch (_: Exception) {
+                    }
+                } else {
+                    stopBluetoothSco(audioManager)
+                }
+                audioManager.isSpeakerphoneOn = normalized == "SPEAKER_PHONE"
             }
 
-            audioManager.isSpeakerphoneOn = (route.uppercase() == "SPEAKER_PHONE")
             promise.resolve(route)
         } catch (e: Exception) {
             android.util.Log.e("CallNotificationModule", "setAudioRoute failed", e)
@@ -429,16 +461,28 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 try {
                     audioManager.availableCommunicationDevices.forEach { note(it) }
-                    audioManager.communicationDevice?.let {
-                        selected = mapAudioDeviceType(it.type) ?: "EARPIECE"
+                    selected = audioManager.communicationDevice?.let {
+                        mapAudioDeviceType(it.type) ?: "EARPIECE"
+                    } ?: if (audioManager.isBluetoothScoOn) {
+                        "BLUETOOTH"
+                    } else if (audioManager.isSpeakerphoneOn) {
+                        "SPEAKER_PHONE"
+                    } else {
+                        "EARPIECE"
                     }
                 } catch (_: Exception) {
                 }
             } else {
                 selected = if (audioManager.isSpeakerphoneOn) "SPEAKER_PHONE" else "EARPIECE"
+                if (audioManager.isBluetoothScoOn) {
+                    selected = "BLUETOOTH"
+                }
             }
-            if (audioManager.isBluetoothScoOn) {
-                selected = "BLUETOOTH"
+            // communicationDevice is authoritative on Android 12+. Do not let a
+            // stale isBluetoothScoOn flag override a completed earpiece/speaker
+            // switch.
+            if (selected != "EARPIECE" && selected != "SPEAKER_PHONE") {
+                devices.add(selected)
             }
         }
 
@@ -475,7 +519,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                     AudioManager.ACTION_HEADSET_PLUG,
                     AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
                         val snapshot = buildAudioRouteSnapshot()
-                        emitEvent("onAudioDeviceChanged", Arguments.createMap().apply {
+                        emitEvent("onSokratAudioDeviceChanged", Arguments.createMap().apply {
                             putString("availableAudioDeviceList", org.json.JSONArray(snapshot.devices).toString())
                             putString("selectedAudioDevice", snapshot.selected)
                             putBoolean("hasBluetooth", snapshot.hasBluetooth)

@@ -47,6 +47,8 @@ const SCREEN_OVERRIDES = {
   consultBadgeText: { color: 'onBrand' as const },
   volumeDoneBtnText: { color: 'onBrand' as const },
   volThumb: { borderColor: 'onBrand' as const },
+  inCallAudioRouteTextActive: { color: 'onBrand' as const },
+  inCallBtnMutedActive: { backgroundColor: 'dangerFill' as const },
   contactCallBtn: { backgroundColor: 'brandSoft' as const },
   settingsSaveBtn: { backgroundColor: 'brandFill' as const },
 };
@@ -310,7 +312,7 @@ function UnifiedAudioControls({
             ]}
             onPress={() => onChooseAudioRoute?.('BLUETOOTH')}
           >
-            <BluetoothIcon size={14} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? colors.brand : colors.textMuted} />
+            <BluetoothIcon size={14} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? colors.onBrand : colors.textMuted} />
             <Text style={[styles.inCallAudioRouteText, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.inCallAudioRouteTextActive]}>
               {audioDeviceState?.bluetoothName || t('Bluetooth')}
             </Text>
@@ -324,7 +326,7 @@ function UnifiedAudioControls({
             ]}
             onPress={() => onChooseAudioRoute?.('WIRED_HEADSET')}
           >
-            <HeadphoneIcon size={14} color={audioDeviceState.selectedDevice === 'WIRED_HEADSET' ? colors.brand : colors.textMuted} />
+            <HeadphoneIcon size={14} color={audioDeviceState.selectedDevice === 'WIRED_HEADSET' ? colors.onBrand : colors.textMuted} />
             <Text style={[styles.inCallAudioRouteText, audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.inCallAudioRouteTextActive]}>
               Headset
             </Text>
@@ -343,7 +345,7 @@ function UnifiedAudioControls({
             }
           }}
         >
-          <EarpieceIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? colors.brand : colors.textMuted} />
+          <EarpieceIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? colors.onBrand : colors.textMuted} />
           <Text style={[styles.inCallAudioRouteText, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.inCallAudioRouteTextActive]}>
             {t('Handset')}
           </Text>
@@ -361,7 +363,7 @@ function UnifiedAudioControls({
             }
           }}
         >
-          <SpeakerIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? colors.brand : colors.textMuted} />
+          <SpeakerIcon size={14} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? colors.onBrand : colors.textMuted} />
           <Text style={[styles.inCallAudioRouteText, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.inCallAudioRouteTextActive]}>
             {t('Speaker')}
           </Text>
@@ -1364,8 +1366,8 @@ function StandardPhoneScreenInner({
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.audioRouteIconWrap}>
-                    <BluetoothIcon size={22} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? colors.brand : colors.text} />
+                  <View style={[styles.audioRouteIconWrap, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.audioRouteIconWrapActive]}>
+                    <BluetoothIcon size={22} color={audioDeviceState.selectedDevice === 'BLUETOOTH' ? colors.onBrand : colors.text} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.audioRouteOptionText, audioDeviceState.selectedDevice === 'BLUETOOTH' && styles.audioRouteOptionTextActive]}>
@@ -1388,8 +1390,8 @@ function StandardPhoneScreenInner({
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.audioRouteIconWrap}>
-                    <HeadphoneIcon size={22} color={audioDeviceState.selectedDevice === 'WIRED_HEADSET' ? colors.brand : colors.text} />
+                  <View style={[styles.audioRouteIconWrap, audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.audioRouteIconWrapActive]}>
+                    <HeadphoneIcon size={22} color={audioDeviceState.selectedDevice === 'WIRED_HEADSET' ? colors.onBrand : colors.text} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.audioRouteOptionText, audioDeviceState.selectedDevice === 'WIRED_HEADSET' && styles.audioRouteOptionTextActive]}>
@@ -1415,8 +1417,8 @@ function StandardPhoneScreenInner({
                 }}
                 activeOpacity={0.7}
               >
-                <View style={styles.audioRouteIconWrap}>
-                  <EarpieceIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? colors.brand : colors.text} />
+                <View style={[styles.audioRouteIconWrap, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.audioRouteIconWrapActive]}>
+                  <EarpieceIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) ? colors.onBrand : colors.text} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.audioRouteOptionText, (audioDeviceState ? audioDeviceState.selectedDevice === 'EARPIECE' : !isSpeakerOn) && styles.audioRouteOptionTextActive]}>
@@ -1441,8 +1443,8 @@ function StandardPhoneScreenInner({
                 }}
                 activeOpacity={0.7}
               >
-                <View style={styles.audioRouteIconWrap}>
-                  <SpeakerIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? colors.brand : colors.text} />
+                <View style={[styles.audioRouteIconWrap, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.audioRouteIconWrapActive]}>
+                  <SpeakerIcon size={22} color={(audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) ? colors.onBrand : colors.text} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.audioRouteOptionText, (audioDeviceState ? audioDeviceState.selectedDevice === 'SPEAKER_PHONE' : isSpeakerOn) && styles.audioRouteOptionTextActive]}>
@@ -1535,7 +1537,7 @@ function StandardPhoneScreenInner({
                   accessibilityRole="button"
                   accessibilityLabel={activeCall.isMuted ? 'Unmute microphone' : 'Mute microphone'}
                 >
-                  {activeCall.isMuted ? <MicOffIcon size={26} color={colors.dangerText} /> : <MicIcon size={26} color={colors.text} />}
+                  {activeCall.isMuted ? <MicOffIcon size={26} color={colors.onBrand} /> : <MicIcon size={26} color={colors.text} />}
                 </TouchableOpacity>
                 <Text style={[styles.inCallBtnLabel, activeCall.isMuted && { color: colors.dangerText }]}>
                   {activeCall.isMuted ? t('Unmute') : t('Mute')}
@@ -1582,9 +1584,9 @@ function StandardPhoneScreenInner({
                   accessibilityLabel="Audio output device"
                 >
                   {audioDeviceState?.selectedDevice === 'BLUETOOTH' ? (
-                    <BluetoothIcon size={26} color={colors.brand} />
+                    <BluetoothIcon size={26} color={colors.onBrand} />
                   ) : audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn ? (
-                    <SpeakerIcon size={26} color={colors.brand} />
+                    <SpeakerIcon size={26} color={colors.onBrand} />
                   ) : (
                     <SpeakerIcon size={26} color={colors.text} />
                   )}
@@ -3398,6 +3400,9 @@ const rawStyles = StyleSheet.create({
     backgroundColor: '#18181b',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  audioRouteIconWrapActive: {
+    backgroundColor: '#38bdf8',
   },
   audioRouteOptionText: {
     color: '#ffffff',

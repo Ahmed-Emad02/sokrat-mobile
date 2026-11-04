@@ -1,16 +1,35 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import { ActivityIndicator, Text } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { RingingScreen } from '../src/ui/RingingScreen';
 import { ActiveCallModal } from '../src/ui/ActiveCallModal';
 import { RecentsTab } from '../src/ui/RecentsTab';
 import { StandardPhoneScreen } from '../src/ui/StandardPhoneScreen';
 import type { ActiveCall } from '../src/sip/JsSipService';
+import type { AudioDeviceState } from '../src/calls/incall';
 
 jest.mock('react-native-safe-area-context', () => ({
   SafeAreaView: require('react-native').View,
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
+
+
+function contrastRatio(foreground: string, background: string): number {
+  const linear = (value: string) => {
+    const channel = parseInt(value.slice(1), 16);
+    const r = (channel >> 16) & 0xff;
+    const g = (channel >> 8) & 0xff;
+    const b = channel & 0xff;
+    const convert = (component: number) => {
+      const srgb = component / 255;
+      return srgb <= 0.03928 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * convert(r) + 0.7152 * convert(g) + 0.0722 * convert(b);
+  };
+  const bright = Math.max(linear(foreground), linear(background));
+  const dark = Math.min(linear(foreground), linear(background));
+  return (bright + 0.05) / (dark + 0.05);
+}
 
 const noop = () => {};
 const asyncNoop = async () => {};
@@ -123,4 +142,73 @@ test('ringing screen keeps resolved contact names alongside the number', async (
   const text = await textFrom(<RingingScreen callerId="204" callerName="Colleague" onAnswer={noop} onDecline={noop} />);
   expect(text).toContain('Colleague');
   expect(text).toContain('204');
+});
+
+test.each([
+  ['light', 'light'],
+  ['dark', 'dark'],
+])('muted call control has readable icon contrast in %s mode', async (_label, scheme) => {
+  const RN = require('react-native');
+  const { StyleSheet } = RN;
+  const { lightColors, darkColors } = require('../src/theme');
+  const palette = scheme === 'light' ? lightColors : darkColors;
+  const schemeSpy = jest.spyOn(RN, 'useColorScheme').mockReturnValue(scheme);
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <StandardPhoneScreen {...standardProps} activeCall={{ ...call, status: 'active', isMuted: true }} />,
+      );
+    });
+    const button = renderer.root.findByProps({ accessibilityLabel: 'Unmute microphone' });
+    const background = StyleSheet.flatten(button.props.style)?.backgroundColor;
+    const micOffLine = renderer.root.findAllByType(View).find((node) =>
+      node.props.testID === 'Line' && node.props.x1 === '2' && node.props.y1 === '2');
+    const foreground = String(micOffLine?.props.stroke);
+    expect(background).toBe(palette.dangerFill);
+    expect(foreground.toLowerCase()).toBe(palette.onBrand.toLowerCase());
+    expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
+  } finally {
+    schemeSpy.mockRestore();
+  }
+});
+
+test.each([
+  ['light', 'light'],
+  ['dark', 'dark'],
+])('selected audio-route picker stays readable in %s mode', async (_label, scheme) => {
+  const RN = require('react-native');
+  const { StyleSheet } = RN;
+  const { lightColors, darkColors } = require('../src/theme');
+  const palette = scheme === 'light' ? lightColors : darkColors;
+  const schemeSpy = jest.spyOn(RN, 'useColorScheme').mockReturnValue(scheme);
+  const audioState: AudioDeviceState = {
+    availableDevices: ['EARPIECE', 'SPEAKER_PHONE', 'BLUETOOTH'],
+    selectedDevice: 'BLUETOOTH' as const,
+    hasBluetooth: true,
+    bluetoothName: 'Test headset',
+  };
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <StandardPhoneScreen
+          {...standardProps}
+          activeCall={{ ...call, status: 'active' }}
+          audioDeviceState={audioState}
+          onChooseAudioRoute={async () => audioState}
+        />,
+      );
+    });
+    const trigger = renderer.root.findByProps({ accessibilityLabel: 'Audio output device' });
+    await act(async () => { trigger.props.onPress(); });
+    const wrappers = renderer.root.findAllByType(View).filter((node) => {
+      const style = StyleSheet.flatten(node.props.style) || {};
+      return style.width === 40 && style.height === 40 && style.borderRadius === 20;
+    });
+    const selectedWrapper = wrappers.find((node) => StyleSheet.flatten(node.props.style)?.backgroundColor === palette.brandFill);
+    expect(selectedWrapper).toBeTruthy();
+    const selectedBackground = StyleSheet.flatten(selectedWrapper?.props.style)?.backgroundColor;
+    expect(contrastRatio(palette.onBrand, selectedBackground)).toBeGreaterThanOrEqual(4.5);
+  } finally {
+    schemeSpy.mockRestore();
+  }
 });

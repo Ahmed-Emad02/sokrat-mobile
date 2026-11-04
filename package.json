@@ -6,7 +6,7 @@
     "android": "react-native run-android",
     "ios": "react-native run-ios",
     "lint": "eslint .",
-    "postinstall": "patch-package && node compile-softphone.js",
+    "postinstall": "patch-package && node scripts/patch-incall-route.js && node compile-softphone.js",
     "start": "react-native start",
     "test": "jest"
   },
