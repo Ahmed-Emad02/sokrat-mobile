@@ -130,11 +130,11 @@ function VolumeSlider({
   const trackRef = useRef<React.ComponentRef<typeof View>>(null);
   const trackLeftRef = useRef(0);
 
-  const valueFromPageX = (pageX: number): number => {
+  const valueFromPageX = useCallback((pageX: number): number => {
     const width = trackWidth > 0 ? trackWidth : 200;
     const localX = pageX - trackLeftRef.current;
     return Math.round(Math.max(0, Math.min(max, (localX / width) * max)));
-  };
+  }, [max, trackWidth]);
 
   const panResponder = useMemo(
     () =>
@@ -151,7 +151,7 @@ function VolumeSlider({
           onChange(valueFromPageX(gestureState.moveX));
         },
       }),
-    [max, onChange, trackWidth]
+    [onChange, valueFromPageX]
   );
 
   return (
@@ -1008,7 +1008,7 @@ function StandardPhoneScreenInner({
     });
   }, [chatConversations, contacts, serverExtensions]);
 
-  const fetchExtensions = async () => {
+  const fetchExtensions = useCallback(async () => {
     try {
       const host = account?.serverHost;
       if (!host) return;
@@ -1023,7 +1023,7 @@ function StandardPhoneScreenInner({
         }
       }
     } catch {}
-  };
+  }, [account?.serverHost]);
 
   useEffect(() => {
     if (account) {
@@ -1055,7 +1055,7 @@ function StandardPhoneScreenInner({
 
   useEffect(() => {
     void fetchExtensions();
-  }, [account?.serverHost]);
+  }, [fetchExtensions]);
 
   const handleKeyLongPress = useCallback((digit: string) => {
     const target = speedDial[digit]?.trim();

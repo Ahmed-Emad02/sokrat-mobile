@@ -480,6 +480,8 @@ export default function App() {
       cancelled = true;
       clearInterval(timer);
     };
+    // Intentionally keyed by the telemetry fields, not object identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.serverHost, account?.extension, activeCall?.id, activeCall?.status, gatewayState, uiState]);
   const [attendedTransferState, setAttendedTransferState] = useState<AttendedTransferState | null>(null);
   const attendedTransferStateRef = useRef<AttendedTransferState | null>(null);
@@ -672,6 +674,8 @@ export default function App() {
     }
     pendingNameResolutionRef.current = null;
     enrichIncomingName(pending, account);
+    // enrichIncomingName is intentionally stable for this one-shot lookup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account]);
 
   const updateAttendedTransferState = (value: AttendedTransferState | null) => {
@@ -938,6 +942,8 @@ export default function App() {
       );
     });
     return () => { cancelled = true; };
+    // Permission refresh is keyed by account identity fields, not object identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.extension, account?.serverHost]);
 
   useEffect(() => {
@@ -969,6 +975,8 @@ export default function App() {
       cancelled = true;
       subscription.remove();
     };
+    // Permission refresh is keyed by account identity fields, not object identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.extension, account?.serverHost]);
 
   useEffect(() => {
@@ -1441,6 +1449,7 @@ export default function App() {
     askNotificationPermission();
 
     return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       ++accountGenerationRef.current;
       enrollmentAbortRef.current?.abort();
       resetGatewaySession();
