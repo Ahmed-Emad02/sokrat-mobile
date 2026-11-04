@@ -2296,65 +2296,67 @@ function StandardPhoneScreenInner({
                 isDialpadVisible && styles.dialActionsRowExpanded,
               ]}
             >
-              <TouchableOpacity
-                style={[
-                  styles.dialAuxBtn,
-                  !hasDigits && !hasRedial && styles.dialAuxBtnDisabled,
-                ]}
-                onPress={handleAuxAction}
-                disabled={!hasDigits && !hasRedial}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  hasDigits ? 'Add to contacts' : 'Redial last number'
-                }
-              >
-                {hasDigits ? (
-                  <UserPlusIcon size={22} color={colors.brand} />
-                ) : (
-                  <RedialIcon
-                    size={22}
-                    color={hasRedial ? colors.textMuted : colors.textFaint}
-                  />
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.mainCallPill,
-                  !digits && styles.mainCallPillDisabled,
-                ]}
-                onPress={handleDial}
-                disabled={!digits}
-                accessibilityRole="button"
-                accessibilityLabel={t('Call')}
-              >
-                <PhoneIcon size={24} color={colors.onBrand} />
-              </TouchableOpacity>
-
-              {/* Pull Down / Pull Up Dialpad Toggle Button */}
-              <TouchableOpacity
-                style={styles.dialAuxBtn}
-                onPress={toggleDialpad}
-                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                activeOpacity={0.6}
-                accessibilityRole="button"
-                accessibilityLabel={isDialpadVisible ? 'Hide dialpad' : 'Show dialpad'}
-              >
-                <Animated.View
-                  style={{
-                    transform: [
-                      {
-                        rotate: dialpadAnim.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: ['180deg', '0deg'],
-                        }),
-                      },
-                    ],
-                  }}
+              <View style={styles.dialActionsGroup}>
+                <TouchableOpacity
+                  style={[
+                    styles.dialAuxBtn,
+                    !hasDigits && !hasRedial && styles.dialAuxBtnDisabled,
+                  ]}
+                  onPress={handleAuxAction}
+                  disabled={!hasDigits && !hasRedial}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    hasDigits ? 'Add to contacts' : 'Redial last number'
+                  }
                 >
-                  <ChevronDownIcon size={24} color={isDialpadVisible ? colors.textMuted : colors.brand} />
-                </Animated.View>
-              </TouchableOpacity>
+                  {hasDigits ? (
+                    <UserPlusIcon size={22} color={colors.brand} />
+                  ) : (
+                    <RedialIcon
+                      size={22}
+                      color={hasRedial ? colors.textMuted : colors.textFaint}
+                    />
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.mainCallPill,
+                    !digits && styles.mainCallPillDisabled,
+                  ]}
+                  onPress={handleDial}
+                  disabled={!digits}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('Call')}
+                >
+                  <PhoneIcon size={24} color={colors.onBrand} />
+                </TouchableOpacity>
+
+                {/* Pull Down / Pull Up Dialpad Toggle Button */}
+                <TouchableOpacity
+                  style={styles.dialAuxBtn}
+                  onPress={toggleDialpad}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  activeOpacity={0.6}
+                  accessibilityRole="button"
+                  accessibilityLabel={isDialpadVisible ? 'Hide dialpad' : 'Show dialpad'}
+                >
+                  <Animated.View
+                    style={{
+                      transform: [
+                        {
+                          rotate: dialpadAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['180deg', '0deg'],
+                          }),
+                        },
+                      ],
+                    }}
+                  >
+                    <ChevronDownIcon size={24} color={isDialpadVisible ? colors.textMuted : colors.brand} />
+                  </Animated.View>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </View>
@@ -3132,7 +3134,8 @@ const rawStyles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    bottom: 60,
+    // Keep in sync with dialActionsRow so the keypad cannot overlap the pill.
+    bottom: 78,
     overflow: 'hidden',
     zIndex: 5,
     elevation: 5,
@@ -3249,13 +3252,25 @@ const rawStyles = StyleSheet.create({
   },
   dialActionsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 16,
-    height: 60,
+    height: 78,
   },
   dialActionsRowExpanded: {
     marginTop: 10,
+  },
+  dialActionsGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1.5,
+    borderColor: '#ef4444',
+    borderRadius: 33,
+    backgroundColor: '#450a0a',
   },
   dialAuxBtn: {
     width: 48,

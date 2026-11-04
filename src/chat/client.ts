@@ -243,9 +243,10 @@ export class ChatClient {
     const timestamp = String(Date.now());
     const sig = buildChatHmac(this.opts.sipPassword, this.opts.extension, timestamp, 'POST', path);
 
+    const normalizedUri = fileUri.startsWith('/') ? `file://${fileUri}` : fileUri;
     const formData = new FormData();
     // RN FormData accepts {uri, name, type} as the file part value
-    formData.append('file', { uri: fileUri, name: fileName, type: mimeType } as unknown as Blob);
+    formData.append('file', { uri: normalizedUri, name: fileName, type: mimeType } as unknown as Blob);
 
     return new Promise<ChatAttachment>((resolve, reject) => {
       const xhr = new XMLHttpRequest();

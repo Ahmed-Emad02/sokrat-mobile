@@ -28,7 +28,9 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   BackIcon,
+  CheckIcon,
   CloseIcon,
+  CopyIcon,
   DoubleCheckIcon,
   FileIcon,
   MicIcon,
@@ -39,7 +41,7 @@ import {
 } from '../ui/Icons';
 
 import { useTheme } from '../theme';
-import type { ChatMessage, ChatConversation, ChatAttachment } from './types';
+import type { ChatMessage, ChatConversation, ChatAttachment, PbxExtension } from './types';
 import type { ChatClient } from './client';
 import type { ChatCache } from './cache';
 import type { ChatSocket } from './socket';
@@ -252,8 +254,12 @@ export function ChatThreadScreen({
   const [text, setText] = useState('');
   const [toast, setToast] = useState('');
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [messageMenu, setMessageMenu] = useState<ChatMessage | null>(null);
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
-  const [forwardTo, setForwardTo] = useState('');
+  const [forwardExtensions, setForwardExtensions] = useState<PbxExtension[]>([]);
+  const [forwardExtensionsLoading, setForwardExtensionsLoading] = useState(false);
+  const [forwardExtensionsError, setForwardExtensionsError] = useState('');
+  const [forwardTargets, setForwardTargets] = useState<string[]>([]);
   const [forwardingBusy, setForwardingBusy] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sending, setSending] = useState(false);
@@ -531,34 +537,77 @@ export function ChatThreadScreen({
   }, [showToast]);
 
   const openMessageActions = useCallback((msg: ChatMessage) => {
-    const actions: Array<{ text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }> = [];
-    if (msg.body) actions.push({ text: 'Copy', onPress: () => copyMessage(msg) });
-    actions.push({ text: 'Forward', onPress: () => { setForwarding(msg); setForwardTo(''); } });
-    actions.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert('Message', undefined, actions);
-  }, [copyMessage]);
+    setMessageMenu(msg);
+  }, []);
+
+  useEffect(() => {
+    if (!forwarding || forwardExtensions.length > 0) return;
+    let cancelled = false;
+    setForwardExtensionsLoading(true);
+    setForwardExtensionsError('');
+    client.getExtensions()
+      .then((items) => {
+        if (!cancelled) {
+          setForwardExtensions(items.filter(item => item.extension !== ownExtension));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setForwardExtensionsError(String((error as Error)?.message || error));
+      })
+      .finally(() => {
+        if (!cancelled) setForwardExtensionsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [client, forwardExtensions.length, forwarding, ownExtension]);
+
+  const toggleForwardTarget = useCallback((extension: string) => {
+    setForwardTargets(previous => previous.includes(extension)
+      ? previous.filter(item => item !== extension)
+      : [...previous, extension]);
+  }, []);
 
   const forwardMessage = useCallback(async () => {
-    const target = forwardTo.trim();
-    if (!forwarding || !target || forwardingBusy) return;
+    if (!forwarding || forwardTargets.length === 0 || forwardingBusy) return;
     setForwardingBusy(true);
+    const targets = [...forwardTargets];
     try {
-      const conv = await client.createConversation(target);
-      const cid = clientId();
-      if (forwarding.attachments?.length) {
-        await client.sendAttachment(conv.id, forwarding.body || '', cid, forwarding.attachments.map(a => a.id));
-      } else {
-        await client.sendText(conv.id, forwarding.body || '', cid);
+      const results = await Promise.allSettled(targets.map(async (target) => {
+        const conv = await client.createConversation(target);
+        const cid = clientId();
+        if (forwarding.attachments?.length) {
+          // Attachment ids are single-use on the server, so copy each file to
+          // a fresh upload before attaching it to another conversation.
+          const attachmentIds: string[] = [];
+          for (const att of forwarding.attachments) {
+            const request = client.attachmentRequest(att.id);
+            const file = await ReactNativeBlobUtil.config({ fileCache: true }).fetch('GET', request.url, request.headers);
+            const uploaded = await client.uploadAttachment(file.path(), att.name, att.mime_type);
+            attachmentIds.push(uploaded.id);
+          }
+          await client.sendAttachment(conv.id, forwarding.body || '', cid, attachmentIds);
+        } else {
+          await client.sendText(conv.id, forwarding.body || '', cid);
+        }
+        return target;
+      }));
+      const failed = results.filter(result => result.status === 'rejected');
+      if (failed.length === targets.length) {
+        const reason = failed[0].status === 'rejected'
+          ? String((failed[0].reason as Error)?.message || failed[0].reason)
+          : 'Unknown error';
+        Alert.alert('Forward failed', reason);
+        return;
       }
       setForwarding(null);
-      setForwardTo('');
-      showToast(`Forwarded to ${target}`);
-    } catch (error) {
-      Alert.alert('Forward failed', String((error as Error)?.message || error));
+      setForwardTargets([]);
+      const forwarded = targets.length - failed.length;
+      showToast(failed.length === 0
+        ? `Forwarded to ${forwarded} extension${forwarded === 1 ? '' : 's'}`
+        : `Forwarded to ${forwarded}; ${failed.length} failed`);
     } finally {
       setForwardingBusy(false);
     }
-  }, [client, forwarding, forwardingBusy, forwardTo, showToast]);
+  }, [client, forwarding, forwardingBusy, forwardTargets, showToast]);
 
   const retryMessage = useCallback(async (msg: ChatMessage) => {
     if (!msg.body || !msg.client_id || sending) return;
@@ -788,6 +837,58 @@ export function ChatThreadScreen({
           </TouchableOpacity>
         </Modal>
 
+        <Modal visible={messageMenu !== null} transparent animationType="fade" onRequestClose={() => setMessageMenu(null)}>
+          <TouchableOpacity activeOpacity={1} style={styles.messageMenuBackdrop} onPress={() => setMessageMenu(null)}>
+            <View style={[styles.messageMenuCard, { backgroundColor: colors.surface ?? '#18181b', borderColor: colors.brand }]}>
+              <View style={[styles.messageMenuGrabber, { backgroundColor: colors.border }]} />
+              <Text style={[styles.messageMenuTitle, { color: colors.text }]}>Message</Text>
+              <Text style={[styles.messageMenuPreview, { color: colors.textMuted }]} numberOfLines={2}>
+                {messageMenu?.body || 'Attachment'}
+              </Text>
+              <View style={styles.messageMenuActions}>
+                {messageMenu?.body ? (
+                  <TouchableOpacity
+                    style={[styles.messageMenuAction, { borderColor: colors.border }]}
+                    onPress={() => {
+                      const msg = messageMenu;
+                      setMessageMenu(null);
+                      if (msg) copyMessage(msg);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Copy message"
+                  >
+                    <View style={[styles.messageMenuIcon, { backgroundColor: colors.brandSoft }]}>
+                      <CopyIcon size={18} color={colors.brand} />
+                    </View>
+                    <Text style={[styles.messageMenuActionText, { color: colors.text }]}>Copy</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  style={[styles.messageMenuAction, { borderColor: colors.border }]}
+                  onPress={() => {
+                    const msg = messageMenu;
+                    setMessageMenu(null);
+                    if (msg) {
+                      setForwardTargets([]);
+                      setForwarding(msg);
+                    }
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Forward message"
+                >
+                  <View style={[styles.messageMenuIcon, { backgroundColor: colors.brandSoft }]}>
+                    <SendIcon size={18} color={colors.brand} />
+                  </View>
+                  <Text style={[styles.messageMenuActionText, { color: colors.text }]}>Forward</Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity style={styles.messageMenuCancel} onPress={() => setMessageMenu(null)} accessibilityRole="button">
+                <Text style={[styles.messageMenuCancelText, { color: colors.brand }]}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
         <Modal visible={forwarding !== null} transparent animationType="fade" onRequestClose={() => setForwarding(null)}>
           <View style={styles.forwardBackdrop}>
             <View style={[styles.forwardCard, { backgroundColor: colors.surface ?? '#18181b', borderColor: colors.border }]}>
@@ -795,21 +896,79 @@ export function ChatThreadScreen({
               <Text style={[styles.forwardSub, { color: colors.textMuted }]} numberOfLines={2}>
                 {forwarding?.body || 'Attachment'}
               </Text>
-              <TextInput
-                style={[styles.forwardInput, { color: colors.text, backgroundColor: colors.bg, borderColor: colors.border }]}
-                value={forwardTo}
-                onChangeText={setForwardTo}
-                placeholder="Destination extension"
-                placeholderTextColor={colors.textFaint ?? colors.textMuted}
-                keyboardType="number-pad"
-                autoFocus
-              />
+              <Text style={[styles.forwardListHeading, { color: colors.textMuted }]}>
+                Send to
+              </Text>
+              {forwardExtensionsLoading ? (
+                <ActivityIndicator color={colors.brand} style={styles.forwardListLoading} />
+              ) : forwardExtensionsError ? (
+                <Text style={[styles.forwardListError, { color: colors.dangerText }]}>
+                  Could not load extensions. Close and try again.
+                </Text>
+              ) : (
+                <FlatList
+                  data={forwardExtensions}
+                  keyExtractor={item => item.extension}
+                  style={styles.forwardExtensionList}
+                  keyboardShouldPersistTaps="handled"
+                  renderItem={({ item }) => {
+                    const selected = forwardTargets.includes(item.extension);
+                    return (
+                      <TouchableOpacity
+                        style={[
+                          styles.forwardExtensionRow,
+                          {
+                            borderColor: selected ? colors.brand : colors.border,
+                            backgroundColor: selected ? colors.brandSoft : 'transparent',
+                          },
+                        ]}
+                        onPress={() => toggleForwardTarget(item.extension)}
+                        disabled={forwardingBusy}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: selected }}
+                        accessibilityLabel={`${item.extension} ${item.name || ''}`.trim()}
+                      >
+                        <View
+                          style={[
+                            styles.forwardCheck,
+                            {
+                              borderColor: selected ? colors.brand : colors.border,
+                              backgroundColor: selected ? colors.brand : 'transparent',
+                            },
+                          ]}
+                        >
+                          {selected ? <CheckIcon size={14} color={colors.onBrand} /> : null}
+                        </View>
+                        <View style={styles.forwardExtensionText}>
+                          <Text style={[styles.forwardExtensionNumber, { color: colors.brand }]}>{item.extension}</Text>
+                          <Text style={[styles.forwardExtensionName, { color: colors.text }]} numberOfLines={1}>
+                            {item.name || 'Extension'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  }}
+                  ListEmptyComponent={
+                    <Text style={[styles.forwardListError, { color: colors.textMuted }]}>No extensions available.</Text>
+                  }
+                />
+              )}
               <View style={styles.forwardActions}>
-                <TouchableOpacity style={styles.forwardCancel} onPress={() => setForwarding(null)}>
-                  <Text style={[styles.forwardCancelText, { color: colors.textMuted }]}>Cancel</Text>
+                <TouchableOpacity style={styles.forwardCancel} onPress={() => setForwarding(null)} disabled={forwardingBusy}>
+                  <Text style={[styles.forwardCancelText, { color: colors.textMuted, opacity: forwardingBusy ? 0.45 : 1 }]}>Cancel</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.forwardSend, { backgroundColor: colors.brand }]} onPress={forwardMessage} disabled={!forwardTo.trim() || forwardingBusy}>
-                  {forwardingBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.forwardSendText}>Forward</Text>}
+                <TouchableOpacity
+                  style={[styles.forwardSend, { backgroundColor: colors.brand, opacity: forwardTargets.length === 0 || forwardingBusy ? 0.45 : 1 }]}
+                  onPress={forwardMessage}
+                  disabled={forwardTargets.length === 0 || forwardingBusy}
+                >
+                  {forwardingBusy ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Text style={styles.forwardSendText}>
+                      Forward{forwardTargets.length ? ` (${forwardTargets.length})` : ''}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               </View>
             </View>
@@ -901,15 +1060,55 @@ const styles = StyleSheet.create({
   attachOptionSub: { fontSize: 12, marginTop: 3 },
   attachCancel: { alignItems: 'center', paddingVertical: 10, marginTop: 2 },
   attachCancelText: { fontSize: 14, fontWeight: '600' },
+  messageMenuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.62)', justifyContent: 'flex-end' },
+  messageMenuCard: {
+    borderWidth: 1.5,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 28,
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: -6 },
+    elevation: 18,
+  },
+  messageMenuGrabber: { width: 42, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 14 },
+  messageMenuTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase' },
+  messageMenuPreview: { fontSize: 14, lineHeight: 20, marginTop: 7 },
+  messageMenuActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
+  messageMenuAction: { flex: 1, borderWidth: 1, borderRadius: 16, paddingVertical: 15, alignItems: 'center', gap: 8 },
+  messageMenuIcon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  messageMenuActionText: { fontSize: 14, fontWeight: '700' },
+  messageMenuCancel: { alignItems: 'center', paddingVertical: 12, marginTop: 4 },
+  messageMenuCancelText: { fontSize: 14, fontWeight: '700' },
   forwardBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', padding: 24 },
   forwardCard: { borderWidth: 1, borderRadius: 18, padding: 18 },
   forwardTitle: { fontSize: 18, fontWeight: '700' },
   forwardSub: { fontSize: 13, marginTop: 6, marginBottom: 14 },
-  forwardInput: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  forwardListHeading: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 },
+  forwardListLoading: { marginVertical: 24 },
+  forwardListError: { fontSize: 13, lineHeight: 18, marginVertical: 12 },
+  forwardExtensionList: { maxHeight: 300 },
+  forwardExtensionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 7,
+  },
+  forwardCheck: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  forwardExtensionText: { flex: 1 },
+  forwardExtensionNumber: { fontSize: 14, fontWeight: '800' },
+  forwardExtensionName: { fontSize: 13, marginTop: 1 },
   forwardActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 16 },
   forwardCancel: { paddingHorizontal: 14, paddingVertical: 10 },
   forwardCancelText: { fontSize: 14, fontWeight: '600' },
-  forwardSend: { borderRadius: 10, paddingHorizontal: 18, paddingVertical: 10, minWidth: 92, alignItems: 'center' },
+  forwardSend: { borderRadius: 10, paddingHorizontal: 18, paddingVertical: 10, minWidth: 110, alignItems: 'center' },
   forwardSendText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
   composerInput: {
     flex: 1,
