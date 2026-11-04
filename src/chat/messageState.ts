@@ -12,6 +12,14 @@ export function mergeChatMessage(prev: ChatMessage[], incoming: ChatMessage): Ch
   );
   if (idx < 0) return [...prev, incoming];
   const next = [...prev];
-  next[idx] = { ...prev[idx], ...incoming };
+  // Server-normalized messages do not carry the local pending/failed flags.
+  // Clear them when a confirmed message replaces an optimistic one; otherwise
+  // the sending spinner or Retry control survives a successful send.
+  const confirmed = incoming.pending !== true && incoming.failed !== true;
+  next[idx] = {
+    ...prev[idx],
+    ...incoming,
+    ...(confirmed ? { pending: false, failed: false } : {}),
+  };
   return next;
 }

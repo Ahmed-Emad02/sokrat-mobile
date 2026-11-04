@@ -23,7 +23,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { buildChatHmac } from '../src/chat/client';
+import { buildChatHmac, ChatClient } from '../src/chat/client';
 import { validateAttachment } from '../src/chat/attachments';
 import { ChatCache } from '../src/chat/cache';
 import { normalizeChatPayload } from '../src/push/pushHandler';
@@ -274,12 +274,43 @@ describe('mergeChatMessage', () => {
     created_at: '2026-11-04T10:00:00.000Z', pending: true,
   };
 
-  it('replaces an optimistic message with its socket echo', () => {
-    const echoed = { ...optimistic, id: 'server-1', pending: false };
-    const merged = mergeChatMessage([optimistic], echoed);
+  it('clears optimistic pending state from a normalized server message', () => {
+    const normalized = new ChatClient({
+      gatewayBase: 'http://gateway.test',
+      claimSecret: 'secret',
+      deviceId: 'device',
+      extension: '111',
+      sipPassword: 'password',
+    }).normalizeMessage({
+      id: 'server-1',
+      client_id: 'client-1',
+      conversation_id: 'c1',
+      sender_extension: '111',
+      type: 'text',
+      body: 'hello',
+      created_at: '2026-11-04T10:00:01.000Z',
+    });
+    expect(normalized.pending).toBeUndefined();
+    expect(normalized.failed).toBeUndefined();
+    const merged = mergeChatMessage([optimistic], normalized);
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe('server-1');
     expect(merged[0].pending).toBe(false);
+    expect(merged[0].failed).toBe(false);
+  });
+
+  it('clears a prior failed state when a retry is confirmed', () => {
+    const failed = { ...optimistic, pending: false, failed: true };
+    const normalized = new ChatClient({
+      gatewayBase: 'http://gateway.test', claimSecret: 'secret', deviceId: 'device',
+      extension: '111', sipPassword: 'password',
+    }).normalizeMessage({
+      id: 'server-2', client_id: 'client-1', conversation_id: 'c1',
+      sender_extension: '111', type: 'text', body: 'hello', created_at: '2026-11-04T10:00:02.000Z',
+    });
+    const merged = mergeChatMessage([failed], normalized);
+    expect(merged[0].pending).toBe(false);
+    expect(merged[0].failed).toBe(false);
   });
 
   it('ignores a duplicate socket echo by server id', () => {
