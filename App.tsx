@@ -21,6 +21,7 @@ import {
 } from './src/sip/JsSipService';
 import { ToastContainer, showToast } from './src/ui/Toast';
 import { fetchMissedCalls } from './src/calls/missedSync';
+import { shouldIncrementChatUnread } from './src/chat/unread';
 import {
   initPush,
   bindExtension,
@@ -373,12 +374,15 @@ export default function App() {
       // Open socket
       const socket = new ChatSocket(base, client, {
         onMessage: async (msg) => {
-          if (msg.sender_extension !== account.extension && msg.id !== lastChatToastRef.current) {
+          const incrementUnread = shouldIncrementChatUnread(msg.sender_extension, account.extension);
+          if (incrementUnread && msg.id !== lastChatToastRef.current) {
             lastChatToastRef.current = msg.id;
             showToast({ type: 'info', title: `Chat · ${msg.sender_extension}`, message: msg.body || 'New message', duration: 2500 });
           }
           await cache.upsertMessage(msg.conversation_id, msg);
-          setChatUnread({ ...await cache.incrementUnread(msg.conversation_id) });
+          if (incrementUnread) {
+            setChatUnread({ ...await cache.incrementUnread(msg.conversation_id) });
+          }
           try {
             const convs = await client.getConversations();
             setChatConversations(convs);
@@ -398,11 +402,14 @@ export default function App() {
 
       // Wire FCM chat push
       bindChatPushHandler(async (payload) => {
-        if (payload.messageId !== lastChatToastRef.current) {
+        const incrementUnread = shouldIncrementChatUnread(payload.senderExtension, account.extension);
+        if (incrementUnread && payload.messageId !== lastChatToastRef.current) {
           lastChatToastRef.current = payload.messageId;
           showToast({ type: 'info', title: `Chat · ${payload.senderExtension}`, message: payload.preview || 'New message', duration: 2500 });
         }
-        setChatUnread({ ...await cache.incrementUnread(payload.conversationId) });
+        if (incrementUnread) {
+          setChatUnread({ ...await cache.incrementUnread(payload.conversationId) });
+        }
         try {
           const convs = await client.getConversations();
           setChatConversations(convs);
