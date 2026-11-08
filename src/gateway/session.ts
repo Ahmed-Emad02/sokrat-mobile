@@ -21,7 +21,7 @@ import { getSipWss } from '../config';
 import { GatewayClient } from './client';
 import { GatewayError, failClosed } from './errors';
 import { isKnownGatewayHost, loadEnrollmentRecord, saveEnrollmentRecord } from './storage';
-import type { EnrollmentRecord, GatewayAssignment, GatewaySession, GatewayEndpoint } from './types';
+import type { EnrollmentRecord, GatewayAssignment, GatewayCallState, GatewaySession, GatewayEndpoint } from './types';
 import { appendQuery, gatewayBaseUrl, gatewaySipWssUrl, normalizeServerHost } from './urls';
 
 let activeSession: GatewaySession | null = null;
@@ -332,6 +332,23 @@ export async function sendGatewayTelemetry(
   });
   await sessionRequest(session, () => client.heartbeat(telemetry));
   return true;
+}
+
+/** Live extension/trunk state used to detect a dropped dongle leg. */
+export async function getGatewayCallState(
+  host: string,
+  extension: string,
+  extensionAuth: Record<string, string>,
+): Promise<GatewayCallState | null> {
+  const session = getActiveGatewaySession(host, extension) ||
+    await getOrLoadGatewaySession(host, extension);
+  if (!session) return null;
+  const client = new GatewayClient({
+    baseUrl: session.apiURL,
+    deviceId: session.deviceId,
+    claimSecret: session.claimSecret,
+  });
+  return sessionRequest(session, () => client.callState(extensionAuth));
 }
 
 /** Authenticated push token registration through the gateway. */

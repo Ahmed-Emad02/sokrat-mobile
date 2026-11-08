@@ -53,6 +53,7 @@ jest.mock('../src/calls/telephony', () => ({ subscribeGsmCallState: () => () => 
 jest.mock('../src/calls/incall', () => ({
   startCallManagers: jest.fn(), stopCallManagers: jest.fn(),
   startRingtone: jest.fn(), stopRingtone: jest.fn(),
+  startOutgoingRingback: jest.fn(), stopOutgoingRingback: jest.fn(),
   setCallWindowActive: jest.fn(),
   subscribeAudioDeviceChanges: () => () => {},
 }));
@@ -166,7 +167,7 @@ describe('notification Answer / pending INVITE coordination', () => {
     expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
   });
 
-  test('supplied PBX/incoming caller name is rendered when directory lookup misses', async () => {
+  test('untrusted PBX display label is not rendered when directory lookup misses', async () => {
     (resolveCallerName as jest.Mock).mockResolvedValueOnce('Unknown');
     await act(async () => {
       mockEvents.onIncomingCall({
@@ -174,7 +175,7 @@ describe('notification Answer / pending INVITE coordination', () => {
         extension: 'employee', timestamp: Date.now(),
       } as IncomingCallInfo);
     });
-    expect(mockRingingProps?.callerName).toBe('PBX Display');
+    expect(mockRingingProps?.callerName).toBe('Unknown');
   });
 
   test('decline while waiting for INVITE cancels the pending Answer', async () => {

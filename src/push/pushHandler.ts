@@ -346,6 +346,13 @@ async function bootstrapHeadlessSip(storedAccount: SavedAccount, label: string):
         storedAccount.useTls,
       );
     }
+    // connect() establishes the transport asynchronously. Do not ACK a wake
+    // (or give up on it) before REGISTER actually succeeds; the PBX wake loop
+    // only benefits once the contact exists.
+    const deadline = Date.now() + 8000;
+    while (!headlessSip.isRegistered() && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
     return headlessSip.isRegistered();
   } catch (bootstrapErr) {
     console.error('[push] headless SIP bootstrap error:', bootstrapErr);
@@ -557,6 +564,15 @@ export async function sendTokenToGateway(
       return true;
     }
 
+    // Direct-PBX (legacy) accounts have no authenticated tenant gateway. Do not
+    // build a request against an empty base URL; surface the unsupported mode
+    // instead of logging a misleading HTTP 0 and retrying forever.
+    if (!CONFIG.pushGateway) {
+      lastPushRegisterError = 'No push gateway configured';
+      console.warn('[push] no push gateway configured; direct-PBX push is unsupported');
+      return false;
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8_000);
     try {
@@ -610,6 +626,7 @@ export async function unregisterCurrentDevice(): Promise<void> {
       await removeGatewayPushToken(gateway, body);
       return;
     }
+    if (!CONFIG.pushGateway) return;
 
     await fetch(`${CONFIG.pushGateway}/api/push/remove-device`, {
       method: 'POST',

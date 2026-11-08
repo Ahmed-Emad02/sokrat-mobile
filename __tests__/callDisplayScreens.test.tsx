@@ -65,11 +65,11 @@ async function textFrom(element: React.ReactElement): Promise<string[]> {
   });
 }
 
-test('incoming ringing screen shows a number, not the Unknown placeholder', async () => {
+test('incoming ringing screen shows Unknown as the name and the number separately', async () => {
   const text = await textFrom(<RingingScreen callerId="204" callerName="Unknown" onAnswer={noop} onDecline={noop} />);
   expect(text).toContain('204');
   expect(text).toContain('Incoming Call');
-  expect(text).not.toContain('Unknown');
+  expect(text).toContain('Unknown');
 });
 
 
@@ -101,29 +101,30 @@ test('a native answer request shows the connecting state without a press', async
   expect(renderer.root.findByProps({ accessibilityLabel: 'Connecting call' }).props.disabled).toBe(true);
 });
 
-test('active call modal shows an outgoing feature code when contact lookup missed', async () => {
+test('active call modal shows unknown plus the outgoing feature code when contact lookup missed', async () => {
   const text = await textFrom(<ActiveCallModal call={call} isMuted={false} isHeld={false} isSpeaker={false}
     onToggleMute={noop} onToggleHold={noop} onToggleSpeaker={noop} onSendDtmf={noop} onTransfer={noop} onHangup={noop} />);
   expect(text).toContain('*43');
-  expect(text).not.toContain('Unknown');
+  expect(text).toContain('Unknown');
 }, 15000);
 
-test('legacy recents render the saved number instead of a persisted Unknown name', async () => {
+test('legacy recents render Unknown plus the saved number', async () => {
   const text = await textFrom(<RecentsTab calls={[record]} onCallNumber={noop} onClearHistory={noop} />);
   expect(text).toContain(record.number);
-  expect(text).not.toContain('Unknown');
+  expect(text).toContain('Unknown');
 });
 
-test('main phone outgoing screen shows the target number', async () => {
+test('main phone outgoing screen shows Unknown plus the target number', async () => {
   const text = await textFrom(<StandardPhoneScreen {...standardProps} activeCall={call} />);
   expect(text).toContain('*43');
-  expect(text).not.toContain('Unknown');
+  expect(text).toContain('Unknown');
 });
 
-test('main phone history displays numbers for old placeholder names', async () => {
+test('main phone history displays Unknown plus numbers for old placeholder names', async () => {
   const text = await textFrom(<StandardPhoneScreen {...standardProps} />);
-  expect(text).toContain(record.number);
-  expect(text).not.toContain('Unknown');
+  const joined = text.join(' | ');
+  expect(joined).toContain(record.number);
+  expect(joined).toContain('Unknown');
 });
 
 test('main phone history labels incoming, outgoing and missed calls with duration', async () => {
@@ -133,9 +134,10 @@ test('main phone history labels incoming, outgoing and missed calls with duratio
     { ...record, id: 'missed', direction: 'missed' as const, timestamp: 1000 },
   ];
   const text = await textFrom(<StandardPhoneScreen {...standardProps} callsHistory={records} />);
-  expect(text).toContain('Incoming · 01:05');
-  expect(text).toContain('Outgoing · 00:05');
-  expect(text).toContain('Missed call');
+  const joined = text.join(' | ');
+  expect(joined).toContain('Incoming · 01:05');
+  expect(joined).toContain('Outgoing · 00:05');
+  expect(joined).toContain('Missed call');
 });
 
 test('ringing screen keeps resolved contact names alongside the number', async () => {

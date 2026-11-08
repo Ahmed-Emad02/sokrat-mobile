@@ -13,6 +13,12 @@ export type GatewayCapabilities = {
   enrollmentPath: string;
 };
 
+/** Minimal live state for reconciling an outbound dongle call. */
+export type GatewayCallState = {
+  callerActive: boolean;
+  trunkActive: boolean;
+};
+
 export type EnrollmentStatus =
   | 'pending'
   | 'approved'

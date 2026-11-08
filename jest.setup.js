@@ -62,6 +62,8 @@ jest.mock('react-native-incall-manager', () => {
       setMicrophoneMute: jest.fn(),
       startRingtone: jest.fn(),
       stopRingtone: jest.fn(),
+      startRingback: jest.fn(),
+      stopRingback: jest.fn(),
       chooseAudioRoute: jest.fn(() => Promise.resolve('EARPIECE')),
     },
   };

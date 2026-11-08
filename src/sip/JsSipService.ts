@@ -7,13 +7,27 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG, getPushGateway, getSipWss } from '../config';
-import { getMediaConfiguration, MediaConfiguration } from '../network';
+import { CALL_VOLUME_PATH, extensionHeaders, getMediaConfiguration, MediaConfiguration } from '../network';
 import { isTerminalEnrollmentError } from '../gateway/errors';
-import { buildGatewaySipWebSocketUrl, gatewayMediaConfiguration, getActiveGatewaySession, getOrLoadGatewaySession } from '../gateway/session';
+import {
+  buildGatewaySipWebSocketUrl,
+  gatewayMediaConfiguration,
+  getActiveGatewaySession,
+  getGatewayCallState,
+  getOrLoadGatewaySession,
+} from '../gateway/session';
 import type { GatewaySession } from '../gateway/types';
-import { startCallManagers, stopCallManagers, setMicrophoneMute } from '../calls/incall';
+import {
+  startCallManagers,
+  startOutgoingRingback,
+  stopCallManagers,
+  stopOutgoingRingback,
+  setMicrophoneMute,
+} from '../calls/incall';
+import { shouldReconcileTrunk, TRUNK_STATE_PATH } from '../calls/trunkReconcile';
 import {
   clampMicGainDb,
+  MIC_MAX_PERCENT,
   micDbToPercent,
   micPercentToDb,
   SPEAKER_MAX_PERCENT,
@@ -22,7 +36,7 @@ import {
 import { dismissNativeCallNotification } from '../calls/nativeCallNotification';
 import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
-import { callDisplayName, providerCallerName } from '../calls/callerName';
+import { callDisplayName, usableProviderName } from '../calls/callerName';
 import { getDeviceUuid } from '../storage/deviceId';
 import { getSecureRandomHex } from '../gateway/secureRandom';
 import { appendQuery, gatewayAuthHeaders } from '../gateway/urls';
@@ -135,6 +149,7 @@ export interface SipEvents {
   onRegistrationFailed?: (code: number, cause?: string) => void;
   onAttendedTransferChange?: (state: AttendedTransferState | null) => void;
   onTransferError?: (message: string) => void;
+  onTrunkLost?: (callId: string) => void;
 }
 export class JsSipService {
   private ua: JsSIP.UA | null = null;
@@ -164,7 +179,7 @@ export class JsSipService {
   }
 
   setMicVolume(percent: number): void {
-    this.micVolume = Math.max(0, Math.min(100, percent));
+    this.micVolume = Math.max(0, Math.min(MIC_MAX_PERCENT, percent));
     this.micGainDb = micPercentToDb(this.micVolume);
     if (this.activeCall) {
       void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
@@ -213,7 +228,15 @@ export class JsSipService {
           const gateway = gatewaySession?.apiURL || getPushGateway(this.serverHost) || CONFIG.pushGateway;
           const path = gatewaySession ? '/api/gateway/call/volume' : '/api/call/volume';
           const headers = gatewaySession
-            ? gatewayAuthHeaders({ claimSecret: gatewaySession.claimSecret, deviceId: gatewaySession.deviceId, json: true })
+            ? {
+                ...gatewayAuthHeaders({ claimSecret: gatewaySession.claimSecret, deviceId: gatewaySession.deviceId, json: true }),
+                ...extensionHeaders({
+                  extension: this.extension,
+                  password: this.password,
+                  path: CALL_VOLUME_PATH,
+                  method: 'POST',
+                }),
+              }
             : { 'Content-Type': 'application/json' };
           const res = await fetch(`${gateway}${path}`, {
             method: 'POST',
@@ -317,6 +340,10 @@ export class JsSipService {
   private iceGatheringSessions = new WeakMap<object, { cancel: () => void }>();
   /** Call ids aborted because no relay candidate arrived in time. */
   private iceGatheringFailures = new Map<string, string>();
+  /** Outbound dongle reconciliation timer; exactly one call at a time. */
+  private trunkPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private trunkPollCallId: string | null = null;
+  private trunkPollMissing = 0;
   /** Bumped on every disconnect so a superseded async connect() aborts. */
   private connectionGeneration = 0;
 
@@ -330,6 +357,69 @@ export class JsSipService {
   private setState(s: SipState) {
     this.state = s;
     this.events.onStateChange(s);
+  }
+
+  private stopTrunkReconcile(): void {
+    if (this.trunkPollTimer) {
+      clearTimeout(this.trunkPollTimer);
+      this.trunkPollTimer = null;
+    }
+    this.trunkPollCallId = null;
+    this.trunkPollMissing = 0;
+  }
+
+  /**
+   * chan_dongle does not reliably emit a final SIP response when the GSM leg
+   * disappears. Poll the authenticated gateway state after dialing an
+   * external number; two consecutive missing-trunk snapshots while the
+   * extension leg is still up means the call can no longer complete.
+   */
+  private startTrunkReconcile(call: ActiveCall, target: string): void {
+    this.stopTrunkReconcile();
+    if (!this.gatewaySession || !shouldReconcileTrunk(call.direction, target)) return;
+    const callId = call.id;
+    this.trunkPollCallId = callId;
+    const poll = async (): Promise<void> => {
+      if (this.trunkPollCallId !== callId || this.activeCall?.id !== callId) {
+        this.stopTrunkReconcile();
+        return;
+      }
+      let state: Awaited<ReturnType<typeof getGatewayCallState>> = null;
+      try {
+        const extensionAuth = extensionHeaders({
+          extension: this.extension,
+          password: this.password,
+          path: TRUNK_STATE_PATH,
+          method: 'GET',
+        });
+        state = await getGatewayCallState(this.serverHost, this.extension, extensionAuth);
+      } catch (error) {
+        // Network/PBX-API failures are not evidence that the trunk is down.
+        if (this.trunkPollCallId !== callId) return;
+        console.warn('[sip] trunk state poll failed:', error);
+      }
+      if (this.trunkPollCallId !== callId || this.activeCall?.id !== callId) return;
+      if (state?.trunkActive) {
+        this.trunkPollMissing = 0;
+      } else if (state?.callerActive) {
+        this.trunkPollMissing += 1;
+        if (this.trunkPollMissing >= 2) {
+          console.warn(`[sip][callId=${callId}] dongle trunk disappeared; ending call`);
+          this.stopTrunkReconcile();
+          this.events.onTrunkLost?.(callId);
+          await this.hangup(callId);
+          return;
+        }
+      } else {
+        // The PBX has not observed the caller yet, or the call already ended
+        // through SIP. Do not turn an empty snapshot into a false teardown.
+        this.trunkPollMissing = 0;
+      }
+      if (this.trunkPollCallId === callId && this.activeCall?.id === callId) {
+        this.trunkPollTimer = setTimeout(() => { void poll(); }, 2000);
+      }
+    };
+    this.trunkPollTimer = setTimeout(() => { void poll(); }, 3000);
   }
 
   /**
@@ -553,9 +643,12 @@ export class JsSipService {
 
     const remoteId = session.remote_identity;
     const target = remoteId?.uri?.user || 'Unknown';
-    // Preserve a human PBX-assigned display name when the INVITE carries one;
-    // never let a trunk/routing label replace the caller's number.
-    const targetName = providerCallerName(target, remoteId?.display_name);
+    // Outbound targets may expose a provider name. Inbound callers start
+    // Unknown and are resolved from the app/Sokrat directories after the
+    // call is presented; PBX/SIP labels are not contacts.
+    const targetName = session.direction === 'incoming'
+      ? 'Unknown'
+      : (usableProviderName(target, remoteId?.display_name) || target);
 
     // ------------------------------------------------------------------
     // Consultation session routing: if we are waiting for a consult dial
@@ -634,15 +727,18 @@ export class JsSipService {
 
     if (session.direction === 'outgoing') {
       startCallManagers();
+      startOutgoingRingback();
       // Publish the call immediately; contact/network lookup never delays dialing.
-      call.targetName = providerCallerName(target, remoteId?.display_name);
+      call.targetName = usableProviderName(target, remoteId?.display_name) || target;
       this.events.onCallStatusChange?.(call);
+      this.startTrunkReconcile(call, target);
       void resolveCallerName(target, {
         extension: this.extension, password: this.password, serverHost: this.serverHost,
         useTls: this.useTls, dnd: false, autoAnswer: false,
       }).then(name => {
         if (this.currentSession !== session || this.activeCall !== call) return;
-        call.targetName = providerCallerName(target, name, call.targetName);
+        call.targetName = usableProviderName(target, name) ||
+          usableProviderName(target, call.targetName) || target;
         this.events.onCallStatusChange?.(call);
       });
     }
@@ -672,20 +768,36 @@ export class JsSipService {
           if (typeof pc.getTransceivers === 'function' && typeof RTCRtpReceiver?.getCapabilities === 'function') {
             const audioCaps = RTCRtpReceiver.getCapabilities('audio');
             if (audioCaps?.codecs) {
-              const preferred = this.preferredCodec === 'auto' ? 'opus' : this.preferredCodec.toLowerCase();
-              const sorted = [...audioCaps.codecs].sort((a: { mimeType?: string }, b: { mimeType?: string }) => {
-                const aName = (a.mimeType || '').toLowerCase();
-                const bName = (b.mimeType || '').toLowerCase();
-                if (aName.includes(preferred)) return -1;
-                if (bName.includes(preferred)) return 1;
-                return 0;
-              });
-              for (const transceiver of pc.getTransceivers()) {
-                if (transceiver.receiver?.track?.kind === 'audio' || transceiver.sender?.track?.kind === 'audio') {
-                  transceiver.setCodecPreferences?.(sorted);
+              const preferred = this.preferredCodec === 'auto' ? '' : this.preferredCodec.toLowerCase();
+              const allCodecs = audioCaps.codecs as Array<{ mimeType?: string }>;
+              let selected = allCodecs;
+              if (preferred) {
+                const targetCodecs = allCodecs.filter((codec) =>
+                  (codec.mimeType || '').toLowerCase().includes(preferred));
+                if (targetCodecs.length) {
+                  // Merely sorting capabilities still leaves other codecs in
+                  // the answer. Restrict the transceiver to the selected codec
+                  // plus telephone-event so the PBX cannot choose Opus when the
+                  // user selected PCMU (or the reverse).
+                  const telephoneEventCodecs = allCodecs.filter((codec) =>
+                    (codec.mimeType || '').toLowerCase().includes('telephone-event'));
+                  selected = [...targetCodecs, ...telephoneEventCodecs];
                 }
               }
-              console.log(`[sip] prioritized ${preferred} codec via transceiver preferences`);
+              if (preferred && selected === allCodecs) {
+                console.warn(`[sip] preferred codec ${preferred} unavailable; keeping negotiated defaults`);
+              } else {
+                for (const transceiver of pc.getTransceivers()) {
+                  if (transceiver.receiver?.track?.kind === 'audio' || transceiver.sender?.track?.kind === 'audio') {
+                    transceiver.setCodecPreferences?.(selected);
+                  }
+                }
+                console.log(
+                  preferred
+                    ? `[sip] restricted audio codecs to ${preferred}`
+                    : '[sip] keeping automatic codec negotiation',
+                );
+              }
             }
           }
         } catch (e) {
@@ -785,6 +897,7 @@ export class JsSipService {
     });
 
     session.on('confirmed', () => {
+      stopOutgoingRingback();
       if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'active';
         if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
@@ -801,6 +914,8 @@ export class JsSipService {
       logTermination('ended', evt);
       if (this.currentSession !== session) return;
       if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
+      stopOutgoingRingback();
+      this.stopTrunkReconcile();
       const cause = (evt as { cause?: string })?.cause || 'NORMAL_CLEARING';
       if (this.attendedTransfer) {
         // Primary session ended during consultation (e.g. remote hung up)
@@ -827,6 +942,8 @@ export class JsSipService {
       logTermination('failed', evt);
       if (this.currentSession !== session) return;
       if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
+      stopOutgoingRingback();
+      this.stopTrunkReconcile();
       const e = evt as {
         cause?: string;
         originator?: string;
@@ -1533,10 +1650,29 @@ export class JsSipService {
     void this.resolveMediaConfiguration().catch(() => {});
   }
 
+  /**
+   * The App may reset the active gateway generation while a SIP registration
+   * is still running (startup remount/account restore). Do not keep using a
+   * session object from the previous generation: fetch the current one before
+   * minting relay credentials, otherwise JsSIP rejects the call locally.
+   */
+  private async resolveMediaGatewaySession(domain: string): Promise<GatewaySession | null> {
+    const active = getActiveGatewaySession(domain, this.extension);
+    if (active) {
+      this.gatewaySession = active;
+      return active;
+    }
+    if (this.gatewaySession) {
+      console.warn('[sip] gateway session changed; refreshing media session');
+    }
+    const refreshed = await getOrLoadGatewaySession(domain, this.extension);
+    this.gatewaySession = refreshed;
+    return refreshed;
+  }
+
   private async resolveMediaConfiguration(): Promise<MediaConfiguration> {
     const domain = this.serverHost || CONFIG.sipDomain;
-    const gatewaySession = this.gatewaySession
-      ?? (await getOrLoadGatewaySession(domain, this.extension));
+    const gatewaySession = await this.resolveMediaGatewaySession(domain);
     const cacheKey = gatewaySession
       ? `gateway:${gatewaySession.apiURL}:${gatewaySession.deviceId}`
       : `direct:${domain}:${this.extension}:${this.connectionGeneration}`;
@@ -1818,6 +1954,8 @@ export class JsSipService {
    */
   async hangup(callId?: string): Promise<boolean> {
     if (!this.activeCall || (callId && this.activeCall.id !== callId)) return false;
+    stopOutgoingRingback();
+    this.stopTrunkReconcile();
     console.log(`[sip][callId=${this.activeCall.id}] local hangup requested (status=${this.activeCall.status}, answerDispatched=${this.answerDispatchedSession === this.currentSession})`);
     if (this.activeCall?.status === 'ringing' && this.activeCall?.direction === 'inbound') {
       return this.decline(this.activeCall.id);
@@ -1854,6 +1992,8 @@ export class JsSipService {
       return false;
     }
     const declinedCall = this.activeCall;
+    stopOutgoingRingback();
+    this.stopTrunkReconcile();
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
     if (!session || typeof session.terminate !== 'function') return false;
     console.log(`[sip][callId=${declinedCall.id}] local decline requested (answerDispatched=${this.answerDispatchedSession === session})`);
@@ -2190,6 +2330,8 @@ export class JsSipService {
     this.mediaRecovery.clear();
     this.mediaRecoveryRun = null;
     this.answerDispatchedSession = null;
+    stopOutgoingRingback();
+    this.stopTrunkReconcile();
     clearTimeout(this.liveGainTimer ?? undefined);
     this.liveGainTimer = null;
     this.liveGainResolve?.(false);
@@ -2269,20 +2411,37 @@ export class JsSipService {
       }
     }
 
-    // 2. Reorder m=audio line if a target payload is selected
-    const updatedLines = lines.map((line) => {
-      if (targetPayload && line.startsWith('m=audio ')) {
-        const parts = line.split(' ');
-        if (parts.length > 3) {
-          const prefix = parts.slice(0, 3);
-          const payloads = parts.slice(3);
-          const remaining = payloads.filter((p) => p !== targetPayload);
-          const reordered = [targetPayload, ...remaining];
-          return `${prefix.join(' ')} ${reordered.join(' ')}`;
+    const keepPayloads = targetPayload
+      ? new Set([
+          targetPayload,
+          ...Object.entries(payloadToCodec)
+            .filter(([, codecName]) => codecName === 'telephone-event')
+            .map(([pt]) => pt),
+        ])
+      : null;
+
+    // 2. Restrict m=audio to the selected codec. Reordering alone is not
+    // enough: Asterisk may still select its own preferred codec (often Opus)
+    // from the remaining payload list. Keep telephone-event for DTMF.
+    const updatedLines = lines
+      .map((line) => {
+        if (keepPayloads && line.startsWith('m=audio ')) {
+          const parts = line.split(' ');
+          if (parts.length > 3) {
+            const prefix = parts.slice(0, 3);
+            const payloads = parts.slice(3).filter((p) => keepPayloads.has(p));
+            if (payloads.length) {
+              return `${prefix.join(' ')} ${payloads.join(' ')}`;
+            }
+          }
         }
-      }
-      return line;
-    });
+        return line;
+      })
+      .filter((line) => {
+        if (!keepPayloads) return true;
+        const match = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)(?:\s|$)/i.exec(line);
+        return !match || keepPayloads.has(match[1]);
+      });
 
     // 3. For Opus: ensure inband FEC, disable DTX (prevents choppiness), set 64kbps CBR
     const opusPayload = Object.entries(payloadToCodec).find(([, name]) => name === 'opus')?.[0];

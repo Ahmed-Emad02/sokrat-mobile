@@ -17,6 +17,7 @@ import type {
   EnrollmentStatus,
   EnrollResponse,
   GatewayAssignment,
+  GatewayCallState,
   GatewayCapabilities,
 } from './types';
 import { gatewayAuthHeaders, joinUrl } from './urls';
@@ -335,6 +336,28 @@ export class GatewayClient {
     if (status !== 200 && status !== 202 && status !== 204) {
       throw new GatewayError('invalid', `Device removal failed (HTTP ${status})`, { status });
     }
+  }
+
+  /** Live extension/trunk state for dongle call reconciliation. */
+  async callState(extensionAuth: Record<string, string>): Promise<GatewayCallState> {
+    const { status, body } = await this.call('/api/gateway/call/state', {
+      method: 'POST',
+      headers: { ...this.tenantHeaders(true), ...extensionAuth },
+      body: JSON.stringify({}),
+    });
+    if (status === 401 || status === 403) {
+      throw new GatewayError('unauthorized', 'Gateway rejected the call-state request', { status });
+    }
+    if (status === 409 || status === 410) {
+      throw new GatewayError('pbx_disabled', 'PBX is no longer available', { status });
+    }
+    if (status !== 200) {
+      throw new GatewayError('invalid', `Call state failed (HTTP ${status})`, { status });
+    }
+    return {
+      callerActive: body?.callerActive === true,
+      trunkActive: body?.trunkActive === true,
+    };
   }
 
   /** Acknowledge a keepalive wake so the gateway does not send another. */

@@ -176,6 +176,18 @@ function createService(events: SipEvents = createEvents()): JsSipService {
   return service;
 }
 
+/**
+ * Tests the private SDP munger without fabricating a typed service shape.
+ * Reflect.get performs the runtime method check before invocation.
+ */
+function prioritizeCodec(service: JsSipService, sdp: string, preferred: string): string {
+  const method = Reflect.get(service, 'prioritizeCodecInSdp');
+  if (typeof method !== 'function') throw new Error('prioritizeCodecInSdp is unavailable');
+  const result = Reflect.apply(method, service, [sdp, preferred]);
+  if (typeof result !== 'string') throw new Error('prioritizeCodecInSdp returned non-string SDP');
+  return result;
+}
+
 describe('JsSipService media + instance id', () => {
   const originalFetch = globalThis.fetch;
 
@@ -202,6 +214,49 @@ describe('JsSipService media + instance id', () => {
   afterEach(() => {
     activeServices.forEach((service) => service.disconnect());
     activeServices.length = 0;
+  });
+
+  test('restricts local SDP to the explicitly selected codec plus telephone-event', () => {
+    const service = createService();
+    const sdp = [
+      'v=0',
+      'm=audio 5000 UDP/TLS/RTP/SAVPF 111 0 8 101',
+      'a=rtpmap:111 opus/48000/2',
+      'a=fmtp:111 minptime=10;useinbandfec=1',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:8 PCMA/8000',
+      'a=rtpmap:101 telephone-event/8000',
+      'a=fmtp:101 0-16',
+      'a=rtcp-fb:* transport-cc',
+    ].join('\r\n');
+
+    const filtered = prioritizeCodec(service, sdp, 'pcmu');
+
+    expect(filtered).toContain('m=audio 5000 UDP/TLS/RTP/SAVPF 0 101');
+    expect(filtered).toContain('a=rtpmap:0 PCMU/8000');
+    expect(filtered).toContain('a=rtpmap:101 telephone-event/8000');
+    expect(filtered).not.toContain('a=rtpmap:111');
+    expect(filtered).not.toContain('a=fmtp:111');
+    expect(filtered).not.toContain('a=rtpmap:8');
+    expect(filtered).toContain('a=rtcp-fb:* transport-cc');
+  });
+
+  test('keeps automatic codec negotiation when no explicit codec is selected', () => {
+    const service = createService();
+    const sdp = [
+      'v=0',
+      'm=audio 5000 UDP/TLS/RTP/SAVPF 111 0 8 101',
+      'a=rtpmap:111 opus/48000/2',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:8 PCMA/8000',
+      'a=rtpmap:101 telephone-event/8000',
+    ].join('\r\n');
+
+    const filtered = prioritizeCodec(service, sdp, 'auto');
+
+    expect(filtered).toContain('m=audio 5000 UDP/TLS/RTP/SAVPF 111 0 8 101');
+    expect(filtered).toContain('a=rtpmap:111');
+    expect(filtered).toContain('a=rtpmap:0');
   });
 
   test('decline handles JsSIP synchronous failed event without reporting failure', async () => {
@@ -287,26 +342,26 @@ describe('JsSipService media + instance id', () => {
     expect(service.activeCall?.target).toBe('102');
   });
 
-  test('incoming call uses a human PBX display name when supplied', async () => {
+  test('incoming call ignores an untrusted PBX display name until contact lookup', async () => {
     const events = createEvents();
     const service = createService(events);
     await service.connect('160', 'pw', 'pbx.example.com', false);
     const session = createSession('incoming', 'PBX Contact');
     mockUaInstances[0].emit('newRTCSession', { session, request: {} });
-    expect(service.activeCall?.targetName).toBe('PBX Contact');
+    expect(service.activeCall?.targetName).toBe('Unknown');
     expect(events.onIncomingCall).toHaveBeenCalledWith(expect.objectContaining({
-      callerId: '102', callerName: 'PBX Contact',
+      callerId: '102', callerName: 'Unknown',
     }));
   });
 
-  test('incoming call starts with the number until app/VoIP contact lookup resolves', async () => {
+  test('incoming call starts Unknown until app/VoIP contact lookup resolves', async () => {
     const events = createEvents();
     const service = createService(events);
     await service.connect('160', 'pw', 'pbx.example.com', false);
     const session = createSession('incoming');
     mockUaInstances[0].emit('newRTCSession', { session, request: {} });
-    expect(service.activeCall?.targetName).toBe('102');
-    expect(events.onIncomingCall).toHaveBeenCalledWith(expect.objectContaining({ callerId: '102', callerName: '102' }));
+    expect(service.activeCall?.targetName).toBe('Unknown');
+    expect(events.onIncomingCall).toHaveBeenCalledWith(expect.objectContaining({ callerId: '102', callerName: 'Unknown' }));
   });
 
   test('outgoing name lookup cannot update an ended session', async () => {

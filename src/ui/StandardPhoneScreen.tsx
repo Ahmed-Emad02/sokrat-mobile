@@ -90,6 +90,7 @@ import {
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
 import { canUseFullScreenIntent, fetchDeviceContacts, getNativeSpeakerVolume, openFullScreenIntentSettings, SpeakerVolumeState } from '../calls/nativeCallNotification';
 import {
+  MIC_MAX_PERCENT,
   micPercentToDb,
   speakerGainToDb,
   speakerPercentToGain,
@@ -127,14 +128,16 @@ function VolumeSlider({
 }) {
   const styles = useScreenStyles();
   const [trackWidth, setTrackWidth] = useState(250);
-  const trackRef = useRef<React.ComponentRef<typeof View>>(null);
-  const trackLeftRef = useRef(0);
+  const trackWidthRef = useRef(trackWidth);
+  const valueRef = useRef(value);
+  const gestureStartValueRef = useRef(value);
+  trackWidthRef.current = trackWidth;
+  valueRef.current = value;
 
-  const valueFromPageX = useCallback((pageX: number): number => {
-    const width = trackWidth > 0 ? trackWidth : 200;
-    const localX = pageX - trackLeftRef.current;
+  const valueFromLocalX = useCallback((localX: number): number => {
+    const width = trackWidthRef.current > 0 ? trackWidthRef.current : 200;
     return Math.round(Math.max(0, Math.min(max, (localX / width) * max)));
-  }, [max, trackWidth]);
+  }, [max]);
 
   const panResponder = useMemo(
     () =>
@@ -145,13 +148,22 @@ function VolumeSlider({
         onMoveShouldSetPanResponderCapture: () => true,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (event) => {
-          onChange(valueFromPageX(event.nativeEvent.pageX));
+          const localX = event.nativeEvent.locationX;
+          const next = typeof localX === 'number'
+            ? valueFromLocalX(localX)
+            : valueRef.current;
+          gestureStartValueRef.current = next;
+          if (next !== valueRef.current) onChange(next);
         },
         onPanResponderMove: (_event, gestureState) => {
-          onChange(valueFromPageX(gestureState.moveX));
+          const width = trackWidthRef.current > 0 ? trackWidthRef.current : 200;
+          const next = Math.round(
+            Math.max(0, Math.min(max, gestureStartValueRef.current + (gestureState.dx / width) * max)),
+          );
+          if (next !== valueRef.current) onChange(next);
         },
       }),
-    [onChange, valueFromPageX]
+    [max, onChange, valueFromLocalX]
   );
 
   return (
@@ -180,17 +192,10 @@ function VolumeSlider({
         </TouchableOpacity>
 
         <View
-          ref={trackRef}
           style={styles.volTrackTouchArea}
           onLayout={(e) => {
             const w = e.nativeEvent.layout.width;
             if (w > 0) setTrackWidth(w);
-            trackRef.current?.measureInWindow((x, _y, measuredWidth) => {
-              trackLeftRef.current = x;
-              if (measuredWidth > 0 && measuredWidth !== w) {
-                setTrackWidth(measuredWidth);
-              }
-            });
           }}
           {...panResponder.panHandlers}
         >
@@ -300,6 +305,8 @@ function UnifiedAudioControls({
         onChange={onChangeMic}
         icon={<MicIcon size={18} color={colors.brand} />}
         description={micDescription}
+        max={MIC_MAX_PERCENT}
+        presets={[0, 25, 50, 100, 150]}
       />
 
       {showRouteControls !== false && (
@@ -504,6 +511,9 @@ const RecentCallRow = React.memo(function RecentCallRow({
       ? t('Outgoing')
       : t('Missed call');
   const duration = item.duration ? formatCallDuration(item.duration) : '';
+  const displayName = callDisplayName(item.number, item.name);
+  const number = String(item.number || '').trim();
+  const metaLine = [number, directionLabel, duration].filter(Boolean).join(' · ');
   return (
     <View style={styles.recentItem}>
       <TouchableOpacity
@@ -524,15 +534,16 @@ const RecentCallRow = React.memo(function RecentCallRow({
             ]}
             numberOfLines={1}
           >
-            {callDisplayName(item.number, item.name)}
+            {displayName}
           </Text>
           <Text
             style={[
               styles.recentSub,
               item.direction === 'missed' && styles.recentSubMissed,
             ]}
+            numberOfLines={1}
           >
-            {`${directionLabel}${duration ? ` · ${duration}` : ''}`}
+            {metaLine}
           </Text>
         </View>
 
@@ -546,7 +557,7 @@ const RecentCallRow = React.memo(function RecentCallRow({
         activeOpacity={0.6}
         delayPressIn={0}
         accessibilityRole="button"
-        accessibilityLabel={`View profile for ${callDisplayName(item.number, item.name)}`}
+        accessibilityLabel={`View profile for ${displayName}${number && number !== displayName ? ` ${number}` : ''}`}
       >
         <InfoIcon size={20} color={colors.brand} />
       </TouchableOpacity>
@@ -756,7 +767,7 @@ function StandardPhoneScreenInner({
   const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
-  const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'opus');
+  const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'pcmu');
   const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 50);
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
   const [showInCallVolumeModal, setShowInCallVolumeModal] = useState(false);
@@ -1033,7 +1044,7 @@ function StandardPhoneScreenInner({
       setEditTls(account.useTls);
       setEditDnd(account.dnd);
       setEditAuto(account.autoAnswer);
-      setEditCodec(account.preferredCodec || 'opus');
+      setEditCodec(account.preferredCodec || 'pcmu');
       setEditMicVol(account.micVolume ?? 50);
       setEditSpeakerVol(account.speakerVolume ?? 85);
     }

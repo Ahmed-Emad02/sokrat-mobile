@@ -1,5 +1,7 @@
 import {
+  MIC_EXTENDED_MAX_GAIN_DB,
   MIC_MAX_GAIN_DB,
+  MIC_MAX_PERCENT,
   MIC_MIN_GAIN_DB,
   SPEAKER_MAX_GAIN,
   SPEAKER_MAX_PERCENT,
@@ -9,19 +11,20 @@ import {
 } from '../src/calls/audioLevels';
 
 describe('in-call audio level mapping', () => {
-  test('keeps 50% microphone at unity and exposes the full boost range', () => {
+  test('keeps 50% microphone at unity and exposes the full extended range', () => {
     expect(micPercentToDb(50)).toBe(0);
     expect(micPercentToDb(0)).toBe(MIC_MIN_GAIN_DB);
     expect(micPercentToDb(100)).toBe(Math.round(MIC_MAX_GAIN_DB));
+    expect(micPercentToDb(MIC_MAX_PERCENT)).toBe(MIC_EXTENDED_MAX_GAIN_DB);
     expect(micPercentToDb(75)).toBe(16);
-    expect(micPercentToDb(25)).toBe(-6);
+    expect(micPercentToDb(25)).toBe(-12);
   });
 
-  test('round-trips microphone percent and dB within two slider steps', () => {
-    for (let percent = 0; percent <= 100; percent += 5) {
+  test('round-trips the extended microphone range within two slider steps', () => {
+    for (let percent = 0; percent <= MIC_MAX_PERCENT; percent += 5) {
       expect(Math.abs(micDbToPercent(micPercentToDb(percent)) - percent)).toBeLessThanOrEqual(2);
     }
-    expect(micDbToPercent(99)).toBe(100);
+    expect(micDbToPercent(99)).toBe(MIC_MAX_PERCENT);
     expect(micDbToPercent(-99)).toBe(0);
   });
 

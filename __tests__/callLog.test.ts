@@ -32,11 +32,11 @@ describe('call log helpers', () => {
     const calls = [record({ id: 'server', number: '204', name: 'PBX colleague', timestamp: 1000 })];
     expect(nameCallRecords(calls, [])[0].name).toBe('PBX colleague');
   });
-  test('old Unknown recents display their original number without rewriting history', () => {
+  test('old Unknown recents display Unknown alongside their original number', () => {
     const calls = [record({ id: 'unknown', number: '*43', name: 'Unknown', timestamp: 1000 })];
-    expect(nameCallRecords(calls, [])[0]).toMatchObject({ name: '*43', number: '*43' });
+    expect(nameCallRecords(calls, [])[0]).toMatchObject({ name: 'Unknown', number: '*43' });
     expect(calls[0].name).toBe('Unknown');
-    expect(buildCallerProfile('*43', calls, []).displayName).toBe('*43');
+    expect(buildCallerProfile('*43', calls, []).displayName).toBe('Unknown');
   });
   test('profile skips placeholder history labels to retain a previously resolved PBX name', () => {
     const calls = [
@@ -68,13 +68,13 @@ describe('call log helpers', () => {
     expect(profile.isExtension).toBe(true);
   });
 
-  test('falls back to the number for unknown callers', () => {
+  test('falls back to Unknown for callers without a contact', () => {
     const calls: CallRecord[] = [
       record({ id: 'a', number: '01065121791', name: '01065121791', timestamp: 1000 }),
     ];
     const profile = buildCallerProfile('01065121791', calls, contacts);
     expect(profile.contact).toBeNull();
-    expect(profile.displayName).toBe('01065121791');
+    expect(profile.displayName).toBe('Unknown');
     expect(profile.isExtension).toBe(false);
   });
 

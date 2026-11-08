@@ -11,9 +11,12 @@
  * remote-track software gain (up to 2x / +6.0 dB).
  */
 
-export const MIC_MIN_GAIN_DB = -12;
-// Extended by 30% from the previous +24 dB ceiling.
+export const MIC_MIN_GAIN_DB = -24;
+// The first half of the boost range preserves the existing +31.2 dB curve;
+// the 100-150% portion adds headroom up to +42 dB.
 export const MIC_MAX_GAIN_DB = 31.2;
+export const MIC_EXTENDED_MAX_GAIN_DB = 42;
+export const MIC_MAX_PERCENT = 150;
 export const MIC_UNITY_PERCENT = 50;
 // Extended by 30% from the previous 150% / 2x ceiling.
 export const SPEAKER_MAX_PERCENT = 195;
@@ -24,22 +27,36 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function micPercentToDb(percent: number): number {
-  const value = clamp(percent, 0, 100);
-  const range = value >= MIC_UNITY_PERCENT ? MIC_MAX_GAIN_DB : -MIC_MIN_GAIN_DB;
-  return Math.round(((value - MIC_UNITY_PERCENT) / MIC_UNITY_PERCENT) * range);
+  const value = clamp(percent, 0, MIC_MAX_PERCENT);
+  if (value <= MIC_UNITY_PERCENT) {
+    return Math.round(((value - MIC_UNITY_PERCENT) / MIC_UNITY_PERCENT) * -MIC_MIN_GAIN_DB);
+  }
+  if (value <= 100) {
+    return Math.round(((value - MIC_UNITY_PERCENT) / 50) * MIC_MAX_GAIN_DB);
+  }
+  return Math.round(
+    MIC_MAX_GAIN_DB +
+      ((value - 100) / (MIC_MAX_PERCENT - 100)) *
+        (MIC_EXTENDED_MAX_GAIN_DB - MIC_MAX_GAIN_DB),
+  );
 }
 
 export function micDbToPercent(gainDb: number): number {
-  const value = clamp(gainDb, MIC_MIN_GAIN_DB, MIC_MAX_GAIN_DB);
+  const value = clamp(gainDb, MIC_MIN_GAIN_DB, MIC_EXTENDED_MAX_GAIN_DB);
+  if (value <= 0) {
+    return Math.round(MIC_UNITY_PERCENT + (value / -MIC_MIN_GAIN_DB) * MIC_UNITY_PERCENT);
+  }
+  if (value <= MIC_MAX_GAIN_DB) {
+    return Math.round(MIC_UNITY_PERCENT + (value / MIC_MAX_GAIN_DB) * 50);
+  }
   return Math.round(
-    value >= 0
-      ? MIC_UNITY_PERCENT + (value / MIC_MAX_GAIN_DB) * (100 - MIC_UNITY_PERCENT)
-      : MIC_UNITY_PERCENT + (value / -MIC_MIN_GAIN_DB) * MIC_UNITY_PERCENT
+    100 + ((value - MIC_MAX_GAIN_DB) / (MIC_EXTENDED_MAX_GAIN_DB - MIC_MAX_GAIN_DB)) *
+      (MIC_MAX_PERCENT - 100),
   );
 }
 
 export function clampMicGainDb(gainDb: number): number {
-  return clamp(gainDb, MIC_MIN_GAIN_DB, MIC_MAX_GAIN_DB);
+  return clamp(gainDb, MIC_MIN_GAIN_DB, MIC_EXTENDED_MAX_GAIN_DB);
 }
 
 export function speakerPercentToGain(percent: number): number {

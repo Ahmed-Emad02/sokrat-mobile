@@ -14,7 +14,11 @@ import androidx.core.app.Person
 import androidx.core.app.NotificationManagerCompat
 
 object IncomingCallNotificationHelper {
-    const val CHANNEL_ID = "sokrat_incoming_calls_v2"
+    // v3 is a deliberate channel-definition migration: Android does not let an
+    // app change an existing channel's sound/importance, and v2 may have been
+    // muted by an older build or by the user. Keep v2 for cleanup only.
+    const val CHANNEL_ID = "sokrat_incoming_calls_v3"
+    const val PREVIOUS_CHANNEL_ID = "sokrat_incoming_calls_v2"
     const val LEGACY_CHANNEL_ID = "sokrat_incoming_calls"
     const val CHANNEL_NAME = "Incoming Calls"
     const val ONGOING_CHANNEL_ID = "sokrat_active_call_v3"
@@ -144,12 +148,16 @@ object IncomingCallNotificationHelper {
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val who = callerName.ifBlank { callerId.ifBlank { "Unknown" } }
+        val who = CallerDisplayName.resolve(callerId, callerName)
+        val caller = callerId.trim()
         val notification = NotificationCompat.Builder(context, MISSED_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_call)
             .setColor(0xFFEB1235.toInt())
             .setContentTitle("Missed call")
-            .setContentText("$who · Ext $extension")
+            .setContentText(
+                if (caller.isBlank()) "$who · Ext $extension"
+                else "$who · $caller · Ext $extension"
+            )
             .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
             .setAutoCancel(true)
             .setContentIntent(pending)
@@ -262,10 +270,13 @@ object IncomingCallNotificationHelper {
             acquireScreenWakeLock(context)
             createNotificationChannel(context)
         }
-        // SIP/push may arrive with only a number. Resolve the address book here
-        // so the first notification frame already has the contact name.
+        // Resolve the device address book for the first notification frame.
+        // A push/SIP callerName is not trusted as a contact: it may be a trunk
+        // or routing label. JS may later update the notification with a name
+        // resolved from the app/Sokrat contact directory.
         val deviceName = DeviceContactLookup.lookup(context, callerId)
-        val title = CallerDisplayName.resolve(callerId, deviceName.ifBlank { callerName })
+        val resolvedName = deviceName.ifBlank { if (silentUpdate) callerName else "" }
+        val title = CallerDisplayName.resolve(callerId, resolvedName)
         val subtitle = if (callerId.isNotBlank() && callerId != title) {
             "Incoming call from $callerId"
         } else {
@@ -361,6 +372,30 @@ object IncomingCallNotificationHelper {
             NotificationManagerCompat.from(context).notify(notificationId(callId), notification)
         } catch (error: SecurityException) {
             error.printStackTrace()
+        } catch (error: IllegalArgumentException) {
+            // Android 14+ rejects CallStyle notifications unless the app owns
+            // a foreground service or the notification carries a usable
+            // full-screen intent. Users can deny full-screen intent access;
+            // fall back to a normal high-priority call notification instead of
+            // crashing the process while an incoming call is ringing.
+            error.printStackTrace()
+            try {
+                NotificationManagerCompat.from(context).notify(
+                    notificationId(callId),
+                    buildNonCallStyleNotification(
+                        context,
+                        title,
+                        subtitle,
+                        silentUpdate,
+                        showPendingIntent,
+                        answerPendingIntent,
+                        declinePendingIntent,
+                        ringtoneUri
+                    )
+                )
+            } catch (fallbackError: Exception) {
+                fallbackError.printStackTrace()
+            }
         }
 
         val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
@@ -371,6 +406,63 @@ object IncomingCallNotificationHelper {
                 // Full screen intent via notification handles launch if background start blocked
             }
         }
+    }
+
+    /**
+     * Notification used when Android refuses CallStyle for this process.
+     *
+     * A CallStyle notification is only legal when the app owns a foreground
+     * service or supplies a usable full-screen intent. The incoming-call
+     * notification can arrive through FCM before the foreground service is
+     * running, and full-screen intent access may be denied. This fallback keeps
+     * the ringing/answer/decline surface available without terminating the app.
+     */
+    private fun buildNonCallStyleNotification(
+        context: Context,
+        title: String,
+        subtitle: String,
+        silentUpdate: Boolean,
+        showPendingIntent: PendingIntent,
+        answerPendingIntent: PendingIntent,
+        declinePendingIntent: PendingIntent,
+        ringtoneUri: android.net.Uri
+    ): Notification {
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_call)
+            .setColor(0xFFEB1235.toInt())
+            .setContentTitle(title)
+            .setContentText(subtitle)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setTimeoutAfter(IncomingCallStore.MAX_AGE_MS)
+            .setContentIntent(showPendingIntent)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Decline",
+                declinePendingIntent
+            )
+            .addAction(android.R.drawable.ic_menu_call, "Answer", answerPendingIntent)
+
+        if (silentUpdate) {
+            builder.setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setOnlyAlertOnce(true)
+                .setSound(null)
+                .setVibrate(null)
+        } else {
+            builder.setPriority(NotificationCompat.PRIORITY_MAX)
+                .setSound(ringtoneUri)
+                .setVibrate(longArrayOf(0, 1000, 1000, 1000, 1000, 1000))
+            val fullScreenAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                    ?.canUseFullScreenIntent() != false
+            if (fullScreenAllowed) {
+                builder.setFullScreenIntent(showPendingIntent, true)
+            }
+        }
+
+        return builder.build()
     }
 
     fun updateCallNotification(context: Context, callId: String, callerName: String) {
@@ -407,6 +499,7 @@ object IncomingCallNotificationHelper {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && sysNm != null) {
                 sysNm.activeNotifications?.forEach { sbn ->
                     if (sbn.notification.channelId == CHANNEL_ID ||
+                        sbn.notification.channelId == PREVIOUS_CHANNEL_ID ||
                         sbn.notification.channelId == LEGACY_CHANNEL_ID) {
                         sysNm.cancel(sbn.id)
                     }

@@ -12,7 +12,7 @@ export async function resolveCallerName(number: string, account: SavedAccount | 
     const device = await lookupDeviceContactName(number);
     if (device) {
       const resolved = callDisplayName(number, device);
-      if (resolved !== callDisplayName(number)) return resolved;
+      if (resolved !== 'Unknown') return resolved;
     }
   } catch { /* Contacts permission or lookup failure falls back below. */ }
   try {

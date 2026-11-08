@@ -38,14 +38,14 @@ test('matches app contacts that use feature-code numbers', () => {
   expect(callerNameFromContacts('*88', [{ id: 'echo', name: 'Echo Audio Test', extension: '*88' }])).toBe('Echo Audio Test');
 });
 
-test.each(['', 'Unknown', ' unknown caller ', 'Incoming Call', 'غير معروف'])('number replaces placeholder display name %s', name => {
-  expect(callDisplayName('+44 20 1234 5678', name)).toBe('+44 20 1234 5678');
+test.each(['', 'Unknown', ' unknown caller ', 'Incoming Call', 'غير معروف', '+44 20 1234 5678', 'dongle1'])('placeholder, routing and number labels remain Unknown %s', name => {
+  expect(callDisplayName('+44 20 1234 5678', name)).toBe('Unknown');
 });
-test('display fallback preserves extensions, feature codes, Arabic digits and URI user numbers', () => {
-  expect(callDisplayName('204', 'Unknown')).toBe('204');
-  expect(callDisplayName('*43', 'Unknown')).toBe('*43');
-  expect(callDisplayName('٢٠٤')).toBe('٢٠٤');
-  expect(callDisplayName('sip:204@pbx.example', 'Unknown')).toBe('204');
+test('display fallback uses Unknown and keeps the number available to the call UI', () => {
+  expect(callDisplayName('204', 'Unknown')).toBe('Unknown');
+  expect(callDisplayName('*43', 'Unknown')).toBe('Unknown');
+  expect(callDisplayName('٢٠٤')).toBe('Unknown');
+  expect(callDisplayName('sip:204@pbx.example', 'Unknown')).toBe('Unknown');
   expect(callDisplayName('204', ' Colleague ')).toBe('Colleague');
 });
 test('missing or withheld numbers and trunk labels are not invented as caller identities', () => {
@@ -57,11 +57,11 @@ test('missing or withheld numbers and trunk labels are not invented as caller id
 describe('provider caller names', () => {
   test('keeps human provider labels and rejects routing labels', () => {
     expect(providerCallerName('204', 'Ahmed Sales')).toBe('Ahmed Sales');
-    expect(providerCallerName('204', 'Dongle/dongle1')).toBe('204');
-    expect(providerCallerName('204', 'PJSIP/204-00000001')).toBe('204');
-    expect(providerCallerName('204', 'from-internal')).toBe('204');
-    expect(providerCallerName('204', 'Unknown')).toBe('204');
-    expect(providerCallerName('204', '204')).toBe('204');
+    expect(providerCallerName('204', 'Dongle/dongle1')).toBe('Unknown');
+    expect(providerCallerName('204', 'PJSIP/204-00000001')).toBe('Unknown');
+    expect(providerCallerName('204', 'from-internal')).toBe('Unknown');
+    expect(providerCallerName('204', 'Unknown')).toBe('Unknown');
+    expect(providerCallerName('204', '204')).toBe('Unknown');
   });
 
   test('uses the first usable provider name', () => {

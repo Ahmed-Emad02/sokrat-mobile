@@ -35,10 +35,8 @@ class SokratFirebaseMessagingService : ReactNativeFirebaseMessagingService() {
         val callerId = data["callerId"] ?: "Unknown"
         // Prefer the phone's address book; provider/push labels are only a fallback.
         val deviceName = DeviceContactLookup.lookup(applicationContext, callerId)
-        val callerName = CallerDisplayName.resolve(
-            callerId,
-            deviceName.ifBlank { data["callerName"] ?: "" }
-        )
+        // Push-provided callerName is display metadata, not contact authority.
+        val callerName = CallerDisplayName.resolve(callerId, deviceName)
         val extension = data["extension"] ?: ""
         val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
 

@@ -136,7 +136,7 @@ describe('mobile push token lifecycle', () => {
     await Promise.resolve();
     await settle();
     expect(deleteToken).not.toHaveBeenCalled();
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sokrat/push-app-version', '1.2.0');
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sokrat/push-app-version', '1.2.3');
     expect(register).toHaveBeenCalledWith(session, expect.objectContaining({ token: 'test-fcm-token' }));
   });
 

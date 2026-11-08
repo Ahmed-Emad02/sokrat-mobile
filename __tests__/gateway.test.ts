@@ -620,6 +620,37 @@ describe('gateway session + tenant APIs', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  test('call-state uses the authenticated tenant endpoint', async () => {
+    const fetcher = jest.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://pbx.example.com/api/gateway/call/state');
+      expect(init.method).toBe('POST');
+      expect(headerOf(init, 'Authorization')).toBe('Bearer secret-1');
+      expect(headerOf(init, 'X-Sokrat-Device')).toBe('dev-1');
+      expect(headerOf(init, 'X-Sokrat-Extension')).toBe('160');
+      expect(headerOf(init, 'X-Sokrat-Signature')).toBe('signed');
+      expect(bodyOf(init)).toEqual({});
+      return jsonResponse(200, {
+        success: true,
+        callerActive: true,
+        trunkActive: false,
+      });
+    }) as unknown as typeof fetch;
+    const client = new GatewayClient({
+      baseUrl: 'https://pbx.example.com',
+      claimSecret: 'secret-1',
+      deviceId: 'dev-1',
+      fetcher,
+    });
+
+    await expect(client.callState({
+      'X-Sokrat-Extension': '160',
+      'X-Sokrat-Signature': 'signed',
+    })).resolves.toEqual({
+      callerActive: true,
+      trunkActive: false,
+    });
+  });
+
   test('tenant APIs without a claim secret are rejected locally', async () => {
     const client = new GatewayClient({ baseUrl: 'http://pbx.example.com' });
     await expect(client.sipTicket()).rejects.toMatchObject({ kind: 'unauthorized' });

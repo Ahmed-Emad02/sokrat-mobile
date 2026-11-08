@@ -9,7 +9,7 @@ import { StatusBar, StyleSheet, Platform, PermissionsAndroid, Alert, AppState, A
 import { useTheme, applySystemBars } from './src/theme';
 import { initI18n } from './src/i18n';
 import { resolveCallerName } from './src/calls/callerNameResolver';
-import { callDisplayName, providerCallerName } from './src/calls/callerName';
+import { callDisplayName } from './src/calls/callerName';
 import {
   JsSipService,
   getSharedJsSipService,
@@ -76,6 +76,7 @@ import {
   startCallManagers,
   setCallWindowActive,
   stopCallManagers,
+  stopOutgoingRingback,
   startRingtone,
   stopRingtone,
   setMicrophoneMute,
@@ -86,6 +87,7 @@ import {
   AudioRouteType,
 } from './src/calls/incall';
 import { getNetworkState, subscribeNetworkChanges, NetworkState } from './src/calls/network';
+import { MIC_MAX_PERCENT } from './src/calls/audioLevels';
 import { subscribeGsmCallState, GsmCallState } from './src/calls/telephony';
 import {
   StorageService,
@@ -594,8 +596,6 @@ export default function App() {
 
   const applyResolvedIncomingName = (callId: string, callerId: string, name: string) => {
     const displayName = callDisplayName(callerId, name);
-    if (displayName === callDisplayName(callerId)) return;
-
     const current = incomingRef.current;
     if (current?.callId === callId && current.callerName !== displayName) {
       const resolved = { ...current, callerName: displayName };
@@ -622,7 +622,6 @@ export default function App() {
 
   const enrichIncomingName = (value: IncomingCallInfo, lookupAccount: SavedAccount | null) => {
     void resolveCallerName(value.callerId, lookupAccount).then(name => {
-      if (name === 'Unknown') return;
       if (lookupAccount && accountRef.current &&
           lookupAccount.extension !== accountRef.current.extension) return;
       applyResolvedIncomingName(value.callId, value.callerId, name);
@@ -645,7 +644,9 @@ export default function App() {
     const initial = value
       ? {
           ...value,
-          callerName: providerCallerName(value.callerId, value.callerName, existing?.callerName),
+          // Push/SIP display labels are not contacts. Start unknown and let
+          // the device/app/Sokrat contact resolver fill in a real name.
+          callerName: existing?.callerName || 'Unknown',
         }
       : null;
     incomingRef.current = initial;
@@ -884,7 +885,7 @@ export default function App() {
       setGatewayState('online');
       setGatewayMessage('');
       gatewayRetryAttemptRef.current = 0;
-      sipRef.current?.setPreferredCodec(activeAccount.preferredCodec || 'opus');
+      sipRef.current?.setPreferredCodec(activeAccount.preferredCodec || 'pcmu');
       sipRef.current?.setMicVolume(activeAccount.micVolume ?? 50);
       sipRef.current?.setSpeakerVolume(activeAccount.speakerVolume ?? 85);
       CONFIG.sipDomain = activeAccount.serverHost;
@@ -1074,7 +1075,7 @@ export default function App() {
           void reportIncomingCall(
             callId,
             correlatedInfo.callerId,
-            correlatedInfo.callerName,
+            'Unknown',
           ).then((displayed) => {
             if (displayed && incomingRef.current?.callId === callId) {
               updateIncoming({ ...correlatedInfo, nativePresented: true });
@@ -1096,6 +1097,7 @@ export default function App() {
         acknowledgeNativeCallAction(call.id, 'ANSWER');
         dismissNativeCallNotification(call.id);
         void clearPendingIncomingCall(call.id);
+        stopOutgoingRingback();
         startCallManagers();
         // Re-apply the user's route choice (speaker/Bluetooth) after the audio
         // session initialisation, which otherwise forces the earpiece.
@@ -1132,6 +1134,13 @@ export default function App() {
           );
         }
       },
+      onTrunkLost: () => {
+        showToast({
+          type: 'warning',
+          title: 'Call Disconnected',
+          message: 'The GSM line disconnected before the call could continue.',
+        });
+      },
       onRegistrationFailed: (code, reason) => {
         if (code === 403) {
           showToast({
@@ -1158,6 +1167,7 @@ export default function App() {
         markCallTerminal(callId);
         ++answerGenerationRef.current;
         stopRingtone();
+        stopOutgoingRingback();
         dismissOngoingCallNotification();
         if (cause && cause !== 'NORMAL_CLEARING' && cause !== 'Canceled by User' && cause !== 'Terminated') {
           const reason = formatCallFailureReason(cause, details);
@@ -1274,7 +1284,7 @@ export default function App() {
         dnd: storedAccount?.dnd || false,
         autoAnswer: storedAccount?.autoAnswer || false,
         preferredCodec: storedAccount?.preferredCodec || 'pcmu',
-        micVolume: Math.max(0, Math.min(100, storedAccount?.micVolume ?? 50)),
+        micVolume: Math.max(0, Math.min(MIC_MAX_PERCENT, storedAccount?.micVolume ?? 50)),
         speakerVolume: storedAccount?.speakerVolume ?? 85,
       };
       if (restoreGeneration !== accountGenerationRef.current) return;
@@ -1355,7 +1365,7 @@ export default function App() {
       });
 
       if (Platform.OS === 'ios') {
-        void reportIncomingCall(callId, payload.callerId, payload.callerName);
+        void reportIncomingCall(callId, payload.callerId, 'Unknown');
       }
     }, (cancel: CancelPayload) => {
       const cancelCallId = cancel.callId;
@@ -1534,6 +1544,7 @@ export default function App() {
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('[app] outbound call failed:', errMsg);
+      stopOutgoingRingback();
       stopCallManagers();
       showToast({
         type: 'error',
@@ -1666,7 +1677,7 @@ export default function App() {
         setGatewayMessage('');
         gatewayRetryAttemptRef.current = 0;
       }
-      sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'opus');
+      sipRef.current?.setPreferredCodec(newAcc.preferredCodec || 'pcmu');
       sipRef.current?.setMicVolume(newAcc.micVolume ?? 50);
       sipRef.current?.setSpeakerVolume(newAcc.speakerVolume ?? 85);
       CONFIG.sipDomain = newAcc.serverHost;

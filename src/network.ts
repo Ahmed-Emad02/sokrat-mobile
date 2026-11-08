@@ -6,6 +6,8 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 export const MEDIA_CONFIGURATION_PATH = '/api/mobile/ice';
 /** The gateway forwards authentication to this exact PBX verifier path. */
 export const MEDIA_AUTHENTICATION_PATH = '/api/extension/v1/whoami';
+/** Authenticated PBX path for live microphone VOLUME(RX) control. */
+export const CALL_VOLUME_PATH = '/api/extension/v1/call-volume';
 export const MEDIA_CONFIGURATION_TIMEOUT_MS = 8000;
 
 /**

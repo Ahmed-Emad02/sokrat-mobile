@@ -9,14 +9,16 @@ object CallerDisplayName {
     private val numberCharacters = Regex("^[+*#0-9\u0660-\u0669\u06f0-\u06f9\\s().-]+$")
     private val digit = Regex("[0-9\u0660-\u0669\u06f0-\u06f9]")
     private val routingName = Regex(
-        "^(?:dongle|pjsip|sip|local|macro)(?:[\\/:\\s_-]|$)|^from-(?:internal|trunk)(?:[\\/:\\s_-]|$)|^trunk(?:[\\/:\\s_-]|$)",
+        "^(?:dongle|pjsip|sip|local|macro)\\d*(?:[\\/:\\s_-]|$)|^from-(?:internal|trunk)(?:[\\/:\\s_-]|$)|^trunk(?:[\\/:\\s_-]|$)",
         RegexOption.IGNORE_CASE
     )
 
     fun resolve(number: String, name: String = ""): String {
         val label = name.trim()
-        if (label.isNotEmpty() && !placeholders.matches(label) && !routingName.containsMatchIn(label)) return label
-        val address = number.trim().replace(Regex("^(?:sips?|tel):", RegexOption.IGNORE_CASE), "").substringBefore('@')
-        return if (digit.containsMatchIn(address) && numberCharacters.matches(address)) address else "Unknown"
+        if (label.isNotEmpty() && !placeholders.matches(label) &&
+            !routingName.containsMatchIn(label) && !numberCharacters.matches(label)) return label
+        // The number is rendered separately by the notification/ringing UI.
+        // It is never the caller's name; without a matching contact, unknown.
+        return "Unknown"
     }
 }

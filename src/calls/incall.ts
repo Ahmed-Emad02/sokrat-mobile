@@ -54,7 +54,11 @@ export function stopCallManagers() {
 
 export function startRingtone() {
   try {
-    InCallManager.startRingtone('_DEFAULT_', [0, 1000, 1000, 1000], 'playback', 30);
+    // A positive duration makes InCallManager stop itself after that many
+    // seconds. Ring until the call reaches a terminal state; answer, decline,
+    // cancellation and call teardown all call stopRingtone().
+    const ringtone = Platform.OS === 'android' ? '_BUNDLE_' : '_DEFAULT_';
+    InCallManager.startRingtone(ringtone, [0, 1000, 1000, 1000], 'playback', -1);
   } catch (err) {
     console.warn('[incall] startRingtone error:', err);
   }
@@ -65,6 +69,26 @@ export function stopRingtone() {
     InCallManager.stopRingtone();
   } catch (err) {
     console.warn('[incall] stopRingtone error:', err);
+  }
+}
+
+/** Outgoing progress tone; the native call session owns the audio route. */
+export function startOutgoingRingback() {
+  try {
+    // `_DEFAULT_` resolves a system ringback URI; some OEM builds reject it
+    // with MediaPlayer setDataSource status=0x80000000. `_DTMF_` uses a
+    // ToneGenerator and is available without a bundled/media asset.
+    InCallManager.startRingback('_DTMF_');
+  } catch (err) {
+    console.warn('[incall] startRingback error:', err);
+  }
+}
+
+export function stopOutgoingRingback() {
+  try {
+    InCallManager.stopRingback();
+  } catch (err) {
+    console.warn('[incall] stopRingback error:', err);
   }
 }
 

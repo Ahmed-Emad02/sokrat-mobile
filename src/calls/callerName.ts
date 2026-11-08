@@ -1,15 +1,16 @@
 import type { Contact } from '../storage/store';
 
-/** Contact/PBX names win; placeholder labels must never hide an available number. */
-export function callDisplayName(number: string, name?: string | null): string {
+const PLACEHOLDER_NAME = /^(unknown(?: caller)?|incoming call|outgoing call|anonymous|unavailable|restricted|private(?: number)?|غير معروف|متصل غير معروف|مكالمة واردة)$/i;
+const ROUTING_NAME = /^(?:dongle|pjsip|sip|local|macro)\d*(?:[\/:\s_-]|$)|^from-(?:internal|trunk)(?:[\/:\s_-]|$)|^trunk(?:[\/:\s_-]|$)/i;
+const NUMBER_LABEL = /^[+*#0-9\u0660-\u0669\u06f0-\u06f9\s().-]+$/;
+
+/** Return a real contact name; otherwise Unknown. The number is rendered separately. */
+export function callDisplayName(_number: string, name?: string | null): string {
   const label = String(name || '').trim();
-  const placeholder = /^(unknown(?: caller)?|incoming call|outgoing call|anonymous|unavailable|restricted|private(?: number)?|غير معروف|متصل غير معروف|مكالمة واردة)$/i;
-  if (label && !placeholder.test(label)) return label;
-  const address = String(number || '').trim().replace(/^(?:sips?|tel):/i, '').split('@')[0];
-  // Preserve formatting, international/Arabic digits and feature codes. Never
-  // invent a number for withheld identities or expose a trunk label as a person.
-  return /[0-9\u0660-\u0669\u06f0-\u06f9]/.test(address) &&
-    /^[+*#0-9\u0660-\u0669\u06f0-\u06f9\s().-]+$/.test(address) ? address : 'Unknown';
+  if (label && !PLACEHOLDER_NAME.test(label) && !ROUTING_NAME.test(label) && !NUMBER_LABEL.test(label)) {
+    return label;
+  }
+  return 'Unknown';
 }
 
 /** Compare complete numbers, never short suffixes that can identify the wrong caller. */
@@ -48,9 +49,6 @@ export function callerNameFromContacts(number: string, contacts: Contact[]): str
   return match?.name.trim() || 'Unknown';
 }
 
-const PLACEHOLDER_NAME = /^(unknown(?: caller)?|incoming call|outgoing call|anonymous|unavailable|restricted|private(?: number)?|غير معروف|متصل غير معروف|مكالمة واردة)$/i;
-const ROUTING_NAME = /^(?:dongle|pjsip|sip|local|macro)(?:[\/:\s_-]|$)|^from-(?:internal|trunk)(?:[\/:\s_-]|$)|^trunk(?:[\/:\s_-]|$)/i;
-
 /** A provider-supplied label is only usable when it is a human name, not a trunk/routing label. */
 export function usableProviderName(number: string, name?: string | null): string | null {
   const label = String(name || '').trim();
@@ -61,7 +59,7 @@ export function usableProviderName(number: string, name?: string | null): string
   return label;
 }
 
-/** Best available provider label, falling back to the normal number display. */
+/** Best available provider label; unnamed callers remain Unknown, never a number. */
 export function providerCallerName(number: string, ...names: Array<string | null | undefined>): string {
   for (const name of names) {
     const usable = usableProviderName(number, name);
