@@ -1,6 +1,8 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { ActivityIndicator, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { t } from '../src/i18n';
 import { RingingScreen } from '../src/ui/RingingScreen';
 import { ActiveCallModal } from '../src/ui/ActiveCallModal';
 import { RecentsTab } from '../src/ui/RecentsTab';
@@ -54,6 +56,7 @@ afterEach(async () => {
   if (renderer) await act(async () => { renderer.unmount(); });
   jest.clearAllTimers();
   jest.useRealTimers();
+  jest.restoreAllMocks();
 });
 async function textFrom(element: React.ReactElement): Promise<string[]> {
   await act(async () => { renderer = TestRenderer.create(element); });
@@ -213,4 +216,72 @@ test.each([
   } finally {
     schemeSpy.mockRestore();
   }
+});
+
+function storedSpeedDials(value?: Record<string, string>): Map<string, string> {
+  const stored = new Map<string, string>();
+  if (value) stored.set('@sokrat_speed_dial', JSON.stringify(value));
+  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async key => stored.get(key) ?? null);
+  jest.spyOn(AsyncStorage, 'setItem').mockImplementation(async (key, data) => {
+    stored.set(key, data);
+  });
+  return stored;
+}
+
+function digitButton(digit: string): TestRenderer.ReactTestInstance {
+  const button = renderer.root.findAllByType(TouchableOpacity).find(node =>
+    typeof node.props.onLongPress === 'function' &&
+    node.findAllByType(Text).some(text => text.props.children === digit));
+  if (!button) throw new Error(`Dialpad key ${digit} is missing`);
+  return button;
+}
+
+function buttonWithText(text: string): TestRenderer.ReactTestInstance {
+  const button = renderer.root.findAllByType(TouchableOpacity).find(node =>
+    node.findAllByType(Text).some(label => String(label.props.children).includes(text)));
+  if (!button) throw new Error(`Button ${text} is missing`);
+  return button;
+}
+
+test('holding an unassigned key after mounting the phone screen cannot place a call', async () => {
+  storedSpeedDials();
+  const onCall = jest.fn();
+  await textFrom(<StandardPhoneScreen {...standardProps} onCall={onCall} />);
+
+  await act(async () => { digitButton('1').props.onLongPress(); });
+  expect(onCall).not.toHaveBeenCalled();
+});
+
+test('the phone screen retains explicitly configured voicemail and custom speed dials', async () => {
+  storedSpeedDials({ '1': '*97', '2': '5072' });
+  const onCall = jest.fn();
+  await textFrom(<StandardPhoneScreen {...standardProps} onCall={onCall} />);
+
+  await act(async () => { digitButton('1').props.onLongPress(); });
+  await act(async () => { digitButton('2').props.onLongPress(); });
+  expect(onCall.mock.calls).toEqual([['*97'], ['5072']]);
+});
+
+test('clearing key 1 in settings persists across a phone-screen remount', async () => {
+  const stored = storedSpeedDials({ '1': '*97', '2': '2401' });
+  const onCall = jest.fn();
+  const account = {
+    extension: '2401', password: 'fixture-only', serverHost: 'pbx.invalid',
+    useTls: true, dnd: false, autoAnswer: false,
+  };
+  const screen = <StandardPhoneScreen {...standardProps} account={account} onCall={onCall} />;
+  await textFrom(screen);
+  await act(async () => { buttonWithText(t('Connected')).props.onPress(); });
+  const input = renderer.root.findAllByType(TextInput).find(node => node.props.value === '*97');
+  if (!input) throw new Error('Configured speed-dial input is missing');
+  await act(async () => { input.props.onChangeText(''); });
+  await act(async () => { buttonWithText(t('Save & Connect')).props.onPress(); });
+  expect(JSON.parse(stored.get('@sokrat_speed_dial')!)).toEqual({ '2': '2401' });
+
+  await act(async () => { renderer.unmount(); });
+  await textFrom(screen);
+  await act(async () => { digitButton('1').props.onLongPress(); });
+  expect(onCall).not.toHaveBeenCalled();
+  await act(async () => { digitButton('2').props.onLongPress(); });
+  expect(onCall.mock.calls).toEqual([['2401']]);
 });

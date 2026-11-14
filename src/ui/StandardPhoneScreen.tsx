@@ -794,8 +794,8 @@ function StandardPhoneScreenInner({
     }
   }, [activeCall, showInCallVolumeModal, showSettingsModal]);
   // Speed Dial Configuration (Keys 1 to 9)
-  const [speedDial, setSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
-  const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({ '1': '*97' });
+  const [speedDial, setSpeedDial] = useState<SpeedDialMap>({});
+  const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({});
 
   // Dialpad Collapse / Expand Toggle
   const [isDialpadVisible, setIsDialpadVisible] = useState(true);
@@ -1002,9 +1002,8 @@ function StandardPhoneScreenInner({
   >(null);
   useEffect(() => {
     StorageService.getSpeedDial().then((sd) => {
-      const initial = { '1': '*97', ...sd };
-      setSpeedDial(initial);
-      setEditSpeedDial(initial);
+      setSpeedDial(sd);
+      setEditSpeedDial(sd);
     });
   }, []);
 
@@ -1242,9 +1241,7 @@ function StandardPhoneScreenInner({
     for (let d = 1; d <= 9; d++) {
       const key = String(d);
       const val = (editSpeedDial[key] || '').trim();
-      if (key === '1') {
-        newSpeedDial[key] = val || '*97';
-      } else if (val) {
+      if (val) {
         newSpeedDial[key] = val;
       }
     }
@@ -2710,11 +2707,11 @@ function StandardPhoneScreenInner({
                           onChangeText={(val) =>
                             setEditSpeedDial((prev) => ({ ...prev, [digit]: val }))
                           }
-                          placeholder={isVmKey ? '*97 (Voicemail)' : `Speed dial ${digit} (empty)`}
+                          placeholder={`Speed dial ${digit} (empty)`}
                           placeholderTextColor={colors.textFaint}
                           autoCapitalize="none"
                         />
-                        {currentValue.trim() && !isVmKey ? (
+                        {currentValue.trim() ? (
                           <TouchableOpacity
                             onPress={() =>
                               setEditSpeedDial((prev) => {

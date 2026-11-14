@@ -49,10 +49,6 @@ export const DEFAULT_WHATSAPP_PREFS: WhatsAppPrefs = {
   promptEnabled: true,
 };
 
-export const DEFAULT_SPEED_DIAL: SpeedDialMap = {
-  '1': '*97',
-};
-
 const KEYS = {
   ACCOUNT: '@sokrat_account',
   ACCOUNT_BACKUP: '@sokrat_account_backup',
@@ -239,14 +235,7 @@ export const StorageService = {
     try {
       const data = await AsyncStorage.getItem(KEYS.CONTACTS);
       if (data) return JSON.parse(data);
-      // Default sample contacts on fresh install
-      const initial: Contact[] = [
-        { id: 'c1', name: 'Support / Helpdesk', extension: '101', favorite: true },
-        { id: 'c2', name: 'Sales Line', extension: '102', favorite: true },
-        { id: 'c3', name: 'Echo Audio Test', extension: '*88', favorite: false },
-      ];
-      await AsyncStorage.setItem(KEYS.CONTACTS, JSON.stringify(initial));
-      return initial;
+      return [];
     } catch {
       return [];
     }
@@ -263,9 +252,9 @@ export const StorageService = {
   async getSpeedDial(): Promise<SpeedDialMap> {
     try {
       const data = await AsyncStorage.getItem(KEYS.SPEED_DIAL);
-      return data ? { ...DEFAULT_SPEED_DIAL, ...JSON.parse(data) } : { ...DEFAULT_SPEED_DIAL };
+      return data ? { ...JSON.parse(data) } : {};
     } catch {
-      return { ...DEFAULT_SPEED_DIAL };
+      return {};
     }
   },
 

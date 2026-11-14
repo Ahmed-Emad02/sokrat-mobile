@@ -86,6 +86,17 @@ You've successfully run and modified your React Native App. :partying_face:
 
 If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
 
+## Local contacts and speed dials
+
+Fresh storage starts with no local contacts or assigned speed-dial targets.
+Configure targets for the account's PBX dialplan; key 1 has no implicit voicemail
+number. Clearing a slot leaves it unassigned after saving and reopening the app.
+Existing saved contacts, favourites and explicit targets—including `*97`—are
+preserved. No migration deletes records resembling the former sample contacts.
+
+These source changes do not update an installed 1.2.24 APK. A separately approved
+build and native-device acceptance are required before shipping this cleanup.
+
 # Learn More
 
 To learn more about React Native, take a look at the following resources:
