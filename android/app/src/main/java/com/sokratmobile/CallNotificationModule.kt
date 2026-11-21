@@ -520,7 +520,11 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             // is the only public discriminator.
             fun AudioDeviceInfo.isBackMic(): Boolean {
                 val name = productName?.toString().orEmpty()
-                val addr = address.orEmpty()
+                val addr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    address.orEmpty()
+                } else {
+                    ""
+                }
                 return name.contains("back", ignoreCase = true) ||
                     addr.contains("back", ignoreCase = true) ||
                     addr.endsWith(":back", ignoreCase = true)
