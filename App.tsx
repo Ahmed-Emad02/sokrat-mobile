@@ -818,6 +818,11 @@ export default function App() {
     }
     startAnswerWatchdog(callId, callId, generation);
     startCallManagers();
+    // InCallManager's startup resets the legacy speaker flag; on Android 12+
+    // that does not guarantee the communication device is the earpiece. Apply
+    // the user's route explicitly so both the microphone and output use the
+    // handset path for the whole call.
+    await applyAudioRoute(desiredRouteRef.current);
     let answered = false;
     try {
       answered = await sipRef.current?.answer(callId) ?? false;
@@ -1743,6 +1748,10 @@ export default function App() {
       }
 
       startCallManagers();
+      // InCallManager resets the legacy speaker flag, not the Android 12+
+      // communication device. Apply the route before capture/SDP so the
+      // handset microphone is selected from the first RTP packet.
+      await applyAudioRoute(desiredRouteRef.current);
       // Start the local tone before JsSIP performs SDP/ICE setup so the user
       // hears ringback immediately, not only after `newRTCSession` fires.
       startOutgoingRingback();

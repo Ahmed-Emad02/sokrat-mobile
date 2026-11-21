@@ -59,6 +59,11 @@ jest.mock('../src/calls/incall', () => ({
   setIncomingRingtone: jest.fn(),
   startOutgoingRingback: jest.fn(), stopOutgoingRingback: jest.fn(),
   setCallWindowActive: jest.fn(),
+  chooseAudioRoute: jest.fn(async (route: string) => ({
+    selectedDevice: route,
+    availableDevices: ['EARPIECE', 'SPEAKER_PHONE'],
+    hasBluetooth: false,
+  })),
   subscribeAudioDeviceChanges: () => () => {},
 }));
 jest.mock('../src/calls/callKit', () => ({
