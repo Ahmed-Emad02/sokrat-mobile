@@ -1,6 +1,6 @@
 package com.sokratmobile
 
-/** Same number-first fallback as JS; never trust a push/trunk display label. */
+/** Same number-separate behavior as JS; never trust a push/trunk display label. */
 object CallerDisplayName {
     private val placeholders = Regex(
         "^(unknown(?: caller)?|incoming call|outgoing call|anonymous|unavailable|restricted|private(?: number)?|غير معروف|متصل غير معروف|مكالمة واردة)$",

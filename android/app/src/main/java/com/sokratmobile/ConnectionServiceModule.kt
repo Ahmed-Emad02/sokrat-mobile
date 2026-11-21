@@ -15,6 +15,11 @@ class ConnectionServiceModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun setCallAudioActive(active: Boolean) {
+        SokratConnectionService.setCallAudioActive(reactApplicationContext, active)
+    }
+
+    @ReactMethod
     fun stop() {
         SokratConnectionService.stop(reactApplicationContext)
     }

@@ -16,6 +16,7 @@ import android.provider.Settings
 import android.Manifest
 import android.content.pm.PackageManager
 import android.provider.ContactsContract
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -37,11 +38,68 @@ import android.net.NetworkRequest
 import android.telephony.TelephonyManager
 import android.telephony.TelephonyCallback
 import android.telephony.PhoneStateListener
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 @ReactModule(name = CallNotificationModule.NAME)
 class CallNotificationModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
 
     override fun getName(): String = NAME
+
+    override fun getConstants(): MutableMap<String, Any> = hashMapOf(
+        "mediaDiagnosticsEnabled" to (BuildConfig.BUILD_TYPE == "audioDiagnostic")
+    )
+
+    private var mediaStatsExecutor: ExecutorService? = null
+
+    /** Counter-only, bounded local output; no audio, SDP, addresses or credentials. */
+    @ReactMethod
+    fun writeMediaDiagnostics(sample: String, reset: Boolean, promise: Promise) {
+        if (BuildConfig.BUILD_TYPE != "audioDiagnostic") {
+            promise.reject("MEDIA_DIAGNOSTICS_DISABLED", "Counter export is diagnostic-only")
+            return
+        }
+        if (sample.length > 16384) {
+            promise.reject("MEDIA_DIAGNOSTICS_LIMIT", "Counter sample exceeds the size limit")
+            return
+        }
+        val executor = synchronized(this) {
+            mediaStatsExecutor ?: Executors.newSingleThreadExecutor { task ->
+                Thread({
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                    task.run()
+                }, "SokratMediaStats")
+            }.also { mediaStatsExecutor = it }
+        }
+        try {
+            executor.execute {
+                try {
+                    val external = reactApplicationContext.getExternalFilesDir(null)
+                        ?: throw IllegalStateException("External files unavailable")
+                    val directory = File(external, "audio-diagnostics")
+                    if (!directory.isDirectory && !directory.mkdirs()) {
+                        throw IllegalStateException("Diagnostic directory unavailable")
+                    }
+                    val file = File(directory, "latest-media-stats.jsonl")
+                    val bytes = sample.toByteArray(Charsets.UTF_8)
+                    if (!reset && file.length() + bytes.size + 1 > 1_048_576) {
+                        throw IllegalStateException("Counter file reached its size limit")
+                    }
+                    FileOutputStream(file, !reset).use { output ->
+                        output.write(bytes)
+                        output.write(10)
+                    }
+                    promise.resolve(null)
+                } catch (error: Exception) {
+                    promise.reject("MEDIA_DIAGNOSTICS_WRITE_FAILED", error)
+                }
+            }
+        } catch (error: Exception) {
+            promise.reject("MEDIA_DIAGNOSTICS_WRITE_FAILED", error)
+        }
+    }
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastEmittedConnected: Boolean? = null
@@ -64,6 +122,10 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         unregisterNetworkCallback()
         unregisterTelephonyListener()
         unregisterBluetoothReceiver()
+        synchronized(this) {
+            mediaStatsExecutor?.shutdown()
+            mediaStatsExecutor = null
+        }
         instance = null
         super.invalidate()
     }
@@ -207,6 +269,12 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     @ReactMethod
     fun getGsmCallState(promise: Promise) {
         promise.resolve(lastGsmState)
+    }
+
+    @ReactMethod
+    fun refreshTelephonyListener() {
+        unregisterTelephonyListener()
+        registerTelephonyListener()
     }
 
     @ReactMethod
@@ -384,6 +452,22 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                 if (targetDevice != null) {
                     val success = audioManager.setCommunicationDevice(targetDevice)
                     android.util.Log.d("CallNotificationModule", "setCommunicationDevice($normalized, name=${targetDevice.productName}) result: $success")
+                    if (normalized != "BLUETOOTH") {
+                        // Leaving SCO is asynchronous. If the first request loses
+                        // the race with the SCO teardown, retry once after the
+                        // headset has been released.
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            try {
+                                val current = audioManager.communicationDevice
+                                if (current?.type != targetDevice.type) {
+                                    android.util.Log.d("CallNotificationModule", "retrying setCommunicationDevice($normalized) after SCO teardown; current=${current?.type}")
+                                    audioManager.setCommunicationDevice(targetDevice)
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.w("CallNotificationModule", "route retry failed", e)
+                            }
+                        }, 300)
+                    }
                 } else {
                     if (normalized == "EARPIECE") {
                         audioManager.clearCommunicationDevice()
@@ -420,8 +504,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     private fun mapAudioDeviceType(type: Int): String? = when (type) {
         AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
         AudioDeviceInfo.TYPE_BLE_HEADSET,
-        AudioDeviceInfo.TYPE_HEARING_AID,
-        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BLUETOOTH"
+        AudioDeviceInfo.TYPE_HEARING_AID -> "BLUETOOTH"
         AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPEAKER_PHONE"
         AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "EARPIECE"
         AudioDeviceInfo.TYPE_WIRED_HEADSET,
@@ -492,8 +575,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             val adapter = BluetoothAdapter.getDefaultAdapter()
             if (adapter != null && adapter.isEnabled) {
                 val headset = adapter.getProfileConnectionState(BluetoothProfile.HEADSET)
-                val a2dp = adapter.getProfileConnectionState(BluetoothProfile.A2DP)
-                if (headset == BluetoothProfile.STATE_CONNECTED || a2dp == BluetoothProfile.STATE_CONNECTED) {
+                if (headset == BluetoothProfile.STATE_CONNECTED) {
                     hasBluetooth = true
                     devices.add("BLUETOOTH")
                 }
@@ -517,6 +599,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                     BluetoothDevice.ACTION_ACL_CONNECTED,
                     BluetoothDevice.ACTION_ACL_DISCONNECTED,
                     AudioManager.ACTION_HEADSET_PLUG,
+                    AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED,
                     AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
                         val snapshot = buildAudioRouteSnapshot()
                         emitEvent("onSokratAudioDeviceChanged", Arguments.createMap().apply {
@@ -535,6 +618,7 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(AudioManager.ACTION_HEADSET_PLUG)
+            addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
             addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         }
         try {
@@ -644,7 +728,10 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         extension: String,
         timestamp: String
     ) {
-        val canonicalCallId = if (IncomingCallStore.isValidCallId(callId)) callId else java.util.UUID.randomUUID().toString()
+        if (!IncomingCallStore.isValidCallId(callId)) return
+        val activeExtension = IncomingCallStore.activeExtension(reactApplicationContext)
+        if (!IncomingPushPolicy.extensionOwned(activeExtension, extension)) return
+        val canonicalCallId = callId
         if (IncomingCallStore.isTerminated(reactApplicationContext, canonicalCallId)) return
         val record = IncomingCallStore.upsertIncoming(
             reactApplicationContext,
@@ -654,7 +741,8 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             extension,
             timestamp.toLongOrNull() ?: System.currentTimeMillis()
         )
-        if (record.action == "ANSWER" || record.action == "DECLINE") return
+        if (record.action != null) return
+        if (!IncomingCallStore.claimNotification(reactApplicationContext, canonicalCallId)) return
         IncomingCallNotificationHelper.showCallNotification(
             reactApplicationContext,
             canonicalCallId,
@@ -697,6 +785,37 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, callId)
         IncomingCallStore.remove(reactApplicationContext, callId)
     }
+
+    /** Persist the account owner before token registration; purge other owners. */
+    @ReactMethod
+    fun setActiveExtension(extension: String) {
+        val stale = IncomingCallStore.setActiveExtension(reactApplicationContext, extension)
+        if (extension.isBlank()) {
+            IncomingCallNotificationHelper.dismissAllCallNotifications(reactApplicationContext)
+        } else {
+            stale.forEach {
+                IncomingCallNotificationHelper.dismissCallNotification(reactApplicationContext, it)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun areCallNotificationsEnabled(promise: Promise) {
+        try {
+            val manager = NotificationManagerCompat.from(reactApplicationContext)
+            var enabled = manager.areNotificationsEnabled()
+            if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = manager.getNotificationChannel(IncomingCallNotificationHelper.CHANNEL_ID)
+                if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                    enabled = false
+                }
+            }
+            promise.resolve(enabled)
+        } catch (_: Exception) {
+            promise.resolve(true)
+        }
+    }
+
     @ReactMethod
     fun showOngoingCallNotification(callId: String, title: String, subtitle: String, startTimeMs: Double) {
         IncomingCallNotificationHelper.showOngoingCallNotification(
@@ -750,9 +869,11 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     @ReactMethod
     fun getPendingCalls(promise: Promise) {
         val calls = Arguments.createArray()
-        IncomingCallStore.pending(reactApplicationContext).forEach { record ->
-            calls.pushMap(record.toWritableMap())
-        }
+        IncomingCallStore.pending(reactApplicationContext)
+            .filter { IncomingPushPolicy.isReplayable(it.action) }
+            .forEach { record ->
+                record.toWritableMap()?.let { calls.pushMap(it) }
+            }
         promise.resolve(calls)
     }
 
@@ -870,6 +991,24 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
     }
 
     @ReactMethod
+    fun beginCallAudio() {
+        reactApplicationContext.currentActivity?.let { activity ->
+            activity.runOnUiThread {
+                activity.volumeControlStream = AudioManager.STREAM_VOICE_CALL
+            }
+        }
+    }
+
+    @ReactMethod
+    fun endCallAudio() {
+        reactApplicationContext.currentActivity?.let { activity ->
+            activity.runOnUiThread {
+                activity.volumeControlStream = AudioManager.STREAM_MUSIC
+            }
+        }
+    }
+
+    @ReactMethod
     fun setSpeakerVolume(percent: Double, promise: Promise) {
         try {
             val audioManager = reactApplicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -932,15 +1071,16 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             if (intent == null) return
             val callAction = intent.getStringExtra("callAction") ?: return
             val rawCallId = intent.getStringExtra("callId")
-            val canonicalCallId = if (IncomingCallStore.isValidCallId(rawCallId)) {
-                rawCallId!!
-            } else {
-                IncomingCallStore.pending(context).firstOrNull()?.callId ?: return
-            }
+            if (!IncomingCallStore.isValidCallId(rawCallId)) return
+            val canonicalCallId = rawCallId!!
             if (IncomingCallStore.isTerminated(context, canonicalCallId)) return
             val existing = IncomingCallStore.pending(context)
                 .firstOrNull { it.callId == canonicalCallId }
             if (existing == null) {
+                // Only the ongoing-call End action may address a call the app
+                // already owns. A stale SHOW/ANSWER/DECLINE intent cannot
+                // resurrect a record that was removed or expired.
+                if (callAction != "END") return
                 IncomingCallStore.upsertIncoming(
                     context,
                     canonicalCallId,
@@ -951,7 +1091,8 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
                         ?: System.currentTimeMillis()
                 )
             }
-            IncomingCallStore.setAction(context, canonicalCallId, callAction)
+            val updated = IncomingCallStore.setAction(context, canonicalCallId, callAction)
+            if (updated?.action != callAction) return
             emitPersistedAction(context, canonicalCallId)
         }
 
@@ -959,18 +1100,22 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
             val record = IncomingCallStore.pending(context)
                 .firstOrNull { it.callId == callId }
                 ?: return
-            emitEvent("onCallAction", record.toWritableMap())
+            val map = record.toWritableMap() ?: return
+            emitEvent("onCallAction", map)
         }
 
-        private fun IncomingCallStore.Record.toWritableMap(): WritableMap =
-            Arguments.createMap().apply {
-                putString("action", action ?: "SHOW")
+        private fun IncomingCallStore.Record.toWritableMap(): WritableMap? {
+            if (!IncomingPushPolicy.isReplayable(action)) return null
+            val persistedAction = action ?: return null
+            return Arguments.createMap().apply {
+                putString("action", persistedAction)
                 putString("callId", callId)
                 putString("callerId", callerId)
                 putString("callerName", callerName)
                 putString("extension", extension)
                 putString("timestamp", timestamp.toString())
             }
+        }
 
         fun simulateGsmState(state: String) {
             val params = Arguments.createMap().apply {

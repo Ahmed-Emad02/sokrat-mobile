@@ -17,7 +17,7 @@ describe('in-call audio level mapping', () => {
     expect(micPercentToDb(100)).toBe(Math.round(MIC_MAX_GAIN_DB));
     expect(micPercentToDb(MIC_MAX_PERCENT)).toBe(MIC_EXTENDED_MAX_GAIN_DB);
     expect(micPercentToDb(75)).toBe(16);
-    expect(micPercentToDb(25)).toBe(-12);
+    expect(micPercentToDb(25)).toBe(-15);
   });
 
   test('round-trips the extended microphone range within two slider steps', () => {

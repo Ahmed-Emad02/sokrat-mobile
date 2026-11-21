@@ -62,6 +62,30 @@ describe('Android in-call audio route selection', () => {
     incall.stopCallManagers();
   });
 
+  it('does not restart an already active native audio session', () => {
+    NativeModules.CallNotificationModule = {
+      setAudioRoute: jest.fn(async () => {}),
+      getAvailableAudioRoutes: jest.fn(async () => ({
+        availableDevices: ['EARPIECE', 'SPEAKER_PHONE'],
+        selectedDevice: 'EARPIECE',
+        hasBluetooth: false,
+        bluetoothName: '',
+      })),
+    };
+    let incall;
+    jest.isolateModules(() => {
+      incall = require('../src/calls/incall');
+    });
+    incall.startCallManagers();
+    InCallManager.start.mockClear();
+    incall.startCallManagers();
+    expect(InCallManager.start).not.toHaveBeenCalled();
+    incall.stopCallManagers();
+    incall.startCallManagers();
+    expect(InCallManager.start).toHaveBeenCalledTimes(1);
+    incall.stopCallManagers();
+  });
+
   it('does not auto-apply native headset connect/disconnect transitions', async () => {
     const setAudioRoute = jest.fn(async () => {});
     NativeModules.CallNotificationModule = {
@@ -135,5 +159,36 @@ describe('Android in-call audio route selection', () => {
 
     expect(setAudioRoute).toHaveBeenCalledTimes(1);
     jest.useRealTimers();
+  });
+
+  it('waits for the SCO state event before declaring Bluetooth selected', async () => {
+    NativeModules.CallNotificationModule = {
+      setAudioRoute: jest.fn(async () => {
+        setTimeout(() => {
+          DeviceEventEmitter.emit('onSokratAudioDeviceChanged', {
+            availableAudioDeviceList: JSON.stringify(['EARPIECE', 'SPEAKER_PHONE', 'BLUETOOTH']),
+            selectedAudioDevice: 'BLUETOOTH',
+            hasBluetooth: true,
+            bluetoothName: 'SCO headset',
+          });
+        }, 20);
+      }),
+      getAvailableAudioRoutes: jest.fn(async () => ({
+        availableDevices: ['EARPIECE', 'SPEAKER_PHONE', 'BLUETOOTH'],
+        selectedDevice: 'EARPIECE',
+        hasBluetooth: true,
+        bluetoothName: 'SCO headset',
+      })),
+    };
+
+    let incall;
+    jest.isolateModules(() => {
+      incall = require('../src/calls/incall');
+    });
+    incall.startCallManagers();
+    const pending = incall.chooseAudioRoute('BLUETOOTH');
+
+    expect((await pending).selectedDevice).toBe('BLUETOOTH');
+    incall.stopCallManagers();
   });
 });

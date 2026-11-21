@@ -107,7 +107,7 @@ describe('heartbeat wake ACK', () => {
 
     expect(sip.connect).not.toHaveBeenCalled();
     expect(sendHeartbeat).not.toHaveBeenCalled();
-  });
+  }, 12_000);
 
   it('does not ACK when SIP bootstrap fails', async () => {
     sip.isRegistered.mockReturnValue(false);

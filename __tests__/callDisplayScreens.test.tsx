@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import { ActivityIndicator, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { t } from '../src/i18n';
 import { RingingScreen } from '../src/ui/RingingScreen';
@@ -46,6 +46,7 @@ const standardProps: React.ComponentProps<typeof StandardPhoneScreen> = {
   onToggleHold: noop, onToggleSpeaker: noop, onSendDtmf: noop, onBlindTransfer: noop,
   onStartWarmTransfer: asyncNoop, onCompleteTransfer: asyncNoop,
   onCancelTransfer: asyncNoop, onSwapLines: asyncNoop, onSaveAccount: noop,
+  onChangeIncomingRingtone: noop,
   onLogout: noop, onClearHistory: noop, onSaveContact: noop,
   onDeleteContact: noop, onToggleFavorite: noop,
 };
@@ -262,6 +263,53 @@ test('the phone screen retains explicitly configured voicemail and custom speed 
   expect(onCall.mock.calls).toEqual([['*97'], ['5072']]);
 });
 
+test('settings offers phone default and a custom audio file for the incoming ringtone', async () => {
+  const previous = Platform.OS;
+  const onSaveAccount = jest.fn();
+  const onChangeIncomingRingtone = jest.fn();
+  const account = {
+    extension: '2401', password: 'fixture-only', serverHost: 'pbx.invalid',
+    useTls: true, dnd: false, autoAnswer: false,
+    incomingRingtone: 'custom' as const,
+    incomingRingtoneUri: 'file:///data/user/0/com.sokratmobile/files/tone.mp3',
+    incomingRingtoneName: 'tone.mp3',
+  };
+  try {
+    Platform.OS = 'android';
+    await textFrom(
+      <StandardPhoneScreen
+        {...standardProps}
+        account={account}
+        onSaveAccount={onSaveAccount}
+        onChangeIncomingRingtone={onChangeIncomingRingtone}
+      />,
+    );
+    await act(async () => { buttonWithText(t('Connected')).props.onPress(); });
+
+    const labels = renderer.root.findAllByType(Text).map(node => String(node.props.children));
+    expect(labels).toContain(t('Incoming ringtone'));
+    expect(labels).toContain(t('Phone default'));
+    expect(labels).toContain(t('Custom audio'));
+    expect(labels).not.toContain(t('Sokrat'));
+
+    // Saving unrelated settings must keep the picked ringtone file.
+    await act(async () => { buttonWithText(t('Save Settings')).props.onPress(); });
+    expect(onSaveAccount).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        incomingRingtone: 'custom',
+        incomingRingtoneUri: 'file:///data/user/0/com.sokratmobile/files/tone.mp3',
+        incomingRingtoneName: 'tone.mp3',
+      }),
+    );
+
+    await act(async () => { buttonWithText(t('Connected')).props.onPress(); });
+    await act(async () => { buttonWithText(t('Phone default')).props.onPress(); });
+    expect(onChangeIncomingRingtone).toHaveBeenLastCalledWith('device');
+  } finally {
+    Platform.OS = previous;
+  }
+});
+
 test('clearing key 1 in settings persists across a phone-screen remount', async () => {
   const stored = storedSpeedDials({ '1': '*97', '2': '2401' });
   const onCall = jest.fn();
@@ -275,7 +323,7 @@ test('clearing key 1 in settings persists across a phone-screen remount', async 
   const input = renderer.root.findAllByType(TextInput).find(node => node.props.value === '*97');
   if (!input) throw new Error('Configured speed-dial input is missing');
   await act(async () => { input.props.onChangeText(''); });
-  await act(async () => { buttonWithText(t('Save & Connect')).props.onPress(); });
+  await act(async () => { buttonWithText(t('Save Settings')).props.onPress(); });
   expect(JSON.parse(stored.get('@sokrat_speed_dial')!)).toEqual({ '2': '2401' });
 
   await act(async () => { renderer.unmount(); });

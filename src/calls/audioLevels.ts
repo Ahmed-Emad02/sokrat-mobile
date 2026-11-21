@@ -11,7 +11,7 @@
  * remote-track software gain (up to 2x / +6.0 dB).
  */
 
-export const MIC_MIN_GAIN_DB = -24;
+export const MIC_MIN_GAIN_DB = -30;
 // The first half of the boost range preserves the existing +31.2 dB curve;
 // the 100-150% portion adds headroom up to +42 dB.
 export const MIC_MAX_GAIN_DB = 31.2;

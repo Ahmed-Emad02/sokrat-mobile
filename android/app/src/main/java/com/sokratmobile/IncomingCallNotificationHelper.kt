@@ -266,6 +266,7 @@ object IncomingCallNotificationHelper {
         timestamp: String,
         silentUpdate: Boolean = false
     ) {
+        if (!silentUpdate && isCallNotificationActive(context, callId)) return
         if (!silentUpdate) {
             acquireScreenWakeLock(context)
             createNotificationChannel(context)
@@ -332,7 +333,7 @@ object IncomingCallNotificationHelper {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(false)
             .setOngoing(true)
-            .setTimeoutAfter(IncomingCallStore.MAX_AGE_MS)
+            .setTimeoutAfter(remainingLifetime(timestamp))
             .setContentIntent(showPendingIntent)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val person = Person.Builder().setName(title).setImportant(true).build()
@@ -387,6 +388,7 @@ object IncomingCallNotificationHelper {
                         title,
                         subtitle,
                         silentUpdate,
+                        remainingLifetime(timestamp),
                         showPendingIntent,
                         answerPendingIntent,
                         declinePendingIntent,
@@ -422,6 +424,7 @@ object IncomingCallNotificationHelper {
         title: String,
         subtitle: String,
         silentUpdate: Boolean,
+        timeoutAfterMs: Long,
         showPendingIntent: PendingIntent,
         answerPendingIntent: PendingIntent,
         declinePendingIntent: PendingIntent,
@@ -436,7 +439,7 @@ object IncomingCallNotificationHelper {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(false)
             .setOngoing(true)
-            .setTimeoutAfter(IncomingCallStore.MAX_AGE_MS)
+            .setTimeoutAfter(timeoutAfterMs)
             .setContentIntent(showPendingIntent)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
@@ -466,6 +469,7 @@ object IncomingCallNotificationHelper {
     }
 
     fun updateCallNotification(context: Context, callId: String, callerName: String) {
+        if (!isCallNotificationActive(context, callId)) return
         val record = IncomingCallStore.pending(context).firstOrNull { it.callId == callId } ?: return
         if (record.action == "ANSWER" || record.action == "DECLINE" || record.action == "END") return
         IncomingCallStore.upsertIncoming(
@@ -488,10 +492,20 @@ object IncomingCallNotificationHelper {
     }
 
     fun dismissCallNotification(context: Context, callId: String) {
+        try {
+            NotificationManagerCompat.from(context).cancel(notificationId(callId))
+            val remaining = IncomingCallStore.pending(context).filter { it.callId != callId }
+            if (remaining.isEmpty()) releaseScreenWakeLock()
+        } catch (error: Exception) {
+            error.printStackTrace()
+        }
+    }
+
+    /** Explicit account/logout cleanup; never used for one-call dismissal. */
+    fun dismissAllCallNotifications(context: Context) {
         releaseScreenWakeLock()
         try {
             val nm = NotificationManagerCompat.from(context)
-            nm.cancel(notificationId(callId))
             IncomingCallStore.pending(context).forEach {
                 nm.cancel(notificationId(it.callId))
             }
@@ -509,6 +523,24 @@ object IncomingCallNotificationHelper {
             error.printStackTrace()
         }
     }
+
+    fun isCallNotificationActive(context: Context, callId: String): Boolean {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return false
+        return try {
+            manager.activeNotifications?.any { it.id == notificationId(callId) } == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun remainingLifetime(timestamp: String): Long {
+        val sentAt = timestamp.toLongOrNull() ?: System.currentTimeMillis()
+        val elapsed = System.currentTimeMillis() - sentAt
+        return (IncomingCallStore.RECORD_TTL_MS - elapsed)
+            .coerceIn(1_000L, IncomingCallStore.RECORD_TTL_MS)
+    }
+
     private fun notificationId(callId: String): Int =
 
         NOTIFICATION_ID_BASE + (callId.hashCode() and 0x7fffffff) % 100_000

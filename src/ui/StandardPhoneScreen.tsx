@@ -23,6 +23,8 @@ import {
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { errorCodes, isErrorWithCode, keepLocalCopy, pick, types } from '@react-native-documents/picker';
+import ReactNativeBlobUtil from 'react-native-blob-util';
 import { useTheme, themedStyles } from '../theme';
 import { useI18n, setLanguage, Language, t } from '../i18n';
 import { getPushGateway } from '../config';
@@ -42,7 +44,11 @@ const SCREEN_OVERRIDES = {
   transferActionText: { color: 'onBrand' as const },
   transferModeBtnTextActive: { color: 'onBrand' as const },
   dialogSubmitText: { color: 'onBrand' as const },
-  settingsSaveText: { color: 'onBrand' as const },
+  settingsActionTextPrimary: { color: 'onBrand' as const },
+  settingsActionBtnPrimary: {
+    backgroundColor: 'brandFill' as const,
+    borderColor: 'brandFill' as const,
+  },
   consultActionBtnText: { color: 'onBrand' as const },
   consultBadgeText: { color: 'onBrand' as const },
   volumeDoneBtnText: { color: 'onBrand' as const },
@@ -50,9 +56,8 @@ const SCREEN_OVERRIDES = {
   inCallAudioRouteTextActive: { color: 'onBrand' as const },
   inCallBtnMutedActive: { backgroundColor: 'dangerFill' as const },
   contactCallBtn: { backgroundColor: 'brandSoft' as const },
-  settingsSaveBtn: { backgroundColor: 'brandFill' as const },
 };
-import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, CodecPreference, DEFAULT_WHATSAPP_PREFS, WhatsAppPrefs } from '../storage/store';
+import { CallRecord, Contact, SavedAccount, SpeedDialMap, StorageService, DEFAULT_WHATSAPP_PREFS, WhatsAppPrefs } from '../storage/store';
 import { SipState, ActiveCall, AttendedTransferState } from '../sip/JsSipService';
 import { sanitizeCountryCode } from '../utils/whatsapp';
 import { CallerProfileModal } from './CallerProfileModal';
@@ -88,6 +93,7 @@ import {
   SlidersIcon,
 } from './Icons';
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
+import type { IncomingRingtone } from '../calls/ringtonePref';
 import { canUseFullScreenIntent, fetchDeviceContacts, getNativeSpeakerVolume, openFullScreenIntentSettings, SpeakerVolumeState } from '../calls/nativeCallNotification';
 import {
   MIC_MAX_PERCENT,
@@ -117,6 +123,7 @@ function VolumeSlider({
   description,
   max = 100,
   presets = [25, 50, 75, 100],
+  compact = false,
 }: {
   label: string;
   value: number;
@@ -125,14 +132,17 @@ function VolumeSlider({
   description: string;
   max?: number;
   presets?: number[];
+  compact?: boolean;
 }) {
   const styles = useScreenStyles();
   const [trackWidth, setTrackWidth] = useState(250);
   const trackWidthRef = useRef(trackWidth);
   const valueRef = useRef(value);
   const gestureStartValueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
   trackWidthRef.current = trackWidth;
   valueRef.current = value;
+  onChangeRef.current = onChange;
 
   const valueFromLocalX = useCallback((localX: number): number => {
     const width = trackWidthRef.current > 0 ? trackWidthRef.current : 200;
@@ -153,87 +163,98 @@ function VolumeSlider({
             ? valueFromLocalX(localX)
             : valueRef.current;
           gestureStartValueRef.current = next;
-          if (next !== valueRef.current) onChange(next);
+          if (next !== valueRef.current) onChangeRef.current(next);
         },
         onPanResponderMove: (_event, gestureState) => {
           const width = trackWidthRef.current > 0 ? trackWidthRef.current : 200;
           const next = Math.round(
             Math.max(0, Math.min(max, gestureStartValueRef.current + (gestureState.dx / width) * max)),
           );
-          if (next !== valueRef.current) onChange(next);
+          if (next !== valueRef.current) onChangeRef.current(next);
         },
       }),
-    [max, onChange, valueFromLocalX]
+    [max, valueFromLocalX]
   );
 
   return (
-    <View style={styles.volSliderContainer}>
+    <View style={[styles.volSliderContainer, compact && styles.volSliderContainerCompact]}>
       <View style={styles.volSliderHeader}>
         <View style={styles.volSliderTitleRow}>
           {icon}
-          <Text style={styles.volSliderLabel}>{label}</Text>
+          <Text style={[styles.volSliderLabel, compact && styles.volSliderLabelCompact]}>{label}</Text>
         </View>
-        <View style={styles.volSliderValueBadge}>
-          <Text style={styles.volSliderValueText}>{value}%</Text>
+        <View style={[styles.volSliderValueBadge, compact && styles.volSliderValueBadgeCompact]}>
+          <Text style={[styles.volSliderValueText, compact && styles.volSliderValueTextCompact]}>{value}%</Text>
         </View>
       </View>
 
-      <Text style={styles.volSliderSub}>{description}</Text>
+      <Text
+        numberOfLines={compact ? 1 : undefined}
+        style={[styles.volSliderSub, compact && styles.volSliderSubCompact]}
+      >
+        {description}
+      </Text>
 
       {/* Interactive Slider Track with +/- Steppers */}
-      <View style={styles.volSliderControlsRow}>
+      <View style={[styles.volSliderControlsRow, compact && styles.volSliderControlsRowCompact]}>
         <TouchableOpacity
-          style={styles.volStepBtn}
+          style={[styles.volStepBtn, compact && styles.volStepBtnCompact]}
           onPress={() => onChange(Math.max(0, value - 5))}
           activeOpacity={0.6}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Text style={styles.volStepBtnText}>−</Text>
+          <Text style={[styles.volStepBtnText, compact && styles.volStepBtnTextCompact]}>−</Text>
         </TouchableOpacity>
 
         <View
-          style={styles.volTrackTouchArea}
+          style={[styles.volTrackTouchArea, compact && styles.volTrackTouchAreaCompact]}
           onLayout={(e) => {
             const w = e.nativeEvent.layout.width;
             if (w > 0) setTrackWidth(w);
           }}
           {...panResponder.panHandlers}
         >
-          <View style={styles.volTrackBg} pointerEvents="none">
+          <View style={[styles.volTrackBg, compact && styles.volTrackBgCompact]} pointerEvents="none">
             <View style={[styles.volTrackFill, { width: `${(value / max) * 100}%` }]} pointerEvents="none" />
           </View>
           <View
             style={[
               styles.volThumb,
+              compact && styles.volThumbCompact,
               { left: `${Math.max(0, Math.min(94, (value / max) * 100 - 3))}%` },
             ]}
             pointerEvents="none"
           />
         </View>
         <TouchableOpacity
-          style={styles.volStepBtn}
+          style={[styles.volStepBtn, compact && styles.volStepBtnCompact]}
           onPress={() => onChange(Math.min(max, value + 5))}
           activeOpacity={0.6}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Text style={styles.volStepBtnText}>+</Text>
+          <Text style={[styles.volStepBtnText, compact && styles.volStepBtnTextCompact]}>+</Text>
         </TouchableOpacity>
       </View>
 
       {/* Preset Pills */}
-      <View style={styles.volPresetRow}>
+      <View style={[styles.volPresetRow, compact && styles.volPresetRowCompact]}>
         {presets.map((p) => {
           const isSelected = value === p;
           return (
             <TouchableOpacity
               key={p}
-              style={[styles.volPresetPill, isSelected && styles.volPresetPillActive]}
+              style={[
+                styles.volPresetPill,
+                compact && styles.volPresetPillCompact,
+                isSelected && styles.volPresetPillActive,
+              ]}
               onPress={() => onChange(p)}
               activeOpacity={0.7}
             >
               <Text
                 style={[
                   styles.volPresetText,
+                  compact && styles.volPresetTextCompact,
                   isSelected && styles.volPresetTextActive,
                 ]}
               >
@@ -258,6 +279,7 @@ function UnifiedAudioControls({
   audioDeviceState,
   onChooseAudioRoute,
   showRouteControls = true,
+  compact = false,
 }: {
   speakerVolume: number;
   micVolume: number;
@@ -269,21 +291,24 @@ function UnifiedAudioControls({
   audioDeviceState?: AudioDeviceState;
   onChooseAudioRoute?: (route: AudioRouteType) => Promise<AudioDeviceState>;
   showRouteControls?: boolean;
+  compact?: boolean;
 }) {
   const styles = useScreenStyles();
   const { colors } = useTheme();
   const { t } = useI18n();
   const micDb = micPercentToDb(micVolume);
   const micDbLabel = micDb === 0 ? '0 dB • Calibrated' : `${micDb > 0 ? '+' : ''}${micDb} dB`;
-  const micDescription =
-    `Microphone capture gain (${micDbLabel}). Applied directly to live calls.` +
-    (micDb > 12 ? ' High boost may clip loud speech.' : '');
+  const micDescription = compact
+    ? `${micDbLabel} capture gain`
+    : `Microphone capture gain (${micDbLabel}). Applied directly to live calls.` +
+      (micDb > 12 ? ' High boost may clip loud speech.' : '');
   const speakerGain = speakerPercentToGain(speakerVolume);
   const speakerBoostDb = speakerGainToDb(speakerGain);
   const speakerBoostLabel =
     speakerGain > 1 ? `+${speakerBoostDb.toFixed(1)} dB software boost` : 'no software boost';
-  const speakerDescription =
-    speakerVolume > 100
+  const speakerDescription = compact
+    ? `Device ${speakerStep.current}/${speakerStep.max}${speakerGain > 1 ? ` · +${speakerBoostDb.toFixed(1)} dB boost` : ''}`
+    : speakerVolume > 100
       ? `Device at max (${speakerStep.current}/${speakerStep.max} steps), plus ${speakerBoostLabel}.`
       : `Device volume ${speakerStep.current}/${speakerStep.max} steps. 100% reaches device max; above 100% adds software boost.`;
 
@@ -297,6 +322,7 @@ function UnifiedAudioControls({
         description={speakerDescription}
         max={SPEAKER_MAX_PERCENT}
         presets={[50, 100, 125, 150, 195]}
+        compact={compact}
       />
 
       <VolumeSlider
@@ -307,6 +333,7 @@ function UnifiedAudioControls({
         description={micDescription}
         max={MIC_MAX_PERCENT}
         presets={[0, 25, 50, 100, 150]}
+        compact={compact}
       />
 
       {showRouteControls !== false && (
@@ -446,6 +473,7 @@ type Props = {
   onCancelTransfer: () => Promise<void>;
   onSwapLines: () => Promise<void>;
   onSaveAccount: (account: SavedAccount) => void;
+  onChangeIncomingRingtone: (ringtone: IncomingRingtone, file?: { uri: string; name: string }) => void;
   onRepairPush?: () => Promise<boolean>;
   onLogout: () => void;
   onClearHistory: () => void;
@@ -701,6 +729,7 @@ function StandardPhoneScreenInner({
   onCancelTransfer,
   onSwapLines,
   onSaveAccount,
+  onChangeIncomingRingtone,
   onSaveContactsBatch,
   onRepairPush,
   onLogout,
@@ -756,18 +785,14 @@ function StandardPhoneScreenInner({
 
   const [profileNumber, setProfileNumber] = useState<string | null>(null);
   const [whatsappPrefs, setWhatsappPrefs] = useState<WhatsAppPrefs>({ ...DEFAULT_WHATSAPP_PREFS });
-  const [editWhatsAppCountryCode, setEditWhatsAppCountryCode] = useState('');
-  const [editWhatsAppPrompt, setEditWhatsAppPrompt] = useState(true);
+  const [editWhatsAppCountryCode, setEditWhatsAppCountryCode] = useState(DEFAULT_WHATSAPP_PREFS.countryCode);
+  const [editWhatsAppPrompt, setEditWhatsAppPrompt] = useState(DEFAULT_WHATSAPP_PREFS.promptEnabled);
 
   // Settings State Form
-  const [editExt, setEditExt] = useState(account?.extension || '');
-  const [editPass, setEditPass] = useState(account?.password || '');
-  const [editHost, setEditHost] = useState(account?.serverHost || '');
+  const [editServerHost, setEditServerHost] = useState(account?.serverHost || '');
   const [editFallbackHost, setEditFallbackHost] = useState(account?.fallbackHost || '');
-  const [editTls, setEditTls] = useState(account?.useTls ?? false);
   const [editDnd, setEditDnd] = useState(account?.dnd || false);
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
-  const [editCodec, setEditCodec] = useState<CodecPreference>(account?.preferredCodec || 'pcmu');
   const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 50);
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
   const [showInCallVolumeModal, setShowInCallVolumeModal] = useState(false);
@@ -796,6 +821,8 @@ function StandardPhoneScreenInner({
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({});
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({});
+  const [selectedSpeedDialKey, setSelectedSpeedDialKey] = useState('1');
+  const [showSpeedDialPicker, setShowSpeedDialPicker] = useState(false);
 
   // Dialpad Collapse / Expand Toggle
   const [isDialpadVisible, setIsDialpadVisible] = useState(true);
@@ -1037,13 +1064,8 @@ function StandardPhoneScreenInner({
 
   useEffect(() => {
     if (account) {
-      setEditExt(account.extension);
-      setEditPass(account.password);
-      setEditHost(account.serverHost);
-      setEditTls(account.useTls);
       setEditDnd(account.dnd);
       setEditAuto(account.autoAnswer);
-      setEditCodec(account.preferredCodec || 'pcmu');
       setEditMicVol(account.micVolume ?? 50);
       setEditSpeakerVol(account.speakerVolume ?? 85);
     }
@@ -1208,6 +1230,43 @@ function StandardPhoneScreenInner({
     setEditWhatsAppCountryCode(clean);
   }, []);
 
+  const deleteCustomRingtoneFile = useCallback((uri?: string) => {
+    if (!uri) return;
+    const path = uri.startsWith('file://')
+      ? decodeURIComponent(uri.slice('file://'.length))
+      : uri;
+    void ReactNativeBlobUtil.fs.unlink(path).catch(() => {});
+  }, []);
+
+  const handlePickIncomingRingtone = useCallback(async () => {
+    try {
+      const [picked] = await pick({ type: [types.audio], allowMultiSelection: false });
+      if (!picked) return;
+      const name = picked.name || `ringtone-${Date.now()}`;
+      const [copy] = await keepLocalCopy({
+        files: [{ uri: picked.uri, fileName: name }],
+        destination: 'documentDirectory',
+      });
+      if (!copy || copy.status !== 'success') {
+        throw new Error(
+          copy?.status === 'error' ? copy.copyError : 'Could not copy the selected audio file.',
+        );
+      }
+      onChangeIncomingRingtone('custom', { uri: copy.localUri, name });
+      if (account?.incomingRingtoneUri && account.incomingRingtoneUri !== copy.localUri) {
+        deleteCustomRingtoneFile(account.incomingRingtoneUri);
+      }
+    } catch (err) {
+      if (isErrorWithCode(err) && err.code === errorCodes.OPERATION_CANCELED) return;
+      Alert.alert(t('Incoming ringtone'), String((err as Error)?.message || err));
+    }
+  }, [account?.incomingRingtoneUri, deleteCustomRingtoneFile, onChangeIncomingRingtone, t]);
+
+  const handleUseDefaultRingtone = useCallback(() => {
+    onChangeIncomingRingtone('device');
+    deleteCustomRingtoneFile(account?.incomingRingtoneUri);
+  }, [account?.incomingRingtoneUri, deleteCustomRingtoneFile, onChangeIncomingRingtone]);
+
   useEffect(() => {
     if (!showSettingsModal) return;
     let cancelled = false;
@@ -1218,22 +1277,22 @@ function StandardPhoneScreenInner({
   }, [showSettingsModal]);
 
   const openSettings = useCallback(() => {
+    setEditServerHost(account?.serverHost || '');
+    setEditFallbackHost(account?.fallbackHost || '');
     setEditWhatsAppCountryCode(whatsappPrefs.countryCode);
     setEditWhatsAppPrompt(whatsappPrefs.promptEnabled);
     setShowSettingsModal(true);
-  }, [whatsappPrefs.countryCode, whatsappPrefs.promptEnabled]);
+  }, [account?.serverHost, account?.fallbackHost, whatsappPrefs.countryCode, whatsappPrefs.promptEnabled]);
 
   const handleSaveSettings = () => {
-    if (!editExt.trim() || !editPass.trim() || !editHost.trim()) return;
+    if (!account) return;
     onSaveAccount({
-      extension: editExt.trim(),
-      password: editPass.trim(),
-      serverHost: editHost.trim(),
+      ...account,
+      serverHost: editServerHost.trim() || account.serverHost,
       fallbackHost: editFallbackHost.trim() || undefined,
-      useTls: editTls,
       dnd: editDnd,
       autoAnswer: editAuto,
-      preferredCodec: editCodec,
+      preferredCodec: 'pcmu',
       micVolume: editMicVol,
       speakerVolume: editSpeakerVol,
     });
@@ -1574,13 +1633,7 @@ function StandardPhoneScreenInner({
                     styles.inCallBtn,
                     (audioDeviceState?.selectedDevice === 'BLUETOOTH' || audioDeviceState?.selectedDevice === 'SPEAKER_PHONE' || isSpeakerOn) && styles.inCallBtnSpeakerActive,
                   ]}
-                  onPress={() => {
-                    if (audioDeviceState?.hasBluetooth || (audioDeviceState?.availableDevices?.length ?? 0) > 2) {
-                      setShowAudioRouteModal(true);
-                    } else if (onToggleSpeaker) {
-                      onToggleSpeaker();
-                    }
-                  }}
+                  onPress={() => setShowAudioRouteModal(true)}
                   onLongPress={() => {
                     if (onToggleSpeaker) {
                       onToggleSpeaker();
@@ -2516,39 +2569,18 @@ function StandardPhoneScreenInner({
                 bounces={true}
                 overScrollMode="always"
               >
-                  <Text style={styles.settingsTitle}>{t('PBX Server & Credentials')}</Text>
+                  <Text style={styles.settingsTitle}>{t('Settings & Preferences')}</Text>
 
-                  <Text style={styles.fieldLabel}>{t('SIP EXTENSION')}</Text>
+                  <Text style={styles.fieldLabel}>{t('PBX HOST / GATEWAY')}</Text>
                   <TextInput
                     style={styles.settingsInput}
-                    value={editExt}
-                    onChangeText={setEditExt}
-                    placeholder="Extension"
-                    placeholderTextColor={colors.textFaint}
-                    keyboardType="number-pad"
-                  />
-
-                  <Text style={styles.fieldLabel}>{t('SIP PASSWORD')}</Text>
-                  <TextInput
-                    style={styles.settingsInput}
-                    value={editPass}
-                    onChangeText={setEditPass}
-                    placeholder="SIP Secret"
-                    placeholderTextColor={colors.textFaint}
-                    secureTextEntry
-                  />
-
-                  <Text style={styles.fieldLabel}>{t('PBX SERVER HOST / IP')}</Text>
-                  <TextInput
-                    style={styles.settingsInput}
-                    value={editHost}
-                    onChangeText={setEditHost}
-                    placeholder="e.g. pbx.yourcompany.com"
+                    value={editServerHost}
+                    onChangeText={setEditServerHost}
+                    placeholder="e.g. 89.117.54.235"
                     placeholderTextColor={colors.textFaint}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
-
                   <Text style={styles.fieldLabel}>{t('LOCAL FALLBACK GATEWAY (OPTIONAL)')}</Text>
                   <TextInput
                     style={styles.settingsInput}
@@ -2560,122 +2592,131 @@ function StandardPhoneScreenInner({
                     autoCorrect={false}
                   />
 
-                  <TouchableOpacity
-                    style={styles.switchRow}
-                    activeOpacity={0.7}
-                    onPress={() => setEditTls(!editTls)}
-                  >
-                    <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>{t('TLS / WSS Protocol')}</Text>
-                      <Text style={styles.switchSub}>
-                        {editTls ? t('Port 8089 (WSS)') : t('Port 8088 (Plain WS on LAN)')}
-                      </Text>
-                    </View>
-                    <View pointerEvents="none">
-                      <Switch
-                        value={editTls}
-                        thumbColor={editTls ? colors.onBrand : colors.textFaint}
-                        trackColor={{ false: colors.borderStrong, true: colors.brandFill }}
-                      />
-                    </View>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.switchRow}
-                    activeOpacity={0.7}
-                    onPress={() => setEditDnd(!editDnd)}
-                  >
-                    <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>{t('Do Not Disturb (DND)')}</Text>
-                      <Text style={styles.switchSub}>{t('Auto-reject incoming calls')}</Text>
-                    </View>
-                    <View pointerEvents="none">
+                  <View style={styles.preferenceRow}>
+                    <Text style={styles.preferenceLabel}>{t('Do Not Disturb (DND)')}</Text>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => setEditDnd(!editDnd)}
+                      style={styles.preferenceSwitch}
+                    >
                       <Switch
                         value={editDnd}
                         thumbColor={editDnd ? colors.onBrand : colors.textFaint}
                         trackColor={{ false: colors.borderStrong, true: colors.dangerFill }}
                       />
-                    </View>
-                  </TouchableOpacity>
+                    </TouchableOpacity>
+                  </View>
 
-                  <TouchableOpacity
-                    style={styles.switchRow}
-                    activeOpacity={0.7}
-                    onPress={() => setEditAuto(!editAuto)}
-                  >
-                    <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>{t('Auto-Answer')}</Text>
-                      <Text style={styles.switchSub}>{t('Auto-accept incoming calls')}</Text>
-                    </View>
-                    <View pointerEvents="none">
+                  <View style={styles.preferenceRow}>
+                    <Text style={styles.preferenceLabel}>{t('Auto-Answer')}</Text>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => setEditAuto(!editAuto)}
+                      style={styles.preferenceSwitch}
+                    >
                       <Switch
                         value={editAuto}
                         thumbColor={editAuto ? colors.onBrand : colors.textFaint}
                         trackColor={{ false: colors.borderStrong, true: colors.brandFill }}
                       />
-                    </View>
-                  </TouchableOpacity>
-
-                  <View style={styles.switchRow}>
-                    <View style={styles.switchTextCol}>
-                      <Text style={styles.switchLabel}>{t('Language')}</Text>
-                      <Text style={styles.switchSub}>English · العربية</Text>
-                    </View>
+                    </TouchableOpacity>
                   </View>
-                  <View style={styles.languageRow}>
-                    <TouchableOpacity
-                      style={[styles.languagePill, lang === 'en' && styles.languagePillActive]}
-                      onPress={() => { void changeLanguage('en'); }}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={[styles.languagePillText, lang === 'en' && styles.languagePillTextActive]}>
-                        English
+
+                  {Platform.OS === 'android' && (
+                    <View style={styles.ringtoneSetting}>
+                      <Text style={styles.preferenceLabel}>{t('Incoming ringtone')}</Text>
+                      <Text style={styles.settingsSectionSub}>
+                        {t('Phone default or a custom audio file')}
                       </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.languagePill, lang === 'ar' && styles.languagePillActive]}
-                      onPress={() => { void changeLanguage('ar'); }}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={[styles.languagePillText, lang === 'ar' && styles.languagePillTextActive]}>
-                        العربية
-                      </Text>
-                    </TouchableOpacity>
+                      <View style={styles.languageRowCompact}>
+                        <TouchableOpacity
+                          style={[
+                            styles.languagePillCompact,
+                            account?.incomingRingtone !== 'custom' && styles.languagePillActive,
+                          ]}
+                          onPress={handleUseDefaultRingtone}
+                          activeOpacity={0.8}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: account?.incomingRingtone !== 'custom' }}
+                        >
+                          <Text
+                            style={[
+                              styles.languagePillText,
+                              account?.incomingRingtone !== 'custom' && styles.languagePillTextActive,
+                            ]}
+                          >
+                            {t('Phone default')}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[
+                            styles.languagePillCompact,
+                            account?.incomingRingtone === 'custom' && styles.languagePillActive,
+                          ]}
+                          onPress={() => { void handlePickIncomingRingtone(); }}
+                          activeOpacity={0.8}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: account?.incomingRingtone === 'custom' }}
+                        >
+                          <Text
+                            style={[
+                              styles.languagePillText,
+                              account?.incomingRingtone === 'custom' && styles.languagePillTextActive,
+                            ]}
+                          >
+                            {t('Custom audio')}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                      {account?.incomingRingtone === 'custom' && account.incomingRingtoneUri ? (
+                        <View style={styles.ringtoneFileRow}>
+                          <Text style={styles.ringtoneFileName} numberOfLines={1}>
+                            {account.incomingRingtoneName || t('Custom audio')}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => { void handlePickIncomingRingtone(); }}
+                            accessibilityRole="button"
+                          >
+                            <Text style={styles.ringtoneFileAction}>{t('Change')}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={handleUseDefaultRingtone}
+                            accessibilityRole="button"
+                          >
+                            <Text style={[styles.ringtoneFileAction, { color: colors.dangerText }]}>
+                              {t('Remove')}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
+
+                  <View style={styles.preferenceRow}>
+                    <Text style={styles.preferenceLabel}>{t('Language')}</Text>
+                    <View style={styles.languageRowCompact}>
+                      <TouchableOpacity
+                        style={[styles.languagePillCompact, lang === 'en' && styles.languagePillActive]}
+                        onPress={() => { void changeLanguage('en'); }}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[styles.languagePillText, lang === 'en' && styles.languagePillTextActive]}>
+                          English
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.languagePillCompact, lang === 'ar' && styles.languagePillActive]}
+                        onPress={() => { void changeLanguage('ar'); }}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[styles.languagePillText, lang === 'ar' && styles.languagePillTextActive]}>
+                          العربية
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   <View style={styles.settingsSectionDivider} />
-                  <Text style={styles.settingsSectionTitle}>{t('Preferred Audio Codec')}</Text>
-                  <Text style={styles.settingsSectionSub}>
-                    Select your preferred codec for voice calls. Opus delivers HD clarity; G.722 & PCMU offer legacy VoIP compatibility:
-                  </Text>
-
-                  <View style={styles.codecGrid}>
-                    {[
-                      { id: 'opus', label: 'Opus HD', sub: '48 kHz Fullband (Recommended)' },
-                      { id: 'g722', label: 'G.722 HD', sub: '16 kHz Wideband VoIP' },
-                      { id: 'pcmu', label: 'PCMU / G.711u', sub: '8 kHz Standard PSTN' },
-                      { id: 'pcma', label: 'PCMA / G.711a', sub: '8 kHz European PSTN' },
-                      { id: 'auto', label: 'Auto', sub: 'Negotiate all supported codecs' },
-                    ].map((item) => {
-                      const isSelected = editCodec === item.id;
-                      return (
-                        <TouchableOpacity
-                          key={item.id}
-                          style={[styles.codecPill, isSelected && styles.codecPillActive]}
-                          onPress={() => setEditCodec(item.id as CodecPreference)}
-                          activeOpacity={0.7}
-                        >
-                          <Text style={[styles.codecPillLabel, isSelected && styles.codecPillLabelActive]}>
-                            {item.label}
-                          </Text>
-                          <Text style={[styles.codecPillSub, isSelected && styles.codecPillSubActive]}>
-                            {item.sub}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-
                   <UnifiedAudioControls
                     speakerVolume={editSpeakerVol}
                     micVolume={editMicVol}
@@ -2685,50 +2726,89 @@ function StandardPhoneScreenInner({
                     onChangeMic={handleMicChange}
                     onToggleSpeaker={onToggleSpeaker}
                     showRouteControls={false}
+                    compact
                   />
                   <View style={styles.settingsSectionDivider} />
                   <Text style={styles.settingsSectionTitle}>{t('Speed Dial (Keys 1 – 9)')}</Text>
                   <Text style={styles.settingsSectionSub}>
-                    Hold down any key on the dialpad to directly call these numbers:
+                    Hold a dialpad key to call these numbers:
                   </Text>
-                  {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => {
-                    const isVmKey = digit === '1';
-                    const currentValue = editSpeedDial[digit] || '';
-                    return (
-                      <View key={digit} style={styles.speedDialConfigRow}>
-                        <View style={[styles.speedDialBadge, isVmKey && styles.speedDialBadgeVm]}>
-                          <Text style={[styles.speedDialBadgeText, isVmKey && styles.speedDialBadgeTextVm]}>
-                            {digit}
-                          </Text>
-                        </View>
-                        <TextInput
-                          style={styles.speedDialInput}
-                          value={currentValue}
-                          onChangeText={(val) =>
-                            setEditSpeedDial((prev) => ({ ...prev, [digit]: val }))
-                          }
-                          placeholder={`Speed dial ${digit} (empty)`}
-                          placeholderTextColor={colors.textFaint}
-                          autoCapitalize="none"
-                        />
-                        {currentValue.trim() ? (
-                          <TouchableOpacity
-                            onPress={() =>
-                              setEditSpeedDial((prev) => {
-                                const next = { ...prev };
-                                delete next[digit];
-                                return next;
-                              })
-                            }
-                            style={styles.speedDialClearBtn}
-                          >
-                            <CloseIcon size={14} color={colors.textMuted} />
-                          </TouchableOpacity>
-                        ) : null}
+                  <View style={styles.speedDialConfigRow}>
+                    <TouchableOpacity
+                      style={styles.speedDialSelect}
+                      onPress={() => setShowSpeedDialPicker(true)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.speedDialSelectText}>
+                        Key {selectedSpeedDialKey}
+                      </Text>
+                      <Text style={styles.speedDialSelectChevron}>▾</Text>
+                    </TouchableOpacity>
+                    <TextInput
+                      style={styles.speedDialInput}
+                      value={editSpeedDial[selectedSpeedDialKey] || ''}
+                      onChangeText={(val) =>
+                        setEditSpeedDial((prev) => ({ ...prev, [selectedSpeedDialKey]: val }))
+                      }
+                      placeholder="Number"
+                      placeholderTextColor={colors.textFaint}
+                      autoCapitalize="none"
+                    />
+                    {(editSpeedDial[selectedSpeedDialKey] || '').trim() ? (
+                      <TouchableOpacity
+                        onPress={() =>
+                          setEditSpeedDial((prev) => {
+                            const next = { ...prev };
+                            delete next[selectedSpeedDialKey];
+                            return next;
+                          })
+                        }
+                        style={styles.speedDialClearBtn}
+                      >
+                        <CloseIcon size={14} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                  <Modal
+                    visible={showSpeedDialPicker}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={() => setShowSpeedDialPicker(false)}
+                  >
+                    <TouchableWithoutFeedback onPress={() => setShowSpeedDialPicker(false)}>
+                      <View style={styles.modalBackdrop}>
+                        <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
+                          <View style={styles.speedDialPickerCard}>
+                            <Text style={styles.speedDialPickerTitle}>{t('Configure speed dial')}</Text>
+                            <View style={styles.speedDialPickerGrid}>
+                              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((key) => {
+                                const configured = (editSpeedDial[key] || '').trim();
+                                return (
+                                  <TouchableOpacity
+                                    key={key}
+                                    style={[
+                                      styles.speedDialPickerOption,
+                                      key === selectedSpeedDialKey && styles.speedDialPickerOptionActive,
+                                    ]}
+                                    onPress={() => {
+                                      setSelectedSpeedDialKey(key);
+                                      setShowSpeedDialPicker(false);
+                                    }}
+                                    activeOpacity={0.75}
+                                  >
+                                    <Text style={styles.speedDialPickerKey}>Key {key}</Text>
+                                    <Text numberOfLines={1} style={styles.speedDialPickerValue}>
+                                      {configured || 'Not set'}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        </TouchableWithoutFeedback>
                       </View>
-                    );
-                  })}
-                  <View style={styles.settingsSectionDivider} />
+                    </TouchableWithoutFeedback>
+                  </Modal>
                   <Text style={styles.settingsSectionTitle}>{t('WhatsApp')}</Text>
                   <Text style={styles.fieldLabel}>{t('WhatsApp country code')}</Text>
                   <TextInput
@@ -2772,9 +2852,9 @@ function StandardPhoneScreenInner({
                               : 'Push registration could not be repaired. Check notification permission and network.',
                           );
                         }}
-                        style={styles.dialogCancelBtn}
+                        style={[styles.settingsActionBtn, styles.settingsActionBtnSecondary]}
                       >
-                        <Text style={styles.dialogCancelText}>{t('Repair notifications')}</Text>
+                        <Text numberOfLines={2} style={styles.settingsActionText}>{t('Repair notifications')}</Text>
                       </TouchableOpacity>
                     ) : null}
                     {!fullScreenCallsAllowed ? (
@@ -2783,18 +2863,26 @@ function StandardPhoneScreenInner({
                           await openFullScreenIntentSettings();
                           setFullScreenCallsAllowed(await canUseFullScreenIntent());
                         }}
-                        style={styles.dialogCancelBtn}
+                        style={[styles.settingsActionBtn, styles.settingsActionBtnSecondary]}
                       >
-                        <Text style={styles.dialogCancelText}>{t('Allow full-screen calls')}</Text>
+                        <Text numberOfLines={2} style={styles.settingsActionText}>{t('Allow full-screen calls')}</Text>
                       </TouchableOpacity>
                     ) : null}
                     {account ? (
-                      <TouchableOpacity onPress={() => setShowSettingsModal(false)} style={styles.dialogCancelBtn}>
-                        <Text style={styles.dialogCancelText}>{t('Cancel')}</Text>
+                      <TouchableOpacity
+                        onPress={() => setShowSettingsModal(false)}
+                        style={[styles.settingsActionBtn, styles.settingsActionBtnSecondary]}
+                      >
+                        <Text numberOfLines={2} style={styles.settingsActionText}>{t('Cancel')}</Text>
                       </TouchableOpacity>
                     ) : null}
-                    <TouchableOpacity onPress={handleSaveSettings} style={styles.settingsSaveBtn}>
-                      <Text style={styles.settingsSaveText}>{t('Save & Connect')}</Text>
+                    <TouchableOpacity
+                      onPress={handleSaveSettings}
+                      style={[styles.settingsActionBtn, styles.settingsActionBtnPrimary]}
+                    >
+                      <Text numberOfLines={2} style={[styles.settingsActionText, styles.settingsActionTextPrimary]}>
+                        {t('Save Settings')}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </ScrollView>
@@ -3470,49 +3558,91 @@ const rawStyles = StyleSheet.create({
   speedDialConfigRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 8,
+    gap: 8,
+    marginTop: 10,
   },
-  speedDialBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#27272a',
+  speedDialSelect: {
+    width: 108,
+    height: 40,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    borderColor: '#3f3f46',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    borderRadius: 8,
     borderWidth: 1,
+    borderColor: '#3f3f46',
+    backgroundColor: '#121214',
   },
-  speedDialBadgeVm: {
-    borderColor: '#38bdf8',
-    backgroundColor: '#0c2838',
-  },
-  speedDialBadgeText: {
+  speedDialSelectText: {
     color: '#ffffff',
     fontSize: 13,
     fontWeight: '700',
   },
-  speedDialBadgeTextVm: {
-    color: '#38bdf8',
+  speedDialSelectChevron: {
+    color: '#a1a1aa',
+    fontSize: 14,
+    marginLeft: 4,
   },
   speedDialInput: {
     flex: 1,
+    height: 40,
     backgroundColor: '#09090b',
     color: '#ffffff',
     borderColor: '#27272a',
     borderWidth: 1,
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     fontSize: 13,
+    minWidth: 0,
   },
   speedDialClearBtn: {
     padding: 6,
   },
-  speedDialClearText: {
+  speedDialPickerCard: {
+    width: '90%',
+    maxWidth: 360,
+    backgroundColor: '#18181b',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    padding: 16,
+  },
+  speedDialPickerTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  speedDialPickerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  speedDialPickerOption: {
+    flexBasis: '30%',
+    flexGrow: 1,
+    minWidth: 0,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    backgroundColor: '#09090b',
+  },
+  speedDialPickerOptionActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#0c2738',
+  },
+  speedDialPickerKey: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  speedDialPickerValue: {
     color: '#71717a',
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 10,
+    marginTop: 2,
   },
   modalBackdrop: {
     flex: 1,
@@ -3914,6 +4044,55 @@ const rawStyles = StyleSheet.create({
     marginTop: 14,
     paddingVertical: 4,
   },
+  preferenceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    marginTop: 8,
+    paddingVertical: 2,
+  },
+  preferenceLabel: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  preferenceSwitch: {
+    transform: [{ scale: 0.86 }],
+  },
+  ringtoneSetting: {
+    marginTop: 16,
+  },
+  ringtoneFileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginTop: 10,
+  },
+  ringtoneFileName: {
+    flex: 1,
+    color: '#a1a1aa',
+    fontSize: 12,
+  },
+  ringtoneFileAction: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  languageRowCompact: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  languagePillCompact: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    backgroundColor: '#09090b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   switchTextCol: {
     flex: 1,
     marginRight: 12,
@@ -3927,42 +4106,6 @@ const rawStyles = StyleSheet.create({
     color: '#71717a',
     fontSize: 12,
     marginTop: 2,
-  },
-  codecGrid: {
-    flexDirection: 'column',
-    gap: 8,
-    marginTop: 10,
-  },
-  codecPill: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#121214',
-    borderWidth: 1,
-    borderColor: '#27272a',
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  codecPillActive: {
-    borderColor: '#38bdf8',
-    backgroundColor: '#0c2738',
-  },
-  codecPillLabel: {
-    color: '#a1a1aa',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  codecPillLabelActive: {
-    color: '#38bdf8',
-    fontWeight: '700',
-  },
-  codecPillSub: {
-    color: '#71717a',
-    fontSize: 12,
-  },
-  codecPillSubActive: {
-    color: '#93c5fd',
   },
   volSliderContainer: {
     backgroundColor: '#121214',
@@ -4090,20 +4233,38 @@ const rawStyles = StyleSheet.create({
   },
   settingsActions: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 12,
+    alignItems: 'stretch',
+    gap: 10,
     marginTop: 24,
+    paddingBottom: 4,
   },
-  settingsSaveBtn: {
+  settingsActionBtn: {
+    flex: 1,
+    minHeight: 48,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsActionBtnSecondary: {
+    backgroundColor: '#18181b',
+    borderColor: '#3f3f46',
+  },
+  settingsActionBtnPrimary: {
     backgroundColor: '#10b981',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
+    borderColor: '#10b981',
   },
-  settingsSaveText: {
-    color: '#000000',
-    fontSize: 14,
+  settingsActionText: {
+    color: '#e4e4e7',
+    fontSize: 13,
     fontWeight: '700',
+    lineHeight: 16,
+    textAlign: 'center',
+  },
+  settingsActionTextPrimary: {
+    color: '#000000',
   },
   // In-Call
   inCallContainer: {
@@ -4373,6 +4534,65 @@ const rawStyles = StyleSheet.create({
     color: '#000000',
     fontSize: 14,
     fontWeight: '700',
+  },
+  volSliderContainerCompact: {
+    padding: 10,
+    marginTop: 8,
+    borderRadius: 8,
+  },
+  volSliderLabelCompact: {
+    fontSize: 13,
+  },
+  volSliderValueBadgeCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  volSliderValueTextCompact: {
+    fontSize: 12,
+  },
+  volSliderSubCompact: {
+    fontSize: 11,
+    marginTop: 2,
+    lineHeight: 14,
+  },
+  volSliderControlsRowCompact: {
+    gap: 8,
+    marginTop: 8,
+  },
+  volStepBtnCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+  },
+  volStepBtnTextCompact: {
+    fontSize: 16,
+    lineHeight: 18,
+  },
+  volTrackTouchAreaCompact: {
+    height: 28,
+  },
+  volTrackBgCompact: {
+    height: 5,
+    borderRadius: 3,
+  },
+  volThumbCompact: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    top: 6,
+  },
+  volPresetRowCompact: {
+    justifyContent: 'flex-start',
+    gap: 6,
+    marginTop: 6,
+  },
+  volPresetPillCompact: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 5,
+  },
+  volPresetTextCompact: {
+    fontSize: 10,
   },
   unifiedAudioContainer: {
     width: '100%',

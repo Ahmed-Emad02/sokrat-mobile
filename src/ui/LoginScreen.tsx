@@ -5,6 +5,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -18,7 +19,7 @@ import { SettingsIcon, PhoneIcon } from './Icons';
 import type { SavedAccount } from '../storage/store';
 
 type Props = {
-  onLogin: (ext: string, password: string, serverHost: string, fallbackHost?: string) => void;
+  onLogin: (ext: string, password: string, serverHost: string, fallbackHost?: string, directSip?: boolean) => void;
   state: string;
   /** Optional status/error line (e.g. gateway approval pending). */
   message?: string | null;
@@ -40,6 +41,7 @@ export function LoginScreen({ onLogin, state, message, initialAccount }: Props) 
   const [password, setPassword] = useState(initialAccount?.password || '');
   const [serverHost, setServerHost] = useState(initialAccount?.serverHost || CONFIG.sipDomain || '');
   const [fallbackHost, setFallbackHost] = useState(initialAccount?.fallbackHost || '');
+  const [directSip, setDirectSip] = useState(Boolean(initialAccount?.directSip));
   const [showAdvanced, setShowAdvanced] = useState(!(initialAccount?.serverHost || CONFIG.sipDomain));
 
   useEffect(() => {
@@ -48,7 +50,8 @@ export function LoginScreen({ onLogin, state, message, initialAccount }: Props) 
     setPassword(initialAccount.password || '');
     setServerHost(initialAccount.serverHost || CONFIG.sipDomain || '');
     setFallbackHost(initialAccount.fallbackHost || '');
-    if (initialAccount.fallbackHost) setShowAdvanced(true);
+    setDirectSip(Boolean(initialAccount.directSip));
+    if (initialAccount.fallbackHost || initialAccount.directSip) setShowAdvanced(true);
   }, [initialAccount]);
 
   const submit = () => {
@@ -57,7 +60,7 @@ export function LoginScreen({ onLogin, state, message, initialAccount }: Props) 
       return;
     }
     if (!extension.trim() || !password.trim()) return;
-    onLogin(extension.trim(), password.trim(), serverHost.trim(), fallbackHost.trim() || undefined);
+    onLogin(extension.trim(), password.trim(), serverHost.trim(), fallbackHost.trim() || undefined, directSip);
   };
 
   return (
@@ -119,6 +122,21 @@ export function LoginScreen({ onLogin, state, message, initialAccount }: Props) 
                 autoCapitalize="none"
                 autoCorrect={false}
               />
+
+              <View style={styles.modeRow}>
+                <View style={styles.modeText}>
+                  <Text style={styles.label}>{t('DIRECT SIP')}</Text>
+                  <Text style={styles.modeHint}>
+                    {t('Connect straight to this PBX. No gateway enrollment or approval.')}
+                  </Text>
+                </View>
+                <Switch
+                  value={directSip}
+                  onValueChange={setDirectSip}
+                  thumbColor={directSip ? '#10b981' : '#18181b'}
+                  trackColor={{ false: '#27272a', true: '#064e3b' }}
+                />
+              </View>
               <Text style={styles.label}>{t('LOCAL FALLBACK GATEWAY (OPTIONAL)')}</Text>
               <TextInput
                 style={styles.input}
@@ -238,6 +256,25 @@ const rawStyles = StyleSheet.create({
     borderColor: '#27272a',
     borderWidth: 1,
     marginTop: 6,
+  },
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopColor: '#27272a',
+    borderTopWidth: 1,
+  },
+  modeText: {
+    flex: 1,
+  },
+  modeHint: {
+    color: '#71717a',
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 2,
   },
   button: {
     backgroundColor: '#38bdf8',

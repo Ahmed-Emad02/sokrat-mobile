@@ -21,7 +21,7 @@ import { getSipWss } from '../config';
 import { GatewayClient } from './client';
 import { GatewayError, failClosed } from './errors';
 import { isKnownGatewayHost, loadEnrollmentRecord, saveEnrollmentRecord } from './storage';
-import type { EnrollmentRecord, GatewayAssignment, GatewayCallState, GatewaySession, GatewayEndpoint } from './types';
+import type { EnrollmentRecord, GatewayAssignment, GatewayCallState, GatewaySession, GatewayEndpoint, GatewayVpnProfile } from './types';
 import { appendQuery, gatewayBaseUrl, gatewaySipWssUrl, normalizeServerHost } from './urls';
 
 let activeSession: GatewaySession | null = null;
@@ -125,9 +125,78 @@ export function getActiveGatewaySession(
   return activeSession;
 }
 
+/**
+ * Fast path for an already-approved installation. Reads only the persisted
+ * host+extension assignment; no gateway HTTP request and no claim poll.
+ * Explicit revoked/rejected records still fail, and a missing/pending record
+ * returns null so the caller can run the full enrollment path.
+ */
+export async function getCachedGatewaySession(
+  host: string,
+  extension: string,
+): Promise<GatewaySession | null> {
+  const active = getActiveGatewaySession(host, extension);
+  if (active) return active;
+
+  const normalizedHost = normalizeServerHost(host);
+  const trimmedExtension = extension.trim();
+  if (!normalizedHost || !trimmedExtension) return null;
+  const record = await loadEnrollmentRecord(normalizedHost, trimmedExtension);
+  if (!record || !record.gatewayMode) return null;
+  if (record.status === 'rejected' || record.status === 'revoked') {
+    resetGatewaySession();
+    throw new GatewayError(record.status, 'Device enrollment is no longer valid');
+  }
+  if (record.status !== 'approved' || !record.assignment ||
+      record.assignment.extension !== trimmedExtension || !record.deviceId) {
+    return null;
+  }
+  const primary: GatewayEndpoint = {
+    id: 'primary',
+    role: 'primary',
+    host: record.host,
+    apiURL: gatewayBaseUrl(record.host),
+    sipWssUrl: gatewaySipWssUrl(record.host, 'primary'),
+  };
+  const session = createGatewaySession(
+    record.host,
+    record.claimSecret,
+    record.deviceId,
+    record.assignment,
+    primary,
+  );
+  activeSession = session;
+  return session;
+}
+
+/**
+ * Fetch the per-PBX embedded VPN profile from the approved assignment or the
+ * device-authenticated gateway endpoint. A missing profile is not an error;
+ * callers fall back to the existing cloud/TURN path.
+ */
+export async function getGatewayVpnProfile(
+  session: GatewaySession,
+  publicKey?: string | null,
+): Promise<GatewayVpnProfile | null> {
+  const client = new GatewayClient({
+    baseUrl: session.apiURL,
+    claimSecret: session.claimSecret,
+    deviceId: session.deviceId,
+  });
+  if (publicKey) {
+    const registered = await client.vpnProfile(publicKey);
+    if (registered) return registered;
+  }
+  // Older gateway builds only expose the static GET profile. Keep that path
+  // for existing installs; new installs always register the device key first.
+  if (session.assignment.vpn) return session.assignment.vpn;
+  return client.vpnProfile();
+}
+
 function sessionFromRecord(record: EnrollmentRecord, endpoint?: GatewayEndpoint, hostOverride?: string): GatewaySession {
   if (record.status !== 'approved' || !record.assignment || record.assignment.extension !== record.extension) {
-    throw failClosed('Device approval is still pending; direct PBX fallback is disabled');
+    // Pending is a state the user waits through, not a failure to report.
+    throw new GatewayError('pending', 'Device approval is still pending; direct PBX fallback is disabled');
   }
   if (!record.deviceId) {
     throw failClosed('Enrollment record has no device id');
@@ -153,7 +222,7 @@ export async function getOrLoadGatewaySession(
     if (getActiveGatewaySession(host, extension)) throw failClosed('Gateway enrollment record is unavailable');
     const known = await isKnownGatewayHost(host);
     assertGatewaySessionGeneration(generation);
-    if (known) throw failClosed('This gateway account requires enrollment');
+    if (known) throw new GatewayError('enrollment', 'This gateway account requires enrollment');
     return null;
   }
   if (record.status === 'rejected' || record.status === 'revoked') {
@@ -207,7 +276,7 @@ export async function getOrLoadGatewaySession(
         // with a local pending/disabled response.
         await saveEnrollmentRecord({ ...endpointRecord, status: claim.status, assignment: undefined });
         resetGatewaySession();
-        throw failClosed('Gateway approval is required for this account');
+        throw new GatewayError('pending', 'Gateway approval is required for this account');
       }
       session.assignment = claim.assignment;
       activeSession = session;
@@ -231,7 +300,7 @@ export async function getPersistedGatewayRecord(
 ): Promise<EnrollmentRecord | null> {
   const record = await loadEnrollmentRecord(host, extension);
   if (record?.gatewayMode) return record;
-  if (await isKnownGatewayHost(host)) throw failClosed('This gateway account requires enrollment');
+  if (await isKnownGatewayHost(host)) throw new GatewayError('enrollment', 'This gateway account requires enrollment');
   return null;
 }
 
@@ -295,7 +364,10 @@ export async function gatewayMediaConfiguration(
     deviceId: session.deviceId,
     claimSecret: session.claimSecret,
   });
-  return sessionRequest(session, () => client.iceServers());
+  const media = await sessionRequest(session, () => client.iceServers());
+  // Gateway media must traverse the per-tenant TURN relay. Direct host
+  // candidates would bypass the tenant relay and its PBX-only peer ACL.
+  return { ...media, iceTransportPolicy: 'relay' as const };
 }
 
 /** Tell the gateway this device is alive so its watchdog can skip a wake. */

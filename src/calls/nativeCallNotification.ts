@@ -3,6 +3,14 @@ import { callDisplayName } from './callerName';
 
 const getModule = () => NativeModules.CallNotificationModule;
 
+export function getMediaDiagnosticsWriter():
+  ((sample: string, reset: boolean) => Promise<void>) | null {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || mod?.mediaDiagnosticsEnabled !== true ||
+      typeof mod.writeMediaDiagnostics !== 'function') return null;
+  return async (sample, reset) => { await mod.writeMediaDiagnostics(sample, reset); };
+}
+
 export type CallActionPayload = {
   action: 'ANSWER' | 'SHOW' | 'DECLINE' | 'END';
   callId: string;
@@ -38,6 +46,36 @@ export async function canUseFullScreenIntent(): Promise<boolean> {
   }
 }
 
+export function refreshTelephonyListener(): void {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.refreshTelephonyListener) return;
+  try {
+    mod.refreshTelephonyListener();
+  } catch (error) {
+    console.warn('[native-call] telephony listener refresh failed:', error);
+  }
+}
+
+export function beginCallAudio(): void {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.beginCallAudio) return;
+  try {
+    mod.beginCallAudio();
+  } catch (error) {
+    console.warn('[native-call] beginCallAudio failed:', error);
+  }
+}
+
+export function endCallAudio(): void {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.endCallAudio) return;
+  try {
+    mod.endCallAudio();
+  } catch (error) {
+    console.warn('[native-call] endCallAudio failed:', error);
+  }
+}
+
 export async function openFullScreenIntentSettings(): Promise<boolean> {
   const mod = getModule();
   if (Platform.OS !== 'android' || !mod?.openFullScreenIntentSettings) return false;
@@ -45,6 +83,28 @@ export async function openFullScreenIntentSettings(): Promise<boolean> {
     return Boolean(await mod.openFullScreenIntentSettings());
   } catch {
     return false;
+  }
+}
+
+/** Bind native incoming-call ownership before token registration/bootstrap. */
+export function setNativeActiveExtension(extension: string) {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.setActiveExtension) return;
+  try {
+    mod.setActiveExtension(extension);
+  } catch (error) {
+    console.warn('[native-call] active extension binding failed:', error);
+  }
+}
+
+/** Runtime app/channel notification availability, including muted channels. */
+export async function areCallNotificationsEnabled(): Promise<boolean> {
+  const mod = getModule();
+  if (Platform.OS !== 'android' || !mod?.areCallNotificationsEnabled) return true;
+  try {
+    return Boolean(await mod.areCallNotificationsEnabled());
+  } catch {
+    return true;
   }
 }
 

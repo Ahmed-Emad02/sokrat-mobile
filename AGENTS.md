@@ -12,7 +12,7 @@ Guidance and operational gotchas for AI agents working in `sokrat-mobile-main`
 
 - **React Native 0.87.1**, React **19.2.3**, CLI 20.2.0, TypeScript, Jest.
 - `engines.node: ">= 22.11.0"` — older Node will refuse to install.
-- Telephony-heavy deps: `react-native-webrtc`, `jssip`, `sip.js`,
+- Telephony-heavy deps: `react-native-webrtc`, `jssip`,
   `react-native-callkeep`, `react-native-in-call-manager`,
   `@react-native-firebase/messaging`, `react-native-voip-push-notification`.
 - Push: `firebase.json` + `MOBILE-PUSH.md`.
@@ -111,3 +111,20 @@ platform toolchain, not from WSL.
 - **Zero-Friction Employee Onboarding**: Deploying a user is strictly 3 steps: (1) Admin creates extension in PBX dashboard, (2) Employee installs APK, (3) Employee logs in. Everything must configure dynamically.
 - **Dual-Use Compatibility**: The same extension must work concurrently on Sokrat Mobile and the embedded Sokrat CRM WebRTC client (`max_contacts >= 5`, `remove_existing = no`).
 - **PBX Git Branching Policy**: Server changes on `sokrat-voip` must NEVER be pushed to `main` (active installations use `main`). Server changes must use a dedicated feature branch on GitHub.
+
+---
+
+## 8. Release APK Naming
+
+Every release APK must be delivered under `suite/releases/` with the version in the filename:
+
+```
+sokrat-mobile-<versionName>.apk
+```
+
+Examples: `sokrat-mobile-1.3.0.apk`, `sokrat-mobile-1.3.1.apk`.
+
+- The Gradle output stays at `android/app/build/outputs/apk/release/app-release.apk`; copy it to the versioned release name — do not leave an untagged release APK as the deliverable.
+- Build production-signed: `-PproductionRelease=true` with `SOKRAT_ANDROID_VERSION_CODE` and `SOKRAT_ANDROID_VERSION_NAME`.
+- Verify and report: release path, `versionCode`, `versionName`, signer SHA-256, and the APK SHA-256.
+- Bump `versionName`/`versionCode` for every release and never overwrite an existing versioned APK in `suite/releases/`.

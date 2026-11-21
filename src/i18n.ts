@@ -95,6 +95,8 @@ export const translations: Record<string, string> = {
 
   // Settings
   'PBX Server & Credentials': 'خادم PBX وبيانات الاعتماد',
+  'Settings & Preferences': 'الإعدادات والتفضيلات',
+  'Save Settings': 'حفظ الإعدادات',
   'SIP EXTENSION': 'تحويلة SIP',
   'SIP PASSWORD': 'كلمة مرور SIP',
   'PBX SERVER HOST / IP': 'مضيف / عنوان IP لخادم PBX',
@@ -104,7 +106,12 @@ export const translations: Record<string, string> = {
   'Auto-reject incoming calls': 'رفض المكالمات الواردة تلقائيًا',
   'Auto-Answer': 'الرد التلقائي',
   'Auto-accept incoming calls': 'قبول المكالمات الواردة تلقائيًا',
-  'Preferred Audio Codec': 'الترميز الصوتي المفضل',
+  'Incoming ringtone': 'نغمة رنين المكالمات الواردة',
+  'Phone default or a custom audio file': 'نغمة الهاتف الافتراضية أو ملف صوتي مخصص',
+  'Phone default': 'نغمة الهاتف',
+  'Custom audio': 'ملف صوتي مخصص',
+  Change: 'تغيير',
+  Remove: 'إزالة',
   'Speaker Output Volume': 'مستوى صوت السماعة',
   'Microphone Sensitivity': 'حساسية الميكروفون',
   Handset: 'الهاتف',

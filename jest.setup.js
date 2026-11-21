@@ -59,6 +59,8 @@ jest.mock('react-native-incall-manager', () => {
       setForceSpeakerphoneOn: jest.fn(),
       setSpeakerphoneOn: jest.fn(),
       setKeepScreenOn: jest.fn(),
+      turnScreenOff: jest.fn(),
+      turnScreenOn: jest.fn(),
       setMicrophoneMute: jest.fn(),
       startRingtone: jest.fn(),
       stopRingtone: jest.fn(),
@@ -134,61 +136,15 @@ jest.mock('jssip', () => {
     UA,
   };
 });
-// sip.js imports browser-only APIs (WebSocketTransport reads `window.location`)
-// that don't exist in Node/Jest. Mock the few symbols we consume.
-jest.mock('sip.js', () => {
-  const makeUri = (s) => (s && String(s).length ? { user: 'x', host: 'x' } : undefined);
-  class Emitter {
-    listeners = [];
-    addListener = (l) => this.listeners.push(l);
-    removeListener = (l) => { this.listeners = this.listeners.filter((x) => x !== l); };
-  }
-  class UserAgentLike {
-    static makeURI = makeUri;
-    userId = '';
-    instanceId = '';
-    contact = {};
-    stateChange = new Emitter();
-    configuration = {};
-    transport = {};
-    userAgentCore = { transport: { send: jest.fn(), isConnected: jest.fn(() => false) } };
-    constructor(opts = {}) { this.opts = opts; this.state = 'Stop'; this.userId = opts.uri?.user || ''; }
-    isConnected = () => false;
-    start = jest.fn(() => Promise.resolve());
-    stop = jest.fn(() => Promise.resolve());
-    register = jest.fn(() => Promise.resolve());
-    unregister = jest.fn(() => Promise.resolve());
-  }
-  class RegistererLike extends Emitter {
-    state = 'Terminated';
-    constructor(ua, opts) { super(); this.options = opts; this.userAgent = ua; }
-    register = jest.fn(() => Promise.resolve());
-    unregister = jest.fn(() => Promise.resolve());
-    dispose = jest.fn();
-  }
-  const InvitationLike = class {};
-  const SessionLike = class {};
-  const InviterLike = class {
-    constructor() {}
-    invite = jest.fn(() => Promise.resolve());
-    cancel = jest.fn(() => Promise.resolve());
-    bye = jest.fn(() => Promise.resolve());
-  };
-  return {
-    UserAgent: UserAgentLike,
-    Registerer: RegistererLike,
-    Invitation: InvitationLike,
-    Session: SessionLike,
-    Inviter: InviterLike,
-  };
-});
-
 jest.mock('react-native-image-picker', () => ({
   launchImageLibrary: jest.fn(() => Promise.resolve({ assets: [] })),
 }));
 jest.mock('@react-native-documents/picker', () => ({
   pick: jest.fn(() => Promise.resolve([])),
-  types: { allFiles: '*/*' },
+  keepLocalCopy: jest.fn(() => Promise.resolve([])),
+  types: { allFiles: '*/*', audio: 'audio/*' },
+  errorCodes: { OPERATION_CANCELED: 'OPERATION_CANCELED' },
+  isErrorWithCode: jest.fn(() => false),
 }));
 jest.mock('react-native-nitro-sound', () => ({
   __esModule: true,
@@ -199,13 +155,21 @@ jest.mock('react-native-nitro-sound', () => ({
     removeRecordBackListener: jest.fn(),
     startPlayer: jest.fn(() => Promise.resolve('')),
     stopPlayer: jest.fn(() => Promise.resolve('')),
+    addPlaybackEndListener: jest.fn(),
+    removePlaybackEndListener: jest.fn(),
+    seekToPlayer: jest.fn(() => Promise.resolve('')),
+    resumePlayer: jest.fn(() => Promise.resolve('')),
   },
 }));
 jest.mock('react-native-blob-util', () => ({
   __esModule: true,
   default: {
     config: jest.fn(() => ({ fetch: jest.fn(() => Promise.resolve({ path: () => '' })) })),
-    fs: { dirs: { CacheDir: '/tmp' }, stat: jest.fn(() => Promise.resolve({ size: 0 })) },
+    fs: {
+      dirs: { CacheDir: '/tmp' },
+      stat: jest.fn(() => Promise.resolve({ size: 0 })),
+      unlink: jest.fn(() => Promise.resolve()),
+    },
     android: { actionViewIntent: jest.fn() },
   },
 }));

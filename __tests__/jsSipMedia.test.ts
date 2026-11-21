@@ -60,11 +60,17 @@ jest.mock('../src/network', () => {
 });
 
 import { mediaDevices } from 'react-native-webrtc';
+import { describeSdpForLog } from '../src/sip/MediaDiagnostics';
+import InCallManager from 'react-native-incall-manager';
 import {
+  CONFIRMATION_TIMEOUT_MS,
   ICE_RELAY_GRACE_MS,
   ICE_RELAY_WAIT_MS,
   JsSipService,
+  OUTGOING_RING_TIMEOUT_MS,
+  SIGNALING_GRACE_MS,
   SipEvents,
+  remoteAudioSends,
 } from '../src/sip/JsSipService';
 import { getMediaConfiguration } from '../src/network';
 import { getDeviceUuid, UUID_PATTERN } from '../src/storage/deviceId';
@@ -86,6 +92,8 @@ type FakeSession = {
   terminate: jest.Mock;
   connection: {
     localDescription: { sdp: string };
+    remoteDescription: { sdp: string } | null;
+    setRemoteDescription: jest.Mock;
     iceGatheringState: string;
     pcHandlers: Record<string, Array<() => void>>;
     addEventListener: jest.Mock;
@@ -111,6 +119,8 @@ function createSession(direction: 'incoming' | 'outgoing' = 'outgoing', displayN
     terminate: jest.fn(),
     connection: {
       localDescription: { sdp: 'v=0\r\n' },
+      remoteDescription: null,
+      setRemoteDescription: jest.fn(async () => undefined),
       iceGatheringState: 'new',
       pcHandlers,
       addEventListener: jest.fn((event: string, handler: () => void) => {
@@ -191,6 +201,29 @@ function prioritizeCodec(service: JsSipService, sdp: string, preferred: string):
 describe('JsSipService media + instance id', () => {
   const originalFetch = globalThis.fetch;
 
+  test('early-media diagnostics expose codec and direction only', () => {
+    const sdp = [
+      'v=0',
+      'm=audio 19462 UDP/TLS/RTP/SAVPF 0 126',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:126 telephone-event/8000',
+      'a=setup:active',
+      'a=sendrecv',
+      'a=ice-ufrag:secret-ufrag',
+      'a=ice-pwd:secret-pwd',
+      'a=fingerprint:sha-256 AA:BB:CC',
+    ].join('\r\n');
+
+    expect(describeSdpForLog(sdp)).toEqual({
+      mAudioPayloads: ['0', '126'],
+      setup: 'active',
+      direction: 'sendrecv',
+      hasIceUfrag: true,
+      hasFingerprint: true,
+    });
+    expect(JSON.stringify(describeSdpForLog(sdp))).not.toContain('secret');
+  });
+
   beforeAll(() => {
     // Never let the in-call volume ping reach the network from unit tests.
     globalThis.fetch = jest.fn(async () => ({
@@ -239,6 +272,136 @@ describe('JsSipService media + instance id', () => {
     expect(filtered).not.toContain('a=fmtp:111');
     expect(filtered).not.toContain('a=rtpmap:8');
     expect(filtered).toContain('a=rtcp-fb:* transport-cc');
+  });
+
+  test.each([
+    { originator: 'remote', type: 'offer', restrict: true },
+    { originator: 'local', type: 'offer', restrict: true },
+    { originator: 'local', type: 'answer', restrict: false },
+    { originator: 'remote', type: 'answer', restrict: false },
+  ])('codec preference respects native negotiation for $originator $type', async ({
+    originator, type, restrict,
+  }) => {
+    const service = createService();
+    service.setPreferredCodec('pcmu');
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('incoming');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    const sdp = [
+      'v=0',
+      'm=audio 5000 UDP/TLS/RTP/SAVPF 107 0 8 101',
+      'a=sendrecv',
+      'a=rtpmap:107 opus/48000/2',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:8 PCMA/8000',
+      'a=rtpmap:101 telephone-event/8000',
+      '',
+    ].join('\r\n');
+    const description = { originator, type, sdp };
+
+    session.emit('sdp', description);
+
+    if (restrict) {
+      expect(description.sdp).toContain('m=audio 5000 UDP/TLS/RTP/SAVPF 0 101\r\n');
+      expect(description.sdp).not.toContain('a=rtpmap:107');
+      expect(description.sdp).not.toContain('a=rtpmap:8 ');
+      expect(description.sdp).toContain('a=sendrecv\r\n');
+      expect(description.sdp).toContain('a=rtpmap:101 telephone-event/8000\r\n');
+    } else {
+      // JsSIP emits a local answer after setLocalDescription. Advertising a
+      // different codec here does not change the native RTP sender.
+      expect(description.sdp).toBe(sdp);
+    }
+  });
+
+  test('keeps an offered codec when the preferred static payload is absent', () => {
+    const sdp = [
+      'v=0',
+      'm=audio 5000 UDP/TLS/RTP/SAVPF 107 101',
+      'a=rtpmap:107 opus/48000/2',
+      'a=rtpmap:101 telephone-event/8000',
+      '',
+    ].join('\r\n');
+
+    expect(prioritizeCodec(createService(), sdp, 'pcmu')).toBe(sdp);
+  });
+
+  test('does not rewrite a remote SDP on an outbound call', async () => {
+    const service = createService();
+    service.setPreferredCodec('pcmu');
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('outgoing');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    const sdp = [
+      'v=0',
+      'm=audio 5000 UDP/TLS/RTP/SAVPF 107 0 8 101',
+      'a=sendrecv',
+      'a=rtpmap:107 opus/48000/2',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:8 PCMA/8000',
+      'a=rtpmap:101 telephone-event/8000',
+      '',
+    ].join('\r\n');
+    const description = { originator: 'remote', type: 'offer', sdp };
+
+    session.emit('sdp', description);
+
+    expect(description.sdp).toBe(sdp);
+  });
+
+  test('leaves SDP application to JsSIP: a provisional answer does not establish the call', async () => {
+    const events = createEvents();
+    const service = createService(events);
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    const session = createSession('outgoing');
+    mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+    const sdp = [
+      'v=0',
+      'm=audio 19462 UDP/TLS/RTP/SAVPF 0 126',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:126 telephone-event/8000',
+      'a=sendrecv',
+      '',
+    ].join('\r\n');
+
+    session.emit('sdp', { originator: 'remote', type: 'answer', sdp });
+    session.emit('progress');
+
+    // JsSIP serializes provisional and final answers on its own connection
+    // queue; a second application by the app would race it or replay an old
+    // leg's SDP into a later call.
+    expect(session.connection.setRemoteDescription).not.toHaveBeenCalled();
+    expect(service.activeCall?.status).toBe('ringing');
+    expect(events.onCallEstablished).not.toHaveBeenCalled();
+
+    // JsSIP applied the provisional answer, then the final answer confirms.
+    session.connection.remoteDescription = { sdp };
+    session.emit('confirmed');
+
+    expect(session.connection.setRemoteDescription).not.toHaveBeenCalled();
+    expect(events.onCallEstablished).toHaveBeenCalledTimes(1);
+    expect(service.activeCall?.status).toBe('active');
+  });
+
+  test('audio codec restriction leaves the remote video offer intact', () => {
+    const video = [
+      'm=video 5002 UDP/TLS/RTP/SAVPF 96',
+      'a=rtpmap:96 VP8/90000',
+      'a=rtcp-fb:96 nack',
+      '',
+    ].join('\r\n');
+    const sdp = [
+      'v=0',
+      'm=audio 5000 UDP/TLS/RTP/SAVPF 107 0',
+      'a=rtpmap:107 opus/48000/2',
+      'a=rtpmap:0 PCMU/8000',
+      video,
+    ].join('\r\n');
+
+    const filtered = prioritizeCodec(createService(), sdp, 'pcmu');
+
+    expect(filtered).toContain('m=audio 5000 UDP/TLS/RTP/SAVPF 0\r\n');
+    expect(filtered).toContain(video);
   });
 
   test('keeps automatic codec negotiation when no explicit codec is selected', () => {
@@ -1033,13 +1196,45 @@ describe('JsSipService media + instance id', () => {
 
       await service.call('102');
       expect(ua.calls[0].options.pcConfig).toMatchObject({
-        iceTransportPolicy: 'relay',
         iceServers: [{ urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' }],
       });
+      expect(ua.calls[0].options.pcConfig.iceTransportPolicy).toBe('relay');
       expect(mockMediaConfiguration).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = previousFetch;
       (AsyncStorage.getItem as jest.Mock).mockReset().mockResolvedValue(null);
+      resetGatewaySession();
+    }
+  });
+
+  test('uses the PBX direct fallback when the gateway ticket fails', async () => {
+    resetGatewaySession();
+    const assignment = {
+      deviceId: 'dev-1', pbxId: 'pbx-1', pbxName: 'Sokrat Lab', extension: '160',
+      wsURL: 'ws://gateway.example.com:8088/ws', apiURL: 'http://gateway.example.com:8095', mediaIps: [],
+      directFallback: {
+        wsURL: 'wss://public-pbx.example.com:8089/ws',
+        apiURL: 'https://public-pbx.example.com:8080',
+      },
+    };
+    setActiveGatewaySession(
+      createGatewaySession('gateway.example.com', 'a'.repeat(64), 'dev-1', assignment),
+    );
+    const fetchMock = jest.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ success: false }),
+    }));
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const service = createService();
+      await service.connect('160', 'pw', 'gateway.example.com', false);
+      expect(mockUaInstances[0].configuration.sockets[0].url).toMatch(
+        /^wss:\/\/public-pbx\.example\.com:8089\/ws\?flow=[a-f0-9]{32}$/,
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
       resetGatewaySession();
     }
   });
@@ -1182,6 +1377,922 @@ describe('JsSipService media + instance id', () => {
       await jest.advanceTimersByTimeAsync(25000);
       expect(reconnect).not.toHaveBeenCalled();
       expect(mockUaInstances).toHaveLength(1);
+    });
+  });
+  describe('temporary media diagnostics', () => {
+    beforeEach(() => { jest.useFakeTimers(); });
+    afterEach(() => {
+      activeServices.forEach(service => service.disconnect());
+      jest.clearAllTimers();
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    });
+
+    test('keeps one native stats request in flight across session replacement', async () => {
+      const service = createService();
+      const first = createSession();
+      const second = createSession();
+      let finish!: (stats: Map<string, Record<string, unknown>>) => void;
+      const firstStats = jest.fn(() => new Promise<Map<string, Record<string, unknown>>>(resolve => { finish = resolve; }));
+      const secondStats = jest.fn().mockResolvedValue(new Map());
+      Object.assign(first.connection, { getStats: firstStats });
+      Object.assign(second.connection, { getStats: secondStats });
+      const log = jest.spyOn(console, 'info').mockImplementation(() => {});
+      const start = Reflect.get(service, 'startMediaDiagnostics').bind(service);
+
+      Reflect.set(service, 'currentSession', first);
+      start(first);
+      Reflect.set(service, 'currentSession', second);
+      start(second);
+      expect(firstStats).toHaveBeenCalledTimes(1);
+      expect(secondStats).not.toHaveBeenCalled();
+      finish(new Map());
+      await Promise.resolve();
+      expect(log).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(secondStats).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledTimes(1);
+    });
+
+    test('ignores a stale confirmed event without stopping current diagnostics', async () => {
+      const service = createService();
+      const obsolete = createSession();
+      const current = createSession();
+      const currentStats = jest.fn().mockResolvedValue(new Map());
+      const obsoleteStats = jest.fn().mockResolvedValue(new Map());
+      Object.assign(current.connection, { getStats: currentStats });
+      Object.assign(obsolete.connection, { getStats: obsoleteStats });
+      jest.spyOn(console, 'info').mockImplementation(() => {});
+      const start = Reflect.get(service, 'startMediaDiagnostics').bind(service);
+
+      Reflect.set(service, 'currentSession', current);
+      start(current);
+      await Promise.resolve();
+      start(obsolete);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(currentStats).toHaveBeenCalledTimes(2);
+      expect(obsoleteStats).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('outgoing early media', () => {
+    const InCallManager = require('react-native-incall-manager').default;
+    const EARLY_MEDIA_SDP = [
+      'v=0',
+      'm=audio 19462 UDP/TLS/RTP/SAVPF 0 126',
+      'a=rtpmap:0 PCMU/8000',
+      'a=rtpmap:126 telephone-event/8000',
+      'a=sendrecv',
+      '',
+    ].join('\r\n');
+    const RECEIVE_ONLY_SDP = EARLY_MEDIA_SDP.replace('a=sendrecv', 'a=recvonly');
+
+    function audioTrack() {
+      return { kind: 'audio', enabled: false, readyState: 'live', stop: jest.fn() };
+    }
+
+    function statsWith(packets: number) {
+      return new Map([[
+        'inbound-audio',
+        { type: 'inbound-rtp', kind: 'audio', packetsReceived: packets, bytesReceived: packets * 160 },
+      ]]);
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.clearAllMocks();
+    });
+    afterEach(() => {
+      activeServices.forEach((service) => service.disconnect());
+      activeServices.length = 0;
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+
+    async function outgoing(session = createSession('outgoing'), events = createEvents()) {
+      const service = createService(events);
+      // connect() first resets the service through disconnect(false), which
+      // legitimately stops any previous ringback. Start observing the native
+      // ringback only once this call's leg is live.
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      ua.emit('newRTCSession', { session, request: {} });
+      InCallManager.stopRingback.mockClear();
+      return { service, session, ua, events };
+    }
+
+    test('a programmatic track event alone does not silence ringback or publish audio', async () => {
+      const track = audioTrack();
+      const session = createSession('outgoing');
+      Object.assign(session.connection, {
+        getReceivers: jest.fn(() => [{ track }]),
+        getStats: jest.fn(async () => statsWith(9)),
+      });
+      const { service } = await outgoing(session);
+      const trackListener = session.connection.addEventListener.mock.calls
+        .find(([event]) => event === 'track')?.[1] as (event: unknown) => void;
+
+      trackListener({ track });
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(600);
+
+      // No remote description: a receiver object is created by our own audio
+      // transceiver, so it cannot prove that any media is arriving.
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+      expect(service.activeCall?.remoteStream).toBeFalsy();
+      expect(service.activeCall?.status).toBe('ringing');
+    });
+
+    test('keeps local ringback on 180 Ringing without SDP', async () => {
+      const session = createSession('outgoing');
+      Object.assign(session.connection, {
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+        getStats: jest.fn(async () => statsWith(4)),
+      });
+      const { service } = await outgoing(session);
+
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(600);
+
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+      expect(service.activeCall?.remoteStream).toBeFalsy();
+      expect(service.activeCall?.status).toBe('ringing');
+    });
+
+    test('183 with inbound RTP activates early audio before the call is confirmed', async () => {
+      const session = createSession('outgoing');
+      Object.assign(session.connection, {
+        remoteDescription: { sdp: EARLY_MEDIA_SDP },
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+        getStats: jest.fn(async () => statsWith(5)),
+      });
+      const { service, events } = await outgoing(session);
+      session.emit('sdp', { originator: 'remote', type: 'answer', sdp: EARLY_MEDIA_SDP });
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(400);
+
+      expect(InCallManager.stopRingback).toHaveBeenCalled();
+      expect(service.activeCall?.remoteStream).toBeTruthy();
+      expect(service.activeCall?.status).toBe('ringing');
+      expect(events.onCallEstablished).not.toHaveBeenCalled();
+    });
+
+    test('183 SDP without received RTP keeps ringback until the 200 confirms', async () => {
+      const session = createSession('outgoing');
+      Object.assign(session.connection, {
+        remoteDescription: { sdp: EARLY_MEDIA_SDP },
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+        getStats: jest.fn(async () => statsWith(0)),
+      });
+      const { service, events } = await outgoing(session);
+      session.emit('sdp', { originator: 'remote', type: 'answer', sdp: EARLY_MEDIA_SDP });
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(800);
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+      expect(service.activeCall?.status).toBe('ringing');
+
+      session.emit('confirmed');
+      await jest.advanceTimersByTimeAsync(400);
+      expect(InCallManager.stopRingback).toHaveBeenCalled();
+      expect(service.activeCall?.status).toBe('active');
+      expect(events.onCallEstablished).toHaveBeenCalledTimes(1);
+      expect(service.activeCall?.remoteStream).toBeTruthy();
+    });
+
+    test.each([
+      ['receive-only', RECEIVE_ONLY_SDP],
+      ['disabled (port 0)', 'v=0\r\nm=audio 0 UDP/TLS/RTP/SAVPF 0 126\r\na=sendrecv\r\n'],
+    ])('an audio section that is %s never counts as early media', async (_label, sdp) => {
+      const session = createSession('outgoing');
+      Object.assign(session.connection, {
+        remoteDescription: { sdp },
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+        getStats: jest.fn(async () => statsWith(7)),
+      });
+      await outgoing(session);
+
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(600);
+
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+    });
+
+    test('activates early media that starts long after the 183', async () => {
+      const session = createSession('outgoing');
+      let packets = 0;
+      Object.assign(session.connection, {
+        remoteDescription: { sdp: EARLY_MEDIA_SDP },
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+        getStats: jest.fn(async () => statsWith(packets)),
+      });
+      const { service } = await outgoing(session);
+
+      session.emit('sdp', { originator: 'remote', type: 'answer', sdp: EARLY_MEDIA_SDP });
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(12000);
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+      expect(service.activeCall?.status).toBe('ringing');
+
+      packets = 3;
+      await jest.advanceTimersByTimeAsync(700);
+
+      expect(InCallManager.stopRingback).toHaveBeenCalled();
+      expect(service.activeCall?.remoteStream).toBeTruthy();
+      expect(service.activeCall?.status).toBe('ringing');
+    });
+
+    test('without RTP statistics the ringback survives until confirmation', async () => {
+      const session = createSession('outgoing');
+      Object.assign(session.connection, {
+        remoteDescription: { sdp: EARLY_MEDIA_SDP },
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+      });
+      const { service } = await outgoing(session);
+
+      session.emit('sdp', { originator: 'remote', type: 'answer', sdp: EARLY_MEDIA_SDP });
+      session.emit('progress');
+      await jest.advanceTimersByTimeAsync(12000);
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+      expect(service.activeCall?.remoteStream).toBeFalsy();
+
+      session.emit('confirmed');
+      await jest.advanceTimersByTimeAsync(400);
+      expect(InCallManager.stopRingback).toHaveBeenCalled();
+      expect(service.activeCall?.status).toBe('active');
+    });
+
+    test('a hung-up leg cannot apply its SDP to, or silence, the next call', async () => {
+      const first = createSession('outgoing');
+      first.id = 'first-call';
+      Object.assign(first.connection, {
+        remoteDescription: { sdp: EARLY_MEDIA_SDP },
+        getReceivers: jest.fn(() => [{ track: audioTrack() }]),
+        getStats: jest.fn(async () => statsWith(1)),
+      });
+      const { service, ua } = await outgoing(first);
+      first.emit('sdp', { originator: 'remote', type: 'answer', sdp: EARLY_MEDIA_SDP });
+      await service.hangup(first.id);
+
+      const second = createSession('outgoing');
+      second.id = 'second-call';
+      ua.emit('newRTCSession', { session: second, request: {} });
+      InCallManager.stopRingback.mockClear();
+
+      // Late events from the terminated leg arrive while the new call rings.
+      first.emit('progress');
+      second.emit('progress');
+      await jest.advanceTimersByTimeAsync(600);
+
+      expect(service.activeCall?.id).toBe('second-call');
+      expect(service.activeCall?.remoteStream).toBeFalsy();
+      expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+      // Single SDP owner: the app never applies an answer itself.
+      expect(second.connection.setRemoteDescription).not.toHaveBeenCalled();
+    });
+
+    test('remote audio direction comes from the audio m-section', () => {
+      const audio = (direction: string) => [
+        'v=0',
+        'm=audio 5000 UDP/TLS/RTP/SAVPF 0',
+        `a=${direction}`,
+        '',
+      ].join('\r\n');
+
+      expect(remoteAudioSends(undefined)).toBe(false);
+      expect(remoteAudioSends('v=0\r\nm=video 5004 UDP/TLS/RTP/SAVPF 96\r\na=sendrecv\r\n')).toBe(false);
+      expect(remoteAudioSends(audio('sendrecv'))).toBe(true);
+      expect(remoteAudioSends(audio('sendonly'))).toBe(true);
+      expect(remoteAudioSends(audio('recvonly'))).toBe(false);
+      expect(remoteAudioSends(audio('inactive'))).toBe(false);
+      // No direction attribute at all defaults to sendrecv.
+      expect(remoteAudioSends('v=0\r\nm=audio 5000 UDP/TLS/RTP/SAVPF 0\r\n')).toBe(true);
+      // A session-level direction applies until the audio section overrides it.
+      expect(remoteAudioSends([
+        'v=0',
+        'a=sendonly',
+        'm=audio 5000 UDP/TLS/RTP/SAVPF 0',
+        '',
+      ].join('\r\n'))).toBe(true);
+      expect(remoteAudioSends([
+        'v=0',
+        'a=sendrecv',
+        'm=audio 5000 UDP/TLS/RTP/SAVPF 0',
+        'a=recvonly',
+        '',
+      ].join('\r\n'))).toBe(false);
+      // A disabled audio m-line (port 0) carries no media.
+      expect(remoteAudioSends('v=0\r\nm=audio 0 UDP/TLS/RTP/SAVPF 0\r\na=sendrecv\r\n')).toBe(false);
+      // A direction inside a preceding video/application section belongs to
+      // that section, never to the session: the audio section below keeps the
+      // sendrecv default even though the video leg is sendonly.
+      expect(remoteAudioSends([
+        'v=0',
+        'm=video 5004 UDP/TLS/RTP/SAVPF 96',
+        'a=sendonly',
+        'm=audio 5000 UDP/TLS/RTP/SAVPF 0',
+        '',
+      ].join('\r\n'))).toBe(true);
+      expect(remoteAudioSends([
+        'v=0',
+        'm=application 5006 UDP/DTLS/SCTP webrtc-datachannel',
+        'a=inactive',
+        'm=audio 5000 UDP/TLS/RTP/SAVPF 0',
+        '',
+      ].join('\r\n'))).toBe(true);
+      // A session-level direction still applies before any media section.
+      expect(remoteAudioSends([
+        'v=0',
+        'a=inactive',
+        'm=audio 5000 UDP/TLS/RTP/SAVPF 0',
+        '',
+      ].join('\r\n'))).toBe(false);
+    });
+  });
+
+  describe('single primary call ownership', () => {
+    const BUSY = 'Another call is already in progress';
+    type TestUa = { emit: (event: string, data?: unknown) => void };
+
+    function errorMessage(value: unknown): string {
+      if (!(value instanceof Error)) {
+        throw new Error(`expected an Error, received ${String(value)}`);
+      }
+      return value.message;
+    }
+
+    async function establishInboundPrimary(service: JsSipService, ua: TestUa) {
+      const { stream, track } = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(stream);
+      const session = createSession('incoming');
+      session.id = 'gsm-primary';
+      ua.emit('newRTCSession', { session, request: {} });
+      await expect(service.answer(session.id)).resolves.toBe(true);
+      session.emit('confirmed', {});
+      expect(service.activeCall?.id).toBe(session.id);
+      expect(service.activeCall?.status).toBe('active');
+      return { session, stream, track };
+    }
+
+    test('an ordinary outbound cannot replace an established primary call', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+
+      const rejectedMic = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(rejectedMic.stream);
+
+      await expect(service.call('150')).rejects.toThrow(BUSY);
+
+      // The guard must run before microphone and TURN work: no second INVITE,
+      // no second getUserMedia, and the primary mic stays open.
+      expect(mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(ua.calls).toHaveLength(0);
+      expect(primary.track.stop).not.toHaveBeenCalled();
+      expect(rejectedMic.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.status).toBe('active');
+
+      // The old session stays the one controllable/hangupable leg.
+      await expect(service.hangup('gsm-primary')).resolves.toBe(true);
+      expect(primary.session.terminate).toHaveBeenCalledTimes(1);
+      expect(primary.track.stop).toHaveBeenCalledTimes(1);
+      expect(events.onCallEnded).not.toHaveBeenCalled();
+    });
+
+    test('two rapid outbound dials reserve one attempt before microphone work resolves', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const mic = Promise.withResolvers<unknown>();
+      const { stream, track } = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockReturnValue(mic.promise);
+
+      const first = service.call('150');
+      const second = service.call('151').then(
+        () => null,
+        (error: unknown) => error,
+      );
+      try {
+        expect(mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+      } finally {
+        // Resolve even when the assertion fails so a red run leaves no pending
+        // 6 s microphone timer or unhandled call promise behind.
+        mic.resolve(stream);
+      }
+
+      await expect(first).resolves.toBeUndefined();
+      const secondError = await second;
+      expect(secondError).toBeInstanceOf(Error);
+      expect(errorMessage(secondError)).toBe(BUSY);
+      expect(ua.calls).toHaveLength(1);
+      expect(ua.calls[0].uri).toBe('sip:150@pbx.example.com');
+      expect(track.stop).not.toHaveBeenCalled();
+    });
+
+    test('an inbound call during outbound preparation stays primary and cancels the prepared dial', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const outboundMic = Promise.withResolvers<unknown>();
+      const outboundStream = createStream();
+      const inboundStream = createStream();
+      (mediaDevices.getUserMedia as jest.Mock)
+        .mockReturnValueOnce(outboundMic.promise)
+        .mockResolvedValueOnce(inboundStream.stream);
+
+      const pending = service.call('150');
+      const pendingOutcome = pending.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      const inbound = createSession('incoming');
+      inbound.id = 'gsm-primary';
+      ua.emit('newRTCSession', { session: inbound, request: {} });
+      expect(service.activeCall?.id).toBe('gsm-primary');
+
+      outboundMic.resolve(outboundStream.stream);
+      const error = await pendingOutcome;
+      expect(error).toBeInstanceOf(Error);
+      expect(errorMessage(error)).toMatch(/superseded/i);
+      expect(ua.calls).toHaveLength(0);
+      expect(outboundStream.track.stop).toHaveBeenCalledTimes(1);
+      expect(inboundStream.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+
+      // The inbound call still answers and hangs up normally.
+      await expect(service.answer(inbound.id)).resolves.toBe(true);
+      expect(inboundStream.track.stop).not.toHaveBeenCalled();
+      await expect(service.hangup(inbound.id)).resolves.toBe(true);
+      expect(inbound.terminate).toHaveBeenCalledTimes(1);
+      expect(inboundStream.track.stop).toHaveBeenCalledTimes(1);
+      expect(events.onIncomingCall).toHaveBeenCalledWith(
+        expect.objectContaining({ callId: 'gsm-primary' }),
+      );
+    });
+
+    test('an outbound session arriving after an inbound primary cannot replace it', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const statusCalls = (events.onCallStatusChange as jest.Mock).mock.calls.length;
+
+      const rogue = createSession('outgoing');
+      rogue.id = 'rogue-outbound';
+      ua.emit('newRTCSession', { session: rogue, request: {} });
+
+      expect(rogue.terminate).toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.status).toBe('active');
+      expect(events.onCallStatusChange).toHaveBeenCalledTimes(statusCalls);
+      expect(events.onCallEnded).not.toHaveBeenCalled();
+      await expect(service.hangup('gsm-primary')).resolves.toBe(true);
+      expect(primary.session.terminate).toHaveBeenCalledTimes(1);
+    });
+
+    test('a pending outbound cannot cross a disconnect/reconnect or clear the newer dial', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const oldUa = mockUaInstances[0];
+      const firstMic = Promise.withResolvers<unknown>();
+      const firstStream = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockReturnValueOnce(firstMic.promise);
+
+      const stale = service.call('150');
+      const staleOutcome = stale.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      service.disconnect();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const newUa = mockUaInstances[1];
+      const secondMic = Promise.withResolvers<unknown>();
+      const secondStream = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockReturnValueOnce(secondMic.promise);
+
+      const fresh = service.call('151');
+      expect(mediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+      secondMic.resolve(secondStream.stream);
+      await expect(fresh).resolves.toBeUndefined();
+      expect(newUa.calls).toHaveLength(1);
+      expect(newUa.calls[0].uri).toBe('sip:151@pbx.example.com');
+
+      const freshSession = createSession('outgoing');
+      freshSession.id = 'fresh-session';
+      newUa.emit('newRTCSession', { session: freshSession, request: {} });
+      expect(service.activeCall?.id).toBe('fresh-session');
+
+      firstMic.resolve(firstStream.stream);
+      const staleError = await staleOutcome;
+      expect(staleError).toBeInstanceOf(Error);
+      expect(errorMessage(staleError)).toMatch(/superseded/i);
+      expect(oldUa.calls).toHaveLength(0);
+      expect(newUa.calls).toHaveLength(1);
+      expect(firstStream.track.stop).toHaveBeenCalledTimes(1);
+      expect(secondStream.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('fresh-session');
+
+      await expect(service.hangup('fresh-session')).resolves.toBe(true);
+      expect(freshSession.terminate).toHaveBeenCalledTimes(1);
+      expect(secondStream.track.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('attended transfer consultation remains the one permitted second outbound', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = { ...createEvents(), onAttendedTransferChange: jest.fn() };
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const consultStream = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(consultStream.stream);
+
+      await expect(service.startAttendedTransfer('150')).resolves.toBeUndefined();
+      expect(ua.calls).toHaveLength(1);
+      expect(ua.calls[0].uri).toBe('sip:150@pbx.example.com');
+      expect(primary.session.terminate).not.toHaveBeenCalled();
+
+      const consult = createSession('outgoing');
+      consult.id = 'consult-session';
+      ua.emit('newRTCSession', { session: consult, request: {} });
+      expect(service.activeCall?.id).toBe('consult-session');
+      expect(events.onAttendedTransferChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consultCallId: 'consult-session',
+          status: 'ringing',
+          activeLine: 'consult',
+        }),
+      );
+      expect(primary.session.terminate).not.toHaveBeenCalled();
+
+      consult.emit('confirmed', {});
+      expect(events.onAttendedTransferChange).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'connected', activeLine: 'consult' }),
+      );
+      expect(service.activeCall?.id).toBe('consult-session');
+      expect(primary.session.terminate).not.toHaveBeenCalled();
+    });
+
+    test('a failed consultation preparation keeps and resumes the borrowed primary microphone', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = { ...createEvents(), onAttendedTransferChange: jest.fn() };
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+
+      // The consultation acquisition hands back the live primary stream.
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(primary.stream);
+      const dispatch = jest.spyOn(ua, 'call').mockImplementationOnce(() => {
+        throw new Error('transport closed');
+      });
+      try {
+        await expect(service.startAttendedTransfer('150')).rejects.toThrow('transport closed');
+      } finally {
+        dispatch.mockRestore();
+      }
+
+      // A borrowed stream is not the attempt's to stop on failure.
+      expect(primary.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.isHeld).toBe(true);
+
+      // Cancelling the failed consultation restores the same live primary.
+      service.cancelAttendedTransfer();
+      expect(primary.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.isHeld).toBe(false);
+      expect(service.activeCall?.status).toBe('active');
+      expect(events.onAttendedTransferChange).toHaveBeenCalledWith(null);
+
+      await expect(service.hangup('gsm-primary')).resolves.toBe(true);
+      expect(primary.track.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a completed incoming call cannot resurrect a superseded pending dial', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const mic = Promise.withResolvers<unknown>();
+      const { stream, track } = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockReturnValueOnce(mic.promise);
+      const pending = service.call('150').then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+      const incoming = createSession('incoming');
+      incoming.id = 'brief-incoming';
+      ua.emit('newRTCSession', { session: incoming, request: {} });
+      incoming.emit('ended', { cause: 'Terminated' });
+      mic.resolve(stream);
+      const result = await pending;
+
+      expect(result).toBeInstanceOf(Error);
+      expect(errorMessage(result)).toMatch(/superseded/i);
+      expect(ua.calls).toHaveLength(0);
+      expect(service.activeCall).toBeNull();
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(service.hasCallInProgress()).toBe(false);
+    });
+
+    test('a cancelled consultation cannot steal a restarted consultation target', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = { ...createEvents(), onAttendedTransferChange: jest.fn() };
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const oldMic = Promise.withResolvers<unknown>();
+      const oldCapture = createStream();
+      const nextCapture = createStream();
+      (mediaDevices.getUserMedia as jest.Mock)
+        .mockReturnValueOnce(oldMic.promise)
+        .mockResolvedValueOnce(nextCapture.stream);
+
+      const cancelled = service.startAttendedTransfer('150').then(
+        () => null,
+        (error: unknown) => error,
+      );
+      service.cancelAttendedTransfer();
+      const restarted = await service.startAttendedTransfer('151').then(
+        () => null,
+        (error: unknown) => error,
+      );
+      oldMic.resolve(oldCapture.stream);
+      const cancelledResult = await cancelled;
+
+      expect(restarted).toBeNull();
+      expect(cancelledResult).toBeInstanceOf(Error);
+      expect(errorMessage(cancelledResult)).toMatch(/superseded/i);
+      expect(ua.calls.map((call: { uri: string }) => call.uri)).toEqual([
+        'sip:151@pbx.example.com',
+      ]);
+      expect(oldCapture.track.stop).toHaveBeenCalledTimes(1);
+      expect(nextCapture.track.stop).not.toHaveBeenCalled();
+      expect(primary.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      service.disconnect(false);
+    });
+
+    test('a failed fresh-microphone consultation leaves primary capture owned until hangup', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = { ...createEvents(), onAttendedTransferChange: jest.fn() };
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const consultation = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(consultation.stream);
+      const dispatch = jest.spyOn(ua, 'call').mockImplementationOnce(() => {
+        throw new Error('transport closed');
+      });
+      try {
+        await expect(service.startAttendedTransfer('150')).rejects.toThrow('transport closed');
+      } finally {
+        dispatch.mockRestore();
+      }
+
+      expect(consultation.track.stop).toHaveBeenCalledTimes(1);
+      expect(primary.track.stop).not.toHaveBeenCalled();
+      service.cancelAttendedTransfer();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.isHeld).toBe(false);
+      await expect(service.hangup('gsm-primary')).resolves.toBe(true);
+      expect(primary.track.stop).toHaveBeenCalledTimes(1);
+      expect(consultation.track.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('disconnect clears consultation ownership even when UA teardown throws', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = { ...createEvents(), onAttendedTransferChange: jest.fn() };
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(createStream().stream);
+      await service.startAttendedTransfer('150');
+      const consultation = createSession('outgoing');
+      consultation.id = 'old-consultation';
+      ua.emit('newRTCSession', { session: consultation, request: {} });
+      consultation.emit('confirmed', {});
+
+      const teardown = jest.spyOn(ua, 'stop').mockImplementationOnce(() => {
+        throw new Error('transport teardown failed');
+      });
+      try {
+        service.disconnect();
+      } finally {
+        teardown.mockRestore();
+      }
+
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const freshUa = mockUaInstances[mockUaInstances.length - 1];
+      const freshCapture = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(freshCapture.stream);
+      await expect(service.call('151')).resolves.toBeUndefined();
+      const freshSession = createSession('outgoing');
+      freshSession.id = 'fresh-primary-after-transfer';
+      freshUa.emit('newRTCSession', { session: freshSession, request: {} });
+
+      consultation.emit('ended', { cause: 'Terminated' });
+      primary.session.emit('ended', { cause: 'Terminated' });
+      expect(freshUa.calls.map((call: { uri: string }) => call.uri)).toEqual([
+        'sip:151@pbx.example.com',
+      ]);
+      expect(service.activeCall?.id).toBe(freshSession.id);
+      expect(freshCapture.track.stop).not.toHaveBeenCalled();
+      expect(events.onAttendedTransferChange).toHaveBeenLastCalledWith(null);
+      await expect(service.hangup(freshSession.id)).resolves.toBe(true);
+      expect(freshCapture.track.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a stale failed inbound answer cannot stop a newer outbound microphone', async () => {
+      mockMediaConfiguration
+        .mockRejectedValueOnce(new Error('relay unavailable'))
+        .mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const oldMic = Promise.withResolvers<unknown>();
+      const freshCapture = createStream();
+      (mediaDevices.getUserMedia as jest.Mock)
+        .mockReturnValueOnce(oldMic.promise)
+        .mockResolvedValueOnce(freshCapture.stream);
+      const incoming = createSession('incoming');
+      incoming.id = 'cancelled-inbound-answer';
+      ua.emit('newRTCSession', { session: incoming, request: {} });
+      const pendingAnswer = service.answer(incoming.id);
+      incoming.emit('ended', { cause: 'Terminated' });
+
+      await service.call('151');
+      const freshSession = createSession('outgoing');
+      freshSession.id = 'outbound-after-failed-answer';
+      ua.emit('newRTCSession', { session: freshSession, request: {} });
+      oldMic.reject(new Error('microphone request cancelled'));
+      await expect(pendingAnswer).resolves.toBe(false);
+
+      expect(incoming.answer).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe(freshSession.id);
+      expect(freshCapture.track.stop).not.toHaveBeenCalled();
+      await expect(service.hangup(freshSession.id)).resolves.toBe(true);
+      expect(freshCapture.track.stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('a late inbound capture cannot orphan the newer outbound microphone on hangup', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const oldMic = Promise.withResolvers<unknown>();
+      const oldCapture = createStream();
+      const freshCapture = createStream();
+      (mediaDevices.getUserMedia as jest.Mock)
+        .mockReturnValueOnce(oldMic.promise)
+        .mockResolvedValueOnce(freshCapture.stream);
+      const incoming = createSession('incoming');
+      incoming.id = 'cancelled-slow-answer';
+      ua.emit('newRTCSession', { session: incoming, request: {} });
+      const pendingAnswer = service.answer(incoming.id);
+      incoming.emit('ended', { cause: 'Terminated' });
+
+      await service.call('151');
+      const freshSession = createSession('outgoing');
+      freshSession.id = 'outbound-after-slow-answer';
+      ua.emit('newRTCSession', { session: freshSession, request: {} });
+      oldMic.resolve(oldCapture.stream);
+      await expect(pendingAnswer).resolves.toBe(false);
+
+      expect(incoming.answer).not.toHaveBeenCalled();
+      expect(oldCapture.track.stop).toHaveBeenCalledTimes(1);
+      expect(freshCapture.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe(freshSession.id);
+      await expect(service.hangup(freshSession.id)).resolves.toBe(true);
+      expect(freshCapture.track.stop).toHaveBeenCalledTimes(1);
+      expect(oldCapture.track.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+  describe('call safety watchdogs', () => {
+    test('holds local ringback briefly after the callee answers', async () => {
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      jest.useFakeTimers();
+      try {
+        const session = createSession('outgoing');
+        mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+        (InCallManager.stopRingback as jest.Mock).mockClear();
+
+        session.emit('accepted');
+        expect(InCallManager.stopRingback).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(400);
+        expect(InCallManager.stopRingback).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('ends an outbound call that never receives a terminal response', async () => {
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      jest.useFakeTimers();
+      try {
+        const session = createSession('outgoing');
+        mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+
+        jest.advanceTimersByTime(OUTGOING_RING_TIMEOUT_MS);
+
+        expect(events.onCallEnded).toHaveBeenCalledWith(
+          session.id,
+          'NO_ANSWER',
+          expect.objectContaining({ statusCode: 408 }),
+        );
+        expect(session.terminate).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('abandons a 2xx that never confirms', async () => {
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      jest.useFakeTimers();
+      try {
+        const session = createSession('outgoing');
+        mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+        session.emit('accepted');
+
+        jest.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS);
+
+        expect(events.onCallEnded).toHaveBeenCalledWith(
+          session.id,
+          'CONFIRMATION_TIMEOUT',
+          expect.anything(),
+        );
+        expect(session.terminate).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('does not arm the outbound confirmation timeout for an inbound call', async () => {
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      jest.useFakeTimers();
+      try {
+        const session = createSession('incoming');
+        mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+        session.emit('accepted');
+
+        jest.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS);
+
+        expect(events.onCallEnded).not.toHaveBeenCalledWith(
+          expect.anything(),
+          'CONFIRMATION_TIMEOUT',
+          expect.anything(),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('ends the call when a dropped signaling transport is not restored', async () => {
+      const events = createEvents();
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      jest.useFakeTimers();
+      try {
+        const session = createSession('outgoing');
+        mockUaInstances[0].emit('newRTCSession', { session, request: {} });
+        const ua = mockUaInstances[0];
+        ua.isConnected = () => false;
+        ua.isRegistered = () => false;
+
+        ua.emit('disconnected');
+        jest.advanceTimersByTime(SIGNALING_GRACE_MS);
+
+        expect(events.onCallEnded).toHaveBeenCalledWith(
+          session.id,
+          'SIGNALING_LOST',
+          expect.objectContaining({ reasonPhrase: 'Signalling lost' }),
+        );
+        expect(session.terminate).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

@@ -25,13 +25,14 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GatewayClient } from '../src/gateway/client';
-import { GatewayError } from '../src/gateway/errors';
+import { GatewayError, describeEnrollmentError } from '../src/gateway/errors';
 import { PENDING_APPROVAL_MESSAGE, prepareLogin } from '../src/gateway/enrollment';
 import { randomHex, isClaimSecret } from '../src/gateway/entropy';
 import {
   buildGatewaySipWebSocketUrl,
   createGatewaySession,
   gatewayMediaConfiguration,
+  getCachedGatewaySession,
   getOrLoadGatewaySession,
   registerGatewayPushToken,
   removeGatewayPushToken,
@@ -346,12 +347,14 @@ describe('gateway enrollment', () => {
     expect(isClaimSecret(secrets[0])).toBe(true);
   });
 
-  test('an unexpected assigned extension fails closed until the user signs in to that account', async () => {
+  test('an assignment that never matches fails closed after bounded re-enrollment', async () => {
     const assignment: GatewayAssignment = { ...ASSIGNMENT, extension: '161' };
+    let enrolls = 0;
     const fetcher = jest.fn(async (url: string) => {
       const path = pathOf(url);
       if (path === '/api/gateway/capabilities') return jsonResponse(200, CAPABILITIES);
       if (path === '/api/gateway/enrollment/enroll') {
+        enrolls += 1;
         return jsonResponse(201, { device: { id: 'dev-1' }, status: 'pending' });
       }
       if (path === '/api/gateway/enrollment/claim') {
@@ -366,6 +369,7 @@ describe('gateway enrollment', () => {
       fetcher,
       pollIntervalMs: 1,
     })).rejects.toMatchObject({ kind: 'fail_closed' });
+    expect(enrolls).toBe(3);
     expect(await loadEnrollmentRecord(HOST, '161')).toBeNull();
   });
 
@@ -396,6 +400,167 @@ describe('gateway enrollment', () => {
     expect(result.mode).toBe('gateway');
     expect(phases).toContain('waiting');
     expect(claims).toBe(2);
+  });
+
+  test('a busy capability probe retries instead of reporting an unreachable gateway', async () => {
+    let probes = 0;
+    const fetcher = jest.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === '/api/gateway/capabilities') {
+        probes += 1;
+        if (probes < 3) return jsonResponse(503, {});
+        return jsonResponse(200, CAPABILITIES);
+      }
+      if (path === '/api/gateway/enrollment/enroll') {
+        return jsonResponse(201, { device: { id: 'dev-1' }, status: 'pending' });
+      }
+      if (path === '/api/gateway/enrollment/claim') {
+        return jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    const phases: string[] = [];
+    const result = await prepareLogin({
+      host: HOST,
+      extension: '160',
+      fetcher,
+      pollIntervalMs: 1,
+      probeRetryMs: 1,
+      onProgress: (update) => phases.push(update.phase),
+    });
+    expect(result.mode).toBe('gateway');
+    expect(probes).toBe(3);
+    expect(phases).toContain('detecting');
+  });
+
+  test('a persistently busy gateway stays retryable and never falls back to direct PBX', async () => {
+    let probes = 0;
+    const fetcher = jest.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === '/api/gateway/capabilities') {
+        probes += 1;
+        return jsonResponse(503, {});
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    await expect(prepareLogin({
+      host: HOST,
+      extension: '160',
+      fetcher,
+      pollIntervalMs: 1,
+      probeRetryMs: 1,
+    })).rejects.toMatchObject({ kind: 'unavailable' });
+    expect(probes).toBe(4);
+  });
+
+  test('a stale approval for another extension re-enrolls instead of failing closed', async () => {
+    // The stored record still says approved for 160, but the gateway holds an
+    // approval for a different extension. A real extension switch looks exactly
+    // like this and must land in the approval wait, not an error.
+    await saveEnrollmentRecord({
+      host: HOST,
+      extension: '160',
+      claimSecret: randomHex(),
+      deviceId: 'dev-1',
+      status: 'approved',
+      gatewayMode: true,
+      assignment: { ...ASSIGNMENT, extension: '151' },
+      updatedAt: Date.now(),
+    });
+    let enrolls = 0;
+    let claims = 0;
+    const fetcher = jest.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === '/api/gateway/capabilities') return jsonResponse(200, CAPABILITIES);
+      if (path === '/api/gateway/enrollment/enroll') {
+        enrolls += 1;
+        return jsonResponse(201, { device: { id: 'dev-1' }, status: 'pending' });
+      }
+      if (path === '/api/gateway/enrollment/claim') {
+        claims += 1;
+        if (claims === 1) {
+          return jsonResponse(200, {
+            status: 'approved',
+            assignment: { ...ASSIGNMENT, extension: '151' },
+          });
+        }
+        if (claims === 2) return jsonResponse(202, { status: 'pending', retryAfterMs: 1 });
+        return jsonResponse(200, { status: 'approved', assignment: ASSIGNMENT });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    const phases: string[] = [];
+    const result = await prepareLogin({
+      host: HOST,
+      extension: '160',
+      fetcher,
+      pollIntervalMs: 1,
+      probeRetryMs: 1,
+      onProgress: (update) => phases.push(update.phase),
+    });
+    expect(result.mode).toBe('gateway');
+    expect(result.extension).toBe('160');
+    expect(enrolls).toBe(1);
+    expect(phases).toContain('waiting');
+  });
+
+  test('a blocked or misrouted gateway is reported truthfully, never as unreachable', async () => {
+    for (const [status, kind] of [[403, 'blocked'], [418, 'route']] as const) {
+      const fetcher = jest.fn(async (url: string) => {
+        if (pathOf(url) === '/api/gateway/capabilities') return jsonResponse(status, {});
+        throw new Error(`unexpected request ${url}`);
+      }) as unknown as typeof fetch;
+      await expect(prepareLogin({ host: HOST, extension: '160', fetcher, pollIntervalMs: 1 }))
+        .rejects.toMatchObject({ kind });
+    }
+  });
+
+  test('an enrollment identity conflict asks for a revoke instead of waiting', async () => {
+    const fetcher = jest.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === '/api/gateway/capabilities') return jsonResponse(200, CAPABILITIES);
+      if (path === '/api/gateway/enrollment/enroll') {
+        return jsonResponse(409, { error: 'device_already_approved' });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+
+    const error = await prepareLogin({ host: HOST, extension: '160', fetcher, pollIntervalMs: 1 })
+      .catch((caught) => caught);
+    expect(error).toMatchObject({ kind: 'conflict' });
+    expect(describeEnrollmentError(error)).toContain('Revoke the old device');
+  });
+
+  test('an unreadable enrollment store is reported as a storage fault', async () => {
+    const getItem = jest.spyOn(AsyncStorage, 'getItem');
+    getItem.mockRejectedValueOnce(new Error('db locked'));
+    try {
+      const error = await loadEnrollmentRecord(HOST, '160').catch((caught) => caught);
+      expect(error).toMatchObject({ kind: 'storage' });
+      expect(describeEnrollmentError(error)).toContain('could not read its saved gateway enrollment');
+    } finally {
+      getItem.mockRestore();
+    }
+  });
+
+  test('a pending approval is a waiting state, not a failure', async () => {
+    await saveEnrollmentRecord({
+      host: HOST,
+      extension: '160',
+      claimSecret: randomHex(),
+      deviceId: 'dev-1',
+      status: 'pending',
+      gatewayMode: true,
+      updatedAt: Date.now(),
+    });
+    // The session path must surface waiting copy, not the unreachable banner.
+    const error = await getOrLoadGatewaySession(HOST, '160').catch((caught) => caught);
+    expect(error).toBeInstanceOf(GatewayError);
+    expect(error).toMatchObject({ kind: 'pending' });
+    expect(describeEnrollmentError(error)).toMatch(/Waiting for administrator approval/);
   });
 
   test('unreachable enrollment fails closed instead of falling back', async () => {
@@ -564,8 +729,29 @@ describe('gateway session + tenant APIs', () => {
     const media = await gatewayMediaConfiguration(session);
     expect(media.iceTransportPolicy).toBe('relay');
     expect(media.iceServers).toHaveLength(1);
-    const urls = (media.iceServers[0] as { urls?: string[] | string }).urls;
-    expect(Array.isArray(urls) ? urls : [urls]).toHaveLength(2);
+    // TCP media endpoints are not usable by this deployment; only UDP survives.
+    expect(media.iceServers[0]).toEqual({
+      urls: 'turn:turn.example.com:3478?transport=udp',
+      username: 'u',
+      credential: 'c',
+    });
+  });
+
+  test('a TCP-only gateway relay response fails closed', async () => {
+    const session = createGatewaySession(HOST, 'secret-1', 'dev-1', ASSIGNMENT);
+    globalThis.fetch = jest.fn(async () =>
+      jsonResponse(200, {
+        iceServers: [
+          {
+            urls: ['turn:turn.example.com:3478?transport=tcp', 'turns:turn.example.com:5349'],
+            username: 'u',
+            credential: 'c',
+          },
+        ],
+      }),
+    ) as unknown as typeof fetch;
+
+    await expect(gatewayMediaConfiguration(session)).rejects.toThrow('Audio relay unavailable');
   });
 
   test('empty relay credentials fail the call configuration', async () => {
@@ -791,5 +977,64 @@ describe('automatic local gateway fallback', () => {
       globalThis.fetch = original;
       resetGatewaySession();
     }
+  });
+
+  test('cached approved assignment connects without a claim request and stays extension-scoped', async () => {
+    resetGatewaySession();
+    await saveEnrollmentRecord({
+      host: HOST, extension: '160', claimSecret: 'a'.repeat(64), deviceId: 'dev-160',
+      status: 'approved', gatewayMode: true, assignment: ASSIGNMENT, updatedAt: Date.now(),
+    });
+    await saveEnrollmentRecord({
+      host: HOST, extension: '111', claimSecret: 'b'.repeat(64), deviceId: 'dev-111',
+      status: 'approved', gatewayMode: true,
+      assignment: { ...ASSIGNMENT, deviceId: 'dev-111', extension: '111' }, updatedAt: Date.now(),
+    });
+    const fetcher = jest.fn(async () => {
+      throw new Error('cached session must not use the network');
+    }) as unknown as typeof fetch;
+    const original = globalThis.fetch;
+    globalThis.fetch = fetcher;
+    try {
+      const first = await getCachedGatewaySession(HOST, '160');
+      const second = await getCachedGatewaySession(HOST, '160');
+      const other = await getCachedGatewaySession(HOST, '111');
+      expect(first?.deviceId).toBe('dev-160');
+      expect(second?.deviceId).toBe('dev-160');
+      expect(first?.extension).toBe('160');
+      expect(other?.deviceId).toBe('dev-111');
+      expect(other?.extension).toBe('111');
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = original;
+      resetGatewaySession();
+      await AsyncStorage.clear();
+    }
+  });
+
+  test('parses a per-PBX direct fallback assignment', async () => {
+    const fetcher = jest.fn(async () => jsonResponse(200, {
+      status: 'approved',
+      assignment: {
+        ...ASSIGNMENT,
+        directFallback: {
+          wsURL: 'wss://public-pbx.example.com:8089/ws',
+          apiURL: 'https://public-pbx.example.com:8080',
+        },
+      },
+    })) as unknown as typeof fetch;
+    const client = new GatewayClient({
+      baseUrl: 'https://gateway.example.com',
+      claimSecret: 'a'.repeat(64),
+      deviceId: 'dev-1',
+      fetcher,
+    });
+    const claim = await client.claim('dev-1');
+    expect(claim.status).toBe('approved');
+    if (claim.status !== 'approved') throw new Error('expected approved claim');
+    expect(claim.assignment.directFallback).toEqual({
+      wsURL: 'wss://public-pbx.example.com:8089/ws',
+      apiURL: 'https://public-pbx.example.com:8080',
+    });
   });
 });

@@ -12,15 +12,19 @@ import { getDeviceUuid } from '../storage/deviceId';
 import { extensionHeaders } from '../network';
 import { randomHex } from './entropy';
 import { DEFAULT_BUSY_RETRY_MS, DEFAULT_CLAIM_POLL_MS, GatewayClient } from './client';
-import { GatewayError, failClosed } from './errors';
+import { APPROVAL_PENDING_MESSAGE, GatewayError, failClosed } from './errors';
 import { assertGatewaySessionGeneration, createGatewaySession, getGatewaySessionGeneration, resetGatewaySession, setActiveGatewaySession } from './session';
 import { getOrCreateEnrollmentRecord, isKnownGatewayHost, loadEnrollmentRecord, rememberGatewayHost, saveEnrollmentRecord } from './storage';
 import type { EnrollmentRecord, GatewaySession, GatewayEndpoint } from './types';
 import { fallbackGatewayEndpoint, gatewayBaseUrl, normalizeServerHost } from './urls';
 
-export const PENDING_APPROVAL_MESSAGE = 'Waiting for administrator approval…';
+export const PENDING_APPROVAL_MESSAGE = APPROVAL_PENDING_MESSAGE;
 export const MAX_NETWORK_BACKOFF_MS = 30_000;
 const MAX_EXPIRED_REENROLLS = 3;
+/** Bounded retries for a gateway that answers busy (429/5xx) to the probe. */
+const PROBE_RETRIES = 3;
+/** How many times a stale approval may be re-requested before failing closed. */
+const MAX_ASSIGNMENT_REALIGNS = 2;
 
 export type EnrollmentPhase = 'detecting' | 'pending' | 'waiting' | 'approved' | 'legacy';
 
@@ -39,12 +43,16 @@ export type PrepareLoginOptions = {
   extension: string;
   /** Optional LAN/local gateway origin used only after the primary is unreachable. */
   fallbackHost?: string;
+  /** Skip gateway detection/enrollment and use the PBX's native SIP endpoint. */
+  direct?: boolean;
   /** Passed through for callers/tests; SIP auth stays local, never sent to the gateway. */
   password?: string;
   platform?: 'android' | 'ios';
   deviceName?: string;
   appVersion?: string;
   pollIntervalMs?: number;
+  /** Backoff step for retrying a busy capability probe (tests shorten it). */
+  probeRetryMs?: number;
   timeoutMs?: number;
   fetcher?: typeof fetch;
   signal?: AbortSignal;
@@ -103,6 +111,13 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   const extension = options.extension.trim();
   if (!extension) throw new GatewayError('invalid', 'Extension is not configured');
   resetGatewaySession();
+  // A direct-PBX account must not touch the gateway capability/enrollment
+  // endpoints. The PBX may protect those routes with 401, which is not an
+  // enrollment failure for a normal SIP client.
+  if (options.direct) {
+    options.onProgress?.({ phase: 'legacy', message: '' });
+    return { mode: 'legacy', extension };
+  }
   const generation = getGatewaySessionGeneration();
   const checkCurrent = () => {
     throwIfAborted(options.signal);
@@ -126,10 +141,26 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   options.onProgress?.({ phase: 'detecting', message: 'Checking server…' });
   let capabilities = null;
   let primaryError: unknown = null;
-  try {
-    capabilities = await probe.capabilities();
-  } catch (error) {
-    primaryError = error;
+  // A 429/5xx answer means the gateway is up but briefly busy (deploy, reload,
+  // carrier NAT neighbours). Retry a few times before surfacing anything; the
+  // caller keeps retrying afterwards too, so this is never a dead end.
+  for (let attempt = 0; !capabilities; attempt += 1) {
+    try {
+      capabilities = await probe.capabilities();
+      primaryError = null;
+    } catch (error) {
+      primaryError = error;
+      const retryable = error instanceof GatewayError && error.kind === 'unavailable';
+      if (!retryable || attempt >= PROBE_RETRIES) break;
+      options.onProgress?.({
+        phase: 'detecting',
+        message: 'The gateway is busy. Retrying…',
+        retryAfterMs: error.retryAfterMs,
+      });
+      await delay(Math.min(MAX_NETWORK_BACKOFF_MS,
+        (options.probeRetryMs ?? 1000) * (attempt + 1)), options.signal);
+      checkCurrent();
+    }
   }
   checkCurrent();
 
@@ -137,7 +168,8 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   // with the same claim secret. Authorization failures are not failover cases.
   if ((!capabilities || !capabilities.deviceApproval) && fallback &&
       (!primaryError || (primaryError instanceof GatewayError &&
-        (primaryError.kind === 'network' || (primaryError.status || 0) >= 500)))) {
+        (primaryError.kind === 'network' || primaryError.kind === 'unavailable' ||
+         (primaryError.status || 0) >= 500)))) {
     const fallbackProbe = new GatewayClient({ baseUrl: fallback.apiURL, fetcher, timeoutMs });
     try {
       const fallbackCapabilities = await fallbackProbe.capabilities();
@@ -156,7 +188,9 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   // No gateway (404/unreachable) or approval disabled → keep direct-PBX login.
   if (!capabilities || !capabilities.deviceApproval) {
     if (primaryError) throw primaryError;
-    if (knownGateway) throw failClosed('Known gateway cannot be bypassed');
+    if (knownGateway) {
+      throw new GatewayError('route', 'Server did not answer as a PBX gateway');
+    }
     options.onProgress?.({ phase: 'legacy', message: '' });
     return { mode: 'legacy', extension };
   }
@@ -201,6 +235,7 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
   let networkBackoffMs = Math.max(pollIntervalMs, 50);
   let expiredReenrolls = 0;
   let enrollmentRequested = false;
+  let realignAttempts = 0;
 
   while (true) {
     checkCurrent();
@@ -262,7 +297,19 @@ export async function prepareLogin(options: PrepareLoginOptions): Promise<LoginP
         const assignedDeviceId = assignment.deviceId || deviceId;
         const assignedExtension = assignment.extension || extension;
         if (assignedExtension !== record.extension) {
-          throw failClosed('Gateway assignment does not match the requested account');
+          // The gateway still holds an approval for a different extension, so
+          // the stored approval is stale. Ask for the requested account
+          // explicitly: enroll turns that approval into a pending request for
+          // this extension, and the poll below then waits for its approval.
+          if (realignAttempts >= MAX_ASSIGNMENT_REALIGNS) {
+            throw failClosed('Gateway assignment does not match the requested account');
+          }
+          realignAttempts += 1;
+          record = { ...record, status: 'pending', assignment: undefined, updatedAt: Date.now() };
+          await saveEnrollmentRecord(record);
+          enrollmentRequested = false;
+          checkCurrent();
+          continue;
         }
         record = {
           ...record,

@@ -6,7 +6,7 @@
     "android": "react-native run-android",
     "ios": "react-native run-ios",
     "lint": "eslint .",
-    "postinstall": "patch-package && node scripts/patch-incall-route.js && node compile-softphone.js",
+    "postinstall": "patch-package && node scripts/patch-incall-route.js",
     "start": "react-native start",
     "test": "jest"
   },
@@ -32,7 +32,6 @@
     "react-native-voip-push-notification": "^3.3.3",
     "react-native-webrtc": "^124.0.8",
     "react-native-webview": "^14.0.1",
-    "sip.js": "^0.21.2",
     "socket.io-client": "^4.8.4"
   },
   "devDependencies": {
@@ -50,7 +49,6 @@
     "@types/jest": "^29.5.13",
     "@types/react": "^19.2.0",
     "@types/react-test-renderer": "^19.1.0",
-    "ejs": "^6.0.1",
     "eslint": "^8.19.0",
     "jest": "^29.6.3",
     "patch-package": "^8.0.1",

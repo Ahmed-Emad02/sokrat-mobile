@@ -7,7 +7,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isClaimSecret, randomHex } from './entropy';
-import { failClosed } from './errors';
+import { GatewayError } from './errors';
 import type { EnrollmentRecord, EnrollmentStatus, GatewayAssignment, GatewayEndpoint } from './types';
 import { normalizeServerHost } from './urls';
 
@@ -73,17 +73,24 @@ export async function loadEnrollmentRecord(
   host: string,
   extension: string,
 ): Promise<EnrollmentRecord | null> {
+  let encoded: string | null;
   try {
-    const encoded = await AsyncStorage.getItem(enrollmentKey(host, extension));
-    if (!encoded) return null;
-    const record = normalizeRecord(JSON.parse(encoded));
-    if (!record || normalizeServerHost(record.host) !== normalizeServerHost(host) || record.extension !== extension.trim()) {
-      throw failClosed('Invalid gateway enrollment record');
-    }
-    return record;
-  } catch (error) {
-    throw failClosed('Gateway enrollment storage is unavailable');
+    encoded = await AsyncStorage.getItem(enrollmentKey(host, extension));
+  } catch {
+    throw new GatewayError('storage', 'Gateway enrollment storage is unavailable');
   }
+  if (!encoded) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    throw new GatewayError('storage', 'Gateway enrollment record is not valid JSON');
+  }
+  const record = normalizeRecord(parsed);
+  if (!record || normalizeServerHost(record.host) !== normalizeServerHost(host) || record.extension !== extension.trim()) {
+    throw new GatewayError('storage', 'Invalid gateway enrollment record');
+  }
+  return record;
 }
 
 export async function saveEnrollmentRecord(record: EnrollmentRecord): Promise<void> {
@@ -108,19 +115,30 @@ export async function findInstallationEnrollment(
   deviceUuid: string,
 ): Promise<EnrollmentRecord | null> {
   const prefix = `${RECORD_PREFIX}/${encodeURIComponent(normalizeServerHost(host))}/`;
-  const keys = await AsyncStorage.getAllKeys?.() ?? [];
+  let keys: readonly string[];
+  try {
+    keys = await AsyncStorage.getAllKeys?.() ?? [];
+  } catch {
+    throw new GatewayError('storage', 'Gateway enrollment storage is unavailable');
+  }
   for (const key of keys) {
     if (!key.startsWith(prefix)) continue;
-    const encoded = await AsyncStorage.getItem(key);
-    if (!encoded) continue;
-    let record: EnrollmentRecord | null;
+    let encoded: string | null;
     try {
-      record = normalizeRecord(JSON.parse(encoded));
+      encoded = await AsyncStorage.getItem(key);
     } catch {
-      throw failClosed('Gateway enrollment storage is unavailable');
+      throw new GatewayError('storage', 'Gateway enrollment storage is unavailable');
     }
+    if (!encoded) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(encoded);
+    } catch {
+      throw new GatewayError('storage', 'Gateway enrollment record is not valid JSON');
+    }
+    const record = normalizeRecord(parsed);
     if (!record || normalizeServerHost(record.host) !== normalizeServerHost(host)) {
-      throw failClosed('Invalid gateway enrollment record');
+      throw new GatewayError('storage', 'Invalid gateway enrollment record');
     }
     if ((record.deviceUuid || record.enrollmentUuid) === deviceUuid) return record;
   }

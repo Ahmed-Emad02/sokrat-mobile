@@ -73,3 +73,10 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Generated legacy web-softphone assets are not native app inputs.
+/android/app/src/main/assets/index.android.bundle
+/android/app/src/main/assets/sokrat-voice/
+
+# Production signing material stays outside the checkout.
+*.jks

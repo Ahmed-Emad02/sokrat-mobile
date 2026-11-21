@@ -8,23 +8,35 @@ import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG, getPushGateway, getSipWss } from '../config';
 import { CALL_VOLUME_PATH, extensionHeaders, getMediaConfiguration, MediaConfiguration } from '../network';
+import { createAudioStatsSummarizer, describeSdpForLog, type SdpLogSummary } from './MediaDiagnostics';
+import { delay } from '../gateway/enrollment';
 import { isTerminalEnrollmentError } from '../gateway/errors';
+import { ensureVpn, getVpnPublicKey, type VpnProfile } from '../vpn/VpnManager';
 import {
   buildGatewaySipWebSocketUrl,
   gatewayMediaConfiguration,
   getActiveGatewaySession,
+  getCachedGatewaySession,
   getGatewayCallState,
+  getGatewayVpnProfile,
   getOrLoadGatewaySession,
 } from '../gateway/session';
-import type { GatewaySession } from '../gateway/types';
+import type { GatewaySession, GatewayDirectFallback } from '../gateway/types';
 import {
   startCallManagers,
-  startOutgoingRingback,
   stopCallManagers,
+  startOutgoingRingback,
   stopOutgoingRingback,
+  stopOutgoingRingbackAfterMedia,
   setMicrophoneMute,
 } from '../calls/incall';
-import { shouldReconcileTrunk, TRUNK_STATE_PATH } from '../calls/trunkReconcile';
+import {
+  INITIAL_TRUNK_RECONCILE_MEMORY,
+  nextTrunkReconcileAction,
+  shouldReconcileTrunk,
+  TRUNK_STATE_PATH,
+} from '../calls/trunkReconcile';
+import type { TrunkReconcileMemory } from '../calls/trunkReconcile';
 import {
   clampMicGainDb,
   MIC_MAX_PERCENT,
@@ -33,7 +45,7 @@ import {
   SPEAKER_MAX_PERCENT,
   speakerPercentToGain,
 } from '../calls/audioLevels';
-import { dismissNativeCallNotification } from '../calls/nativeCallNotification';
+import { dismissNativeCallNotification, getMediaDiagnosticsWriter } from '../calls/nativeCallNotification';
 import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
 import { callDisplayName, usableProviderName } from '../calls/callerName';
@@ -56,15 +68,52 @@ const CALL_ID_PATTERN =
  * local SDP exactly once. Gathering never completes → the call is aborted
  * instead of signalling an SDP without a relay candidate.
  */
-export const ICE_RELAY_GRACE_MS = 300;
-export const ICE_RELAY_CAP_MS = 3000;
+export const ICE_RELAY_GRACE_MS = 150;
+export const ICE_RELAY_CAP_MS = 1500;
 /**
- * Cellular networks can take several seconds to produce a TURN allocation and
- * relay candidate. The pre-relay budget is deliberately generous (10–15 s);
- * once a relay candidate is actually in the local SDP the grace above keeps
- * call setup fast.
+ * Relay-only sessions may need a TURN allocation on cellular, but must never
+ * hold a normal call's SDP hostage. Auto/host-capable sessions skip this wait.
  */
-export const ICE_RELAY_WAIT_MS = 12000;
+export const ICE_RELAY_WAIT_MS = 2000;
+
+/**
+ * Call-state safety bounds. A signaling loss that is not repaired inside the
+ * grace window ends the call instead of freezing the UI/ringback; an outbound
+ * session rings for at most the ring timeout, and a 2xx that never confirms is
+ * abandoned after the confirmation timeout.
+ */
+export const SIGNALING_GRACE_MS = 8000;
+export const OUTGOING_RING_TIMEOUT_MS = 60_000;
+export const CONFIRMATION_TIMEOUT_MS = 10_000;
+
+/**
+ * A WireGuard interface can report UP while its peer is unreachable (for
+ * example, the cached profile points at a private LAN address while the phone
+ * is on another network). Probe the private SIP WebSocket before committing to
+ * the direct path so the normal gateway/TURN fallback can take over.
+ */
+async function probePrivateSipWebSocket(url: string, timeoutMs = 2500): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    // A plain HTTP probe reaches the same private host/port as the SIP
+    // WebSocket. Any HTTP response proves the route exists; only a transport
+    // failure/timeout means the direct VPN path is unusable.
+    const target = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
+    await fetch(target, { method: 'GET', signal: controller.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function hostFromApiUrl(url: string): string {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/(\[[^\]]+\]|[^/:?#]+)(?::(\d+))?/i.exec(url.trim());
+  if (!match) return '';
+  return match[2] ? `${match[1]}:${match[2]}` : match[1];
+}
 
 type IceGatheringConnection = {
   localDescription?: { sdp?: string } | null;
@@ -79,6 +128,97 @@ type IceGatheringSession = {
   /** RTCPeerConnection (JsSIP `connection` getter); shape varies by version. */
   connection?: unknown;
 };
+
+type EarlyMediaConnection = {
+  remoteDescription?: { sdp?: string } | null;
+  getReceivers?: () => Array<{ track?: MediaStreamTrack }>;
+  getStats?: () => Promise<Map<string, unknown>>;
+};
+
+/**
+ * How often the early-media readiness check samples native RTP statistics
+ * while the call is still ringing (the poll runs until RTP, confirmation, or
+ * teardown; carriers can start early media many seconds after the 183).
+ */
+export const EARLY_MEDIA_POLL_MS = 250;
+const MEDIA_RECOVERY_CONFIRM_DELAY_MS = 1200;
+
+function earlyMediaConnection(session: { connection?: unknown }): EarlyMediaConnection | null {
+  const raw = session.connection;
+  if (!raw || typeof raw !== 'object') return null;
+  // The peer connection is a native-backed object; its members are checked at
+  // each use (typeof / optional chaining) instead of trusting a full shape.
+  return raw as EarlyMediaConnection;
+}
+
+function audioReceiverTracks(pc: EarlyMediaConnection): MediaStreamTrack[] {
+  if (typeof pc.getReceivers !== 'function') return [];
+  const tracks: MediaStreamTrack[] = [];
+  for (const receiver of pc.getReceivers()) {
+    const track = receiver?.track;
+    if (track && track.kind === 'audio' && track.readyState !== 'ended') tracks.push(track);
+  }
+  return tracks;
+}
+
+/** True when an inbound RTP audio report already shows received media. */
+function hasInboundAudio(stats: Map<string, unknown> | null | undefined): boolean {
+  if (!stats) return false;
+  for (const report of stats.values()) {
+    if (!report || typeof report !== 'object') continue;
+    if (!('type' in report) || report.type !== 'inbound-rtp') continue;
+    const kind = 'kind' in report ? report.kind : 'mediaType' in report ? report.mediaType : undefined;
+    if (kind !== 'audio') continue;
+    const packets = 'packetsReceived' in report ? Number(report.packetsReceived) : 0;
+    const bytes = 'bytesReceived' in report ? Number(report.bytesReceived) : 0;
+    if (packets > 0 || bytes > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the remote party's audio section actually sends media to us.
+ *
+ * A provisional answer is only playable early media when its `m=audio` section
+ * is enabled (port is not 0) and is `sendrecv`/`sendonly` (the default when no
+ * direction attribute is present). `recvonly`, `inactive`, a disabled port, or
+ * a missing audio section means there is nothing to hear yet, so the local
+ * ringback must keep playing. A session-level direction only counts before the
+ * first media section; a direction inside a preceding `m=video`/application
+ * section belongs to that section, never to the session.
+ */
+export function remoteAudioSends(sdp?: string | null): boolean {
+  if (!sdp) return false;
+  let sessionDirection = '';
+  let inAudio = false;
+  let audioFound = false;
+  let audioDirection = '';
+  let inAnySection = false;
+  for (const rawLine of sdp.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith('m=')) {
+      if (inAudio) break;
+      inAnySection = true;
+      inAudio = line.startsWith('m=audio');
+      if (inAudio) {
+        // `m=audio 0 ...` is a rejected/disabled media section.
+        const port = (line.split(/\s+/)[1] || '').split('/')[0];
+        if (port === '0') return false;
+        audioFound = true;
+      }
+      continue;
+    }
+    if (line !== 'a=sendrecv' && line !== 'a=sendonly' &&
+        line !== 'a=recvonly' && line !== 'a=inactive') {
+      continue;
+    }
+    if (inAudio) audioDirection = line.slice(2);
+    else if (!inAnySection) sessionDirection = line.slice(2);
+  }
+  if (!audioFound) return false;
+  const direction = audioDirection || sessionDirection || 'sendrecv';
+  return direction === 'sendrecv' || direction === 'sendonly';
+}
 
 type RecoverableSession = IceGatheringSession & {
   isEstablished?: () => boolean;
@@ -138,6 +278,27 @@ export interface AttendedTransferState {
   error?: string;
 }
 
+type OutboundCallKind = 'primary' | 'consult';
+
+interface LocalAudioCapture {
+  stream: MediaStream | null;
+  /** True only for newly captured audio that this attempt may stop. */
+  ownsStream: boolean;
+}
+
+/**
+ * One outbound dial reservation. It is taken synchronously before any async
+ * microphone/TURN work, so two taps cannot both dispatch an INVITE, and it is
+ * validated against the captured UA/generation after every await.
+ */
+interface OutboundCallAttempt extends LocalAudioCapture {
+  kind: OutboundCallKind;
+  ua: JsSIP.UA;
+  generation: number;
+  /** Set synchronously by handleNewRTCSession when it refuses this INVITE. */
+  outcome: 'pending' | 'accepted' | 'rejected';
+}
+
 export interface SipEvents {
   onStateChange: (state: SipState) => void;
   onIncomingCall: (info: IncomingCallInfo) => void;
@@ -156,6 +317,8 @@ export class JsSipService {
   private currentSession: unknown = null;
   // Attended transfer: second consultation session slot
   private consultSession: unknown = null;
+  /** In-flight outbound dial that owns the next outgoing INVITE. */
+  private outboundAttempt: OutboundCallAttempt | null = null;
   private primaryCall: ActiveCall | null = null;
   private consultCall: ActiveCall | null = null;
   private attendedTransfer: AttendedTransferState | null = null;
@@ -208,6 +371,9 @@ export class JsSipService {
     if (!targetCallId) {
       return false;
     }
+    // PBX-direct accounts have no gateway call-volume endpoint. Keep the
+    // account fully local instead of firing a request that can only fail.
+    if (this.directSip) return false;
 
     this.pendingGainDb = this.micGainDb;
     clearTimeout(this.liveGainTimer ?? undefined);
@@ -319,10 +485,13 @@ export class JsSipService {
   private networkDebounceTimer: number | null = null;
   private signalingSocket: HandoverSocket | null = null;
   private mediaRecovery = new Map<RecoverableSession, number>();
+  private mediaRecoveryConfirmTimers = new Map<RecoverableSession, ReturnType<typeof setTimeout>>();
   private mediaRecoveryRun: object | null = null;
   private mediaRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private handoverGeneration = 0;
   private useTls = false;
+  /** True when the account bypasses gateway enrollment and registers directly. */
+  private directSip = false;
   /** True when the active media configuration is TURN/relay-only. */
   private mediaRelayRequired = false;
   private pendingRelayRequired: boolean | null = null;
@@ -332,8 +501,18 @@ export class JsSipService {
     expiresAt: number;
     promise: Promise<MediaConfiguration>;
   } | null = null;
+  /** Set by the account layer before connect(); direct accounts skip gateway enrollment. */
+  setDirectSipMode(enabled: boolean): void {
+    this.directSip = Boolean(enabled);
+  }
   /** Approved gateway assignment backing the current registration, if any. */
   private gatewaySession: GatewaySession | null = null;
+  /** Direct-PBX registration over the embedded VPN, when available. */
+  private directVpn = false;
+  private vpnProfile: VpnProfile | null = null;
+  /** Public PBX fallback for this exact assignment, when its PBX opted in. */
+  private directFallback: GatewayDirectFallback | null = null;
+  private directFallbackHost = '';
   /** Active bounded-ICE-gathering controllers (cancelled on teardown). */
   private iceGatheringControllers = new Set<{ cancel: () => void }>();
   /** One gathering controller per RTCSession (re-armed when media mode is known). */
@@ -343,9 +522,24 @@ export class JsSipService {
   /** Outbound dongle reconciliation timer; exactly one call at a time. */
   private trunkPollTimer: ReturnType<typeof setTimeout> | null = null;
   private trunkPollCallId: string | null = null;
-  private trunkPollMissing = 0;
+  private trunkPollMemory: TrunkReconcileMemory = INITIAL_TRUNK_RECONCILE_MEMORY;
+  /** Ends a call when a dropped signaling transport is not restored in time. */
+  private signalingLossTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bounds how long an outbound session may stay in ringing/calling. */
+  private outgoingRingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bounds a 2xx that never reaches `confirmed`. */
+  private confirmationTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bumped on every disconnect so a superseded async connect() aborts. */
   private connectionGeneration = 0;
+  private stopMediaDiagnostics: (() => void) | null = null;
+  private mediaStatsPending = false;
+  /** Early-media RTP readiness poll (see watchEarlyMedia). */
+  private earlyMediaTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Call id with a live early-media poll, or null. */
+  private earlyMediaWatchCall: string | null = null;
+  /** One post-registration retry when the VPN handshake missed the probe window. */
+  private directRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private directRetryAttempts = 0;
 
   state: SipState = 'disconnected';
   activeCall: ActiveCall | null = null;
@@ -365,20 +559,145 @@ export class JsSipService {
       this.trunkPollTimer = null;
     }
     this.trunkPollCallId = null;
-    this.trunkPollMissing = 0;
+    this.trunkPollMemory = INITIAL_TRUNK_RECONCILE_MEMORY;
+  }
+
+  private clearSignalingWatchdog(): void {
+    if (this.signalingLossTimer) {
+      clearTimeout(this.signalingLossTimer);
+      this.signalingLossTimer = null;
+    }
+  }
+
+  private clearOutgoingTimers(): void {
+    if (this.outgoingRingTimer) {
+      clearTimeout(this.outgoingRingTimer);
+      this.outgoingRingTimer = null;
+    }
+    if (this.confirmationTimer) {
+      clearTimeout(this.confirmationTimer);
+      this.confirmationTimer = null;
+    }
+    // A queued gain update belongs to the call that scheduled it. Without
+    // this, the timer can fire after hangup and POST the previous call's
+    // target/mic gain into the next call.
+    this.clearLiveMicGain();
+  }
+
+  private clearLiveMicGain(): void {
+    clearTimeout(this.liveGainTimer ?? undefined);
+    this.liveGainTimer = null;
+    this.liveGainResolve?.(false);
+    this.liveGainResolve = null;
+    this.pendingGainDb = null;
+  }
+
+  /** Bound how long an outbound session may ring without a terminal event. */
+  private armOutgoingRingTimeout(callId: string): void {
+    this.clearOutgoingTimers();
+    this.outgoingRingTimer = setTimeout(() => {
+      this.outgoingRingTimer = null;
+      if (this.activeCall?.id !== callId || this.currentSession === null) return;
+      if (this.activeCall.status === 'active') return;
+      console.warn(`[sip][callId=${callId}] outbound ring timeout; ending call`);
+      this.endCallLocally(callId, 'NO_ANSWER', {
+        statusCode: 408,
+        reasonPhrase: 'Ring timeout',
+      });
+    }, OUTGOING_RING_TIMEOUT_MS);
+  }
+
+  /** The callee answered but JsSIP never reached `confirmed`. */
+  private armConfirmationTimeout(callId: string): void {
+    if (this.confirmationTimer) {
+      clearTimeout(this.confirmationTimer);
+      this.confirmationTimer = null;
+    }
+    if (this.outgoingRingTimer) {
+      clearTimeout(this.outgoingRingTimer);
+      this.outgoingRingTimer = null;
+    }
+    this.confirmationTimer = setTimeout(() => {
+      this.confirmationTimer = null;
+      if (this.activeCall?.id !== callId) return;
+      console.warn(`[sip][callId=${callId}] call accepted without confirmation; ending call`);
+      this.endCallLocally(callId, 'CONFIRMATION_TIMEOUT', {
+        reasonPhrase: 'Call setup failed',
+      });
+    }, CONFIRMATION_TIMEOUT_MS);
+  }
+
+  /**
+   * A signaling transport that stays down during a call can never deliver a
+   * final response: without this the UI and local ringback freeze forever.
+   * Give handover a short window, then tear the call down locally.
+   */
+  private armSignalingWatchdog(): void {
+    if (this.signalingLossTimer || !this.activeCall) return;
+    const callId = this.activeCall.id;
+    console.warn(`[sip][callId=${callId}] signaling lost; ${SIGNALING_GRACE_MS}ms grace`);
+    this.signalingLossTimer = setTimeout(() => {
+      this.signalingLossTimer = null;
+      if (this.ua?.isConnected() && this.ua?.isRegistered()) return;
+      if (!this.activeCall || this.activeCall.id !== callId) return;
+      console.warn(`[sip][callId=${callId}] signaling not restored; ending call`);
+      this.endCallLocally(callId, 'SIGNALING_LOST', { reasonPhrase: 'Signalling lost' });
+    }, SIGNALING_GRACE_MS);
+    // HandoverSocket opens a fresh ticket URL; a no-op if already connecting.
+    try {
+      this.signalingSocket?.connect();
+    } catch {}
+  }
+
+  /**
+   * Tear a call down without waiting for JsSIP. State is cleared before the
+   * session is terminated so a synchronous `failed`/`ended` from terminate()
+   * cannot emit a second onCallEnded.
+   */
+  private endCallLocally(
+    callId: string,
+    cause: string,
+    details?: { originator?: string; statusCode?: number; reasonPhrase?: string },
+  ): void {
+    if (!this.activeCall && !this.currentSession) return;
+    const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
+    this.clearSignalingWatchdog();
+    this.clearOutgoingTimers();
+    stopOutgoingRingback();
+    this.stopEarlyMediaWatch();
+    this.stopTrunkReconcile();
+    this.stopMediaDiagnostics?.();
+    this.stopMediaDiagnostics = null;
+    if (this.attendedTransfer) this._cleanupAttendedTransfer(false);
+    stopCallManagers();
+    this.releaseLocalStream();
+    this.answerDispatchedSession = null;
+    this.currentSession = null;
+    this.activeCall = null;
+    this.consultSession = null;
+    this.mediaRelayRequired = false;
+    dismissNativeCallNotification(callId);
+    try {
+      session?.terminate?.();
+    } catch {}
+    this.events.onCallEnded(callId, cause, details);
+    // The call no longer blocks registration recovery.
+    if (!this.ua?.isConnected()) this.scheduleReconnect();
   }
 
   /**
    * chan_dongle does not reliably emit a final SIP response when the GSM leg
    * disappears. Poll the authenticated gateway state after dialing an
-   * external number; two consecutive missing-trunk snapshots while the
-   * extension leg is still up means the call can no longer complete.
+   * external number; two consecutive "trunk gone" or "caller gone" snapshots
+   * end the call. The first active sample arms the caller-gone rule so a PBX
+   * that has not observed the call yet cannot cause a false teardown.
    */
   private startTrunkReconcile(call: ActiveCall, target: string): void {
     this.stopTrunkReconcile();
     if (!this.gatewaySession || !shouldReconcileTrunk(call.direction, target)) return;
     const callId = call.id;
     this.trunkPollCallId = callId;
+    this.trunkPollMemory = INITIAL_TRUNK_RECONCILE_MEMORY;
     const poll = async (): Promise<void> => {
       if (this.trunkPollCallId !== callId || this.activeCall?.id !== callId) {
         this.stopTrunkReconcile();
@@ -394,26 +713,21 @@ export class JsSipService {
         });
         state = await getGatewayCallState(this.serverHost, this.extension, extensionAuth);
       } catch (error) {
-        // Network/PBX-API failures are not evidence that the trunk is down.
+        // Network/PBX-API failures are not evidence that the call ended.
         if (this.trunkPollCallId !== callId) return;
         console.warn('[sip] trunk state poll failed:', error);
       }
       if (this.trunkPollCallId !== callId || this.activeCall?.id !== callId) return;
-      if (state?.trunkActive) {
-        this.trunkPollMissing = 0;
-      } else if (state?.callerActive) {
-        this.trunkPollMissing += 1;
-        if (this.trunkPollMissing >= 2) {
-          console.warn(`[sip][callId=${callId}] dongle trunk disappeared; ending call`);
-          this.stopTrunkReconcile();
-          this.events.onTrunkLost?.(callId);
-          await this.hangup(callId);
-          return;
-        }
-      } else {
-        // The PBX has not observed the caller yet, or the call already ended
-        // through SIP. Do not turn an empty snapshot into a false teardown.
-        this.trunkPollMissing = 0;
+      const decision = nextTrunkReconcileAction(state, this.trunkPollMemory);
+      this.trunkPollMemory = decision.memory;
+      if (decision.action === 'end') {
+        console.warn(
+          `[sip][callId=${callId}] gateway reports ${decision.cause}; ending call`,
+        );
+        this.stopTrunkReconcile();
+        this.events.onTrunkLost?.(callId);
+        await this.hangup(callId);
+        return;
       }
       if (this.trunkPollCallId === callId && this.activeCall?.id === callId) {
         this.trunkPollTimer = setTimeout(() => { void poll(); }, 2000);
@@ -469,13 +783,79 @@ export class JsSipService {
 
     let wsUrl: string;
     let gatewaySession: GatewaySession | null = null;
+    let sipDomain = domain;
+    this.directFallback = null;
+    this.directFallbackHost = '';
+    this.directVpn = false;
+    this.vpnProfile = null;
     try {
-      // Enrolled devices must never fall back to the direct PBX socket: a
-      // pending/revoked assignment resolves to an error, not to `getSipWss`.
-      gatewaySession = await getOrLoadGatewaySession(domain, extension);
-      wsUrl = gatewaySession
-        ? await buildGatewaySipWebSocketUrl(gatewaySession, getSipWss(domain, this.useTls))
-        : getSipWss(domain, this.useTls);
+      if (this.directSip) {
+        // Normal SIP-client path: register directly to the PBX over WS/WSS.
+        // Never probe or enroll with a gateway in this mode.
+        wsUrl = getSipWss(domain, this.useTls);
+        console.log(`[sip] direct SIP mode: ${wsUrl}`);
+      } else {
+        // Reuse the approved assignment when possible; the full claim path is a
+        // fallback for first enrolment or a missing/pending record.
+        gatewaySession = await getCachedGatewaySession(domain, extension);
+        if (!gatewaySession) {
+          gatewaySession = await getOrLoadGatewaySession(domain, extension);
+        }
+
+        let profile: VpnProfile | null = null;
+        if (gatewaySession) {
+          const vpnPublicKey = await getVpnPublicKey().catch(() => null);
+          const gatewayVpn = await getGatewayVpnProfile(gatewaySession, vpnPublicKey).catch(() => null);
+          profile = gatewayVpn ? { ...gatewayVpn, name: 'sokratvpn' } : null;
+        }
+        let vpnReady = profile ? await ensureVpn(profile).catch(() => false) : false;
+        if (vpnReady && profile) {
+          // A tunnel interface can report UP before its first WireGuard
+          // handshake. Probe with a short startup grace period instead of
+          // tearing the tunnel down on the first failed attempt; otherwise the
+          // resulting network-state change restarts the VPN and repeats the
+          // failure indefinitely.
+          let reachable = false;
+          for (let attempt = 0; attempt < 5 && generation === this.connectionGeneration; attempt++) {
+            reachable = await probePrivateSipWebSocket(profile.privateSipUrl, 1200).catch(() => false);
+            if (reachable) break;
+            await delay(400);
+          }
+          if (!reachable) {
+            // Keep the tunnel available so a later reconnect can use it as soon
+            // as the peer handshake completes. The gateway path does not need
+            // the private routes.
+            vpnReady = false;
+            console.log('[sip] direct VPN not ready; keeping tunnel and falling back to gateway media');
+          }
+        }
+        if (vpnReady && profile) {
+          this.directVpn = true;
+          this.vpnProfile = profile;
+          sipDomain = profile.sipDomain;
+          wsUrl = profile.privateSipUrl;
+          console.log(`[sip] using embedded VPN direct path ${wsUrl} as sip:${extension}@${sipDomain}`);
+        } else {
+          try {
+            wsUrl = gatewaySession
+              ? await buildGatewaySipWebSocketUrl(gatewaySession, getSipWss(domain, this.useTls))
+              : getSipWss(domain, this.useTls);
+          } catch (ticketError) {
+            const fallback = gatewaySession?.assignment.directFallback;
+            if (!fallback) throw ticketError;
+            this.directFallback = fallback;
+            this.directFallbackHost = hostFromApiUrl(fallback.apiURL);
+            if (!this.directFallbackHost) throw ticketError;
+            wsUrl = fallback.wsURL;
+            console.warn('[sip] gateway signalling unavailable; using this PBX direct fallback');
+          }
+          if (profile) {
+            // Keep the profile for a one-shot direct upgrade after registration.
+            // directVpn remains false until a later connect actually uses it.
+            this.vpnProfile = profile;
+          }
+        }
+      }
     } catch (err) {
       if (generation !== this.connectionGeneration) return;
       console.error('[sip] gateway signalling rejected:', err);
@@ -504,21 +884,25 @@ export class JsSipService {
     if (generation !== this.connectionGeneration) return;
     const withFlow = (url: string) => flow ? appendQuery(url, { flow }) : url;
 
-    console.log(`[sip] connecting via JsSIP to ${wsUrl.replace(/([?&]ticket=)[^&]+/g, '$1[redacted]')} as sip:${extension}@${domain}`);
+    console.log(`[sip] connecting via JsSIP to ${wsUrl.replace(/([?&]ticket=)[^&]+/g, '$1[redacted]')} as sip:${extension}@${sipDomain}`);
 
     try {
       const socket = new HandoverSocket(withFlow(wsUrl), async () => {
         if (generation !== this.connectionGeneration) throw new Error('Superseded SIP connection');
-        const url = gatewaySession
-          ? await buildGatewaySipWebSocketUrl(gatewaySession, getSipWss(domain, useTls))
-          : getSipWss(domain, useTls);
+        const url = this.directVpn && this.vpnProfile
+          ? this.vpnProfile.privateSipUrl
+          : this.directFallback
+            ? this.directFallback.wsURL
+            : gatewaySession
+              ? await buildGatewaySipWebSocketUrl(gatewaySession, getSipWss(domain, useTls))
+              : getSipWss(domain, useTls);
         if (generation !== this.connectionGeneration) throw new Error('Superseded SIP connection');
         return withFlow(url);
       });
       this.signalingSocket = socket;
       const configuration = {
         sockets: [socket],
-        uri: `sip:${extension}@${domain}`,
+        uri: `sip:${extension}@${sipDomain}`,
         password,
         authorization_user: extension,
         ...(instanceId ? { instance_id: instanceId } : {}),
@@ -558,6 +942,7 @@ export class JsSipService {
     ua.on('connected', () => {
       if (this.ua !== ua) return;
       console.log('[sip] WebSocket connected, waiting for SIP registration...');
+      this.clearSignalingWatchdog();
       this.reconnectAttempt = 0;
       if (this.state !== 'registered') {
         this.setState('connecting');
@@ -569,6 +954,10 @@ export class JsSipService {
       console.log('[sip] UA registered successfully with Asterisk');
       this.reconnectAttempt = 0;
       this.setState('registered');
+      if (!this.directVpn && this.vpnProfile) {
+        this.scheduleDirectRetry();
+      }
+      this.prefetchMediaConfiguration();
       void this.recoverCallMedia();
     });
 
@@ -603,6 +992,7 @@ export class JsSipService {
       if (this.state === 'registered' || this.state === 'connecting') {
         this.setState('disconnected');
       }
+      this.armSignalingWatchdog();
       this.scheduleReconnect();
     });
     ua.on('newRTCSession', (data: { session: unknown; originator: string; request?: unknown }) => {
@@ -623,7 +1013,10 @@ export class JsSipService {
       terminate: (options?: unknown) => void;
       refer?: (target: string, opts?: unknown) => void;
       _localHold?: boolean;
-      connection?: { getReceivers?: () => Array<{ track?: MediaStreamTrack }> };
+      connection?: {
+        getReceivers?: () => Array<{ track?: MediaStreamTrack }>;
+        getStats?: () => Promise<Map<string, Record<string, unknown>>>;
+      };
     };
     const req = (requestObj || session._request || session.request) as {
       getHeader?: (name: string) => string | undefined;
@@ -651,15 +1044,60 @@ export class JsSipService {
       : (usableProviderName(target, remoteId?.display_name) || target);
 
     // ------------------------------------------------------------------
+    // Outbound ownership: a new outgoing session may only become a primary
+    // call when it belongs to the reserved dial. Anything else is a rejected
+    // INVITE, never a replacement for the live call.
+    // ------------------------------------------------------------------
+    const outboundAttempt = this.outboundAttempt;
+    const outboundAttemptCurrent = outboundAttempt !== null &&
+      outboundAttempt.ua === this.ua &&
+      outboundAttempt.generation === this.connectionGeneration;
+
+    if (session.direction === 'outgoing' && outboundAttempt && !outboundAttemptCurrent) {
+      if (this.outboundAttempt === outboundAttempt) this.outboundAttempt = null;
+      outboundAttempt.outcome = 'rejected';
+      console.warn(`[sip][callId=${callId}] rejected outbound from a superseded connection`);
+      try {
+        session.terminate();
+      } catch (error) {
+        console.warn('[sip] outbound rejection failed:', error);
+      }
+      return;
+    }
+
+    // ------------------------------------------------------------------
     // Consultation session routing: if we are waiting for a consult dial
     // and this is a new outgoing session, route it to the consult slot.
     // ------------------------------------------------------------------
-    const isConsultSession =
+    const consultRequested =
+      session.direction === 'outgoing' &&
       this.attendedTransfer !== null &&
       this.attendedTransfer.status === 'dialing' &&
-      session.direction === 'outgoing';
+      (outboundAttempt === null || outboundAttempt.kind === 'consult');
+
+    if (session.direction === 'outgoing' &&
+        outboundAttempt &&
+        outboundAttempt.kind === 'consult' &&
+        !consultRequested) {
+      // The transfer ended while the consultation INVITE was in flight.
+      if (this.outboundAttempt === outboundAttempt) this.outboundAttempt = null;
+      outboundAttempt.outcome = 'rejected';
+      console.warn(`[sip][callId=${callId}] rejected consultation session after transfer ended`);
+      try {
+        session.terminate();
+      } catch (error) {
+        console.warn('[sip] consultation rejection failed:', error);
+      }
+      return;
+    }
+
+    const isConsultSession = consultRequested;
 
     if (isConsultSession && this.attendedTransfer) {
+      if (outboundAttempt && this.outboundAttempt === outboundAttempt) {
+        this.outboundAttempt = null;
+        outboundAttempt.outcome = 'accepted';
+      }
       this.consultSession = session;
       const consultCall: ActiveCall = {
         id: callId,
@@ -704,6 +1142,37 @@ export class JsSipService {
       }
       return;
     }
+
+    // A second primary outbound must never replace the live session either.
+    // This also catches an unexpected outgoing INVITE that bypassed call().
+    if (session.direction === 'outgoing' &&
+        (this.activeCall || this.currentSession) &&
+        this.currentSession !== session) {
+      if (outboundAttempt && this.outboundAttempt === outboundAttempt) {
+        this.outboundAttempt = null;
+        outboundAttempt.outcome = 'rejected';
+      }
+      console.warn(
+        `[sip][callId=${callId}] rejected outbound while active=${this.activeCall?.id || 'another session'}`,
+      );
+      try {
+        session.terminate();
+      } catch (error) {
+        console.warn('[sip] outbound rejection failed:', error);
+      }
+      return;
+    }
+    // Only the reserved outgoing session may claim the single primary slot.
+    if (session.direction === 'outgoing' && outboundAttempt &&
+        this.outboundAttempt === outboundAttempt) {
+      this.outboundAttempt = null;
+      outboundAttempt.outcome = 'accepted';
+    }
+    if (session.direction === 'incoming') {
+      // Winning once invalidates the old dial even if this call ends before
+      // its microphone/TURN promise resolves.
+      this.invalidateOutboundAttempt('primary');
+    }
     this.currentSession = session;
     this.answerDispatchedSession = null;
 
@@ -727,7 +1196,9 @@ export class JsSipService {
 
     if (session.direction === 'outgoing') {
       startCallManagers();
+      // Play local ringback until carrier early media or a remote track arrives.
       startOutgoingRingback();
+      this.armOutgoingRingTimeout(call.id);
       // Publish the call immediately; contact/network lookup never delays dialing.
       call.targetName = usableProviderName(target, remoteId?.display_name) || target;
       this.events.onCallStatusChange?.(call);
@@ -751,95 +1222,132 @@ export class JsSipService {
     this.pendingRelayRequired = null;
     this.attachIceGathering(session, call.id, relayRequired);
     this.watchCallHandover(session);
+    let lastSdpSummary: SdpLogSummary | null = null;
+    let lastSdpType: string | undefined;
+    let lastSdpOriginator: string | undefined;
 
-    // Attach peerconnection remote audio track listeners and codec preferences
-    session.on('peerconnection', (data: unknown) => {
-      const pc = (data as { peerconnection?: unknown })?.peerconnection as {
-        addEventListener?: (event: string, fn: (evt: unknown) => void) => void;
-        getTransceivers?: () => Array<{
-          receiver?: { track?: MediaStreamTrack };
-          sender?: { track?: MediaStreamTrack };
-          setCodecPreferences?: (codecs: unknown[]) => void;
-        }>;
-      } | undefined;
+    // Remote audio/early-media wiring.
+    //
+    // JsSIP creates the RTCPeerConnection *before* it emits `newRTCSession`
+    // for an outbound call, so the `peerconnection` event has already fired
+    // when this handler is installed. Wiring only the event therefore left
+    // outbound calls without remote `track` listeners (early media never
+    // published, ringback never stopped) and without codec preferences. Wire
+    // the existing connection immediately and keep the event for inbound
+    // sessions, which create theirs inside `answer()`.
+    const wiredConnections = new WeakSet<object>();
 
-      if (pc) {
-        try {
-          if (typeof pc.getTransceivers === 'function' && typeof RTCRtpReceiver?.getCapabilities === 'function') {
-            const audioCaps = RTCRtpReceiver.getCapabilities('audio');
-            if (audioCaps?.codecs) {
-              const preferred = this.preferredCodec === 'auto' ? '' : this.preferredCodec.toLowerCase();
-              const allCodecs = audioCaps.codecs as Array<{ mimeType?: string }>;
-              let selected = allCodecs;
-              if (preferred) {
-                const targetCodecs = allCodecs.filter((codec) =>
-                  (codec.mimeType || '').toLowerCase().includes(preferred));
-                if (targetCodecs.length) {
-                  // Merely sorting capabilities still leaves other codecs in
-                  // the answer. Restrict the transceiver to the selected codec
-                  // plus telephone-event so the PBX cannot choose Opus when the
-                  // user selected PCMU (or the reverse).
-                  const telephoneEventCodecs = allCodecs.filter((codec) =>
-                    (codec.mimeType || '').toLowerCase().includes('telephone-event'));
-                  selected = [...targetCodecs, ...telephoneEventCodecs];
-                }
-              }
-              if (preferred && selected === allCodecs) {
-                console.warn(`[sip] preferred codec ${preferred} unavailable; keeping negotiated defaults`);
-              } else {
-                for (const transceiver of pc.getTransceivers()) {
-                  if (transceiver.receiver?.track?.kind === 'audio' || transceiver.sender?.track?.kind === 'audio') {
-                    transceiver.setCodecPreferences?.(selected);
-                  }
-                }
-                console.log(
-                  preferred
-                    ? `[sip] restricted audio codecs to ${preferred}`
-                    : '[sip] keeping automatic codec negotiation',
-                );
-              }
+    const applyCodecPreferences = () => {
+      const raw = session.connection;
+      if (!raw || typeof raw !== 'object') return;
+      if (!('getTransceivers' in raw) || typeof raw.getTransceivers !== 'function') return;
+      try {
+        if (typeof RTCRtpReceiver?.getCapabilities !== 'function') return;
+        const audioCaps = RTCRtpReceiver.getCapabilities('audio');
+        if (!audioCaps?.codecs) return;
+        const preferred = this.preferredCodec === 'auto' ? '' : this.preferredCodec.toLowerCase();
+        const allCodecs = audioCaps.codecs as Array<{ mimeType?: string }>;
+        let selected = allCodecs;
+        if (preferred) {
+          const targetCodecs = allCodecs.filter((codec) =>
+            (codec.mimeType || '').toLowerCase().includes(preferred));
+          if (targetCodecs.length) {
+            // Merely sorting capabilities still leaves other codecs in
+            // the answer. Restrict the transceiver to the selected codec
+            // plus telephone-event so the PBX cannot choose Opus when the
+            // user selected PCMU (or the reverse).
+            const telephoneEventCodecs = allCodecs.filter((codec) =>
+              (codec.mimeType || '').toLowerCase().includes('telephone-event'));
+            selected = [...targetCodecs, ...telephoneEventCodecs];
+          }
+        }
+        if (preferred && selected === allCodecs) {
+          console.warn(`[sip] preferred codec ${preferred} unavailable; keeping negotiated defaults`);
+        } else {
+          const transceivers = raw.getTransceivers() as Array<{
+            receiver?: { track?: MediaStreamTrack };
+            sender?: { track?: MediaStreamTrack };
+            setCodecPreferences?: (codecs: unknown[]) => void;
+          }>;
+          for (const transceiver of transceivers) {
+            if (transceiver.receiver?.track?.kind === 'audio' || transceiver.sender?.track?.kind === 'audio') {
+              transceiver.setCodecPreferences?.(selected);
             }
           }
-        } catch (e) {
-          console.warn('[sip] transceiver codec preferences notice:', e);
+          console.log(
+            preferred
+              ? `[sip] restricted audio codecs to ${preferred}`
+              : '[sip] keeping automatic codec negotiation',
+          );
         }
-
-        if (typeof pc.addEventListener === 'function') {
-          pc.addEventListener('track', (eventObj: unknown) => {
-            const event = eventObj as { track?: MediaStreamTrack; streams?: MediaStream[] };
-            console.log('[sip] remote audio track received:', event?.track);
-            if (event?.track) {
-              event.track.enabled = true;
-            }
-            if (this.activeCall) {
-              const stream =
-                event?.streams && event.streams[0]
-                  ? event.streams[0]
-                  : event?.track
-                  ? new MediaStream([event.track])
-                  : null;
-              if (stream) {
-                this.activeCall.remoteStream = stream;
-                this.setSpeakerVolume(this.speakerVolume);
-              }
-            }
-          });
-          pc.addEventListener('addstream', (eventObj: unknown) => {
-            const event = eventObj as { stream?: MediaStream };
-            console.log('[sip] remote stream added:', event?.stream);
-            if (event?.stream && this.activeCall) {
-              this.activeCall.remoteStream = event.stream;
-              this.setSpeakerVolume(this.speakerVolume);
-            }
-          });
-        }
+      } catch (e) {
+        console.warn('[sip] transceiver codec preferences notice:', e);
       }
+    };
+
+    const wirePeerConnection = (pc?: unknown) => {
+      if (!pc || typeof pc !== 'object' || wiredConnections.has(pc)) return;
+      if (!('addEventListener' in pc) || typeof pc.addEventListener !== 'function') return;
+      wiredConnections.add(pc);
+      // Audio transceivers are created after this point; `connecting` (below)
+      // applies the preferences once they exist.
+      applyCodecPreferences();
+
+      pc.addEventListener('track', (eventObj: unknown) => {
+        const event = eventObj as { track?: MediaStreamTrack };
+        console.log('[sip] remote audio track received:', event?.track);
+        if (event?.track) {
+          event.track.enabled = true;
+        }
+        // A trailing callback from an ended/superseded leg must never touch
+        // whichever call is current now, nor silence its ringback.
+        if (this.currentSession !== session) return;
+        if (event?.track && event.track.kind !== 'audio') return;
+        const call = this.activeCall;
+        // A track exists as soon as the remote SDP is applied; it is not
+        // proof that the carrier is sending audio yet. Watch for real RTP.
+        if (!call) return;
+        this.watchEarlyMedia(session, call.id);
+      });
+      pc.addEventListener('addstream', (eventObj: unknown) => {
+        const event = eventObj as { stream?: MediaStream };
+        console.log('[sip] remote stream added:', event?.stream);
+        if (this.currentSession !== session || !event?.stream) return;
+        const call = this.activeCall;
+        if (!call) return;
+        this.watchEarlyMedia(session, call.id);
+      });
+    };
+
+    // Outbound sessions already own a peer connection at this point.
+    wirePeerConnection(session.connection);
+    session.on('peerconnection', (data: unknown) => {
+      if (!data || typeof data !== 'object' || !('peerconnection' in data)) return;
+      wirePeerConnection(data.peerconnection);
+    });
+    // Fires after the local media tracks are attached and before the
+    // offer/answer is created, so codec preferences can still take effect.
+    session.on('connecting', () => {
+      applyCodecPreferences();
     });
 
-    // Ensure local SDP prioritizes preferred codec and enables inband FEC
+    // Filter incoming offers before JsSIP applies them to native WebRTC.
+    // Its local "sdp" answer event runs AFTER setLocalDescription: pruning
+    // codecs there changes the SIP answer but not the native RTP encoder.
     session.on('sdp', (dataObj: unknown) => {
       const data = dataObj as { originator?: string; type?: string; sdp?: string } | undefined;
-      if (data?.originator === 'local' && data.sdp) {
+      if (!data?.sdp) return;
+      lastSdpSummary = describeSdpForLog(data.sdp);
+      lastSdpType = data.type;
+      lastSdpOriginator = data.originator;
+      // JsSIP owns SDP application: it serializes the provisional and final
+      // answers on its own connection queue and re-offers when the 200 arrives
+      // in a stable state. The app must never replay an answer itself.
+      // Never rewrite a remote SDP for an outbound call. The offer sent to
+      // the PBX is protected by the local-offer filter; a provisional answer
+      // must be applied exactly as Asterisk sent it.
+      if (data.type === 'offer' &&
+          (session.direction === 'incoming' || data.originator === 'local')) {
         data.sdp = this.prioritizeCodecInSdp(data.sdp, this.preferredCodec);
       }
     });
@@ -881,23 +1389,40 @@ export class JsSipService {
       session.on(event, (error: unknown) => {
         const name = (error as { name?: string } | null)?.name;
         // Error messages can contain entire SDP descriptions; never dump them.
-        console.warn(`[sip][callId=${call.id}] media operation failed ${JSON.stringify({ event, name })}`);
+        console.warn(`[sip][callId=${call.id}] media operation failed ${JSON.stringify({
+          event,
+          name,
+          sdpType: lastSdpType,
+          sdpOriginator: lastSdpOriginator,
+          sdp: lastSdpSummary,
+        })}`);
       });
     }
     session.on('progress', () => {
+      if (this.currentSession !== session) return;
       if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'ringing';
         this.events.onCallStatusChange?.(this.activeCall);
       }
-      this.attachEarlyMediaAudio(session);
+      this.watchEarlyMedia(session, call.id);
     });
     session.on('accepted', () => {
+      if (this.currentSession !== session) return;
       console.log(`[sip][callId=${call.id}] session accepted; waiting for confirmation`);
-      this.attachEarlyMediaAudio(session);
+      if (call.direction === 'outbound') {
+        // A 2xx means the callee answered, but the media path is not audible
+        // yet. Hold ringback for NetEq's initial playout buffer; `confirmed`
+        // re-arms the same hold if it arrives later.
+        stopOutgoingRingbackAfterMedia();
+        this.armConfirmationTimeout(call.id);
+      }
+      this.watchEarlyMedia(session, call.id);
     });
 
     session.on('confirmed', () => {
-      stopOutgoingRingback();
+      if (this.currentSession !== session) return;
+      this.stopEarlyMediaWatch();
+      this.clearOutgoingTimers();
       if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'active';
         if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
@@ -907,14 +1432,19 @@ export class JsSipService {
         void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
         this.setSpeakerVolume(this.speakerVolume);
       }
-      this.attachEarlyMediaAudio(session);
+      this.attachEarlyMediaAudio(session, call);
+      stopOutgoingRingbackAfterMedia();
+      this.startMediaDiagnostics(session);
     });
 
     session.on('ended', (evt: unknown) => {
       logTermination('ended', evt);
       if (this.currentSession !== session) return;
       if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
+      this.clearOutgoingTimers();
+      this.clearSignalingWatchdog();
       stopOutgoingRingback();
+      this.stopEarlyMediaWatch();
       this.stopTrunkReconcile();
       const cause = (evt as { cause?: string })?.cause || 'NORMAL_CLEARING';
       if (this.attendedTransfer) {
@@ -942,7 +1472,10 @@ export class JsSipService {
       logTermination('failed', evt);
       if (this.currentSession !== session) return;
       if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
+      this.clearOutgoingTimers();
+      this.clearSignalingWatchdog();
       stopOutgoingRingback();
+      this.stopEarlyMediaWatch();
       this.stopTrunkReconcile();
       const e = evt as {
         cause?: string;
@@ -1071,7 +1604,7 @@ export class JsSipService {
         this.attendedTransfer = { ...this.attendedTransfer, status: 'ringing' };
         this.events.onAttendedTransferChange?.({ ...this.attendedTransfer });
       }
-      this.attachEarlyMediaAudio(session);
+      this.attachEarlyMediaAudio(session, consultCall);
     });
 
     session.on('confirmed', () => {
@@ -1088,7 +1621,7 @@ export class JsSipService {
         this.activeCall.status = 'active';
         this.events.onCallStatusChange?.(this.activeCall);
       }
-      this.attachEarlyMediaAudio(session);
+      this.attachEarlyMediaAudio(session, consultCall);
       this.setSpeakerVolume(this.speakerVolume);
     });
 
@@ -1112,6 +1645,7 @@ export class JsSipService {
   // Recover primary line after consult failure / cancel
   // -----------------------------------------------------------------------
   private _recoverFromFailedConsult(errorMsg?: string) {
+    this.invalidateOutboundAttempt('consult');
     this.consultSession = null;
     this.consultCall = null;
     if (!this.attendedTransfer) return;
@@ -1148,6 +1682,7 @@ export class JsSipService {
   // Full cleanup after complete transfer or primary call ended
   // -----------------------------------------------------------------------
   private _cleanupAttendedTransfer(transferCompleted: boolean) {
+    this.invalidateOutboundAttempt('consult');
     if (!transferCompleted) {
       // Abort: terminate consult if still alive
       const cs = this.consultSession as { terminate?: () => void } | null;
@@ -1206,8 +1741,11 @@ export class JsSipService {
     this.attendedTransfer = { ...this.attendedTransfer, status: 'dialing' };
     this.events.onAttendedTransferChange?.({ ...this.attendedTransfer });
 
-    // Place consultation call — handleNewRTCSession will route it to consultSession
-    await this.call(targetExtension);
+    // Place consultation call — handleNewRTCSession will route it to consultSession.
+    // The private path reserves the one consult slot without tripping the
+    // primary-dial guard, which correctly rejects ordinary calls while a
+    // primary or consultation leg exists.
+    await this.dialOutbound(targetExtension, 'consult');
   }
 
   /**
@@ -1336,26 +1874,167 @@ export class JsSipService {
     this.events.onAttendedTransferChange?.({ ...this.attendedTransfer });
   }
 
-  private attachEarlyMediaAudio(session: { connection?: { getReceivers?: () => Array<{ track?: MediaStreamTrack }> } }) {
-    try {
-      const pc = session.connection;
-      if (pc && typeof pc.getReceivers === 'function') {
-        const receivers = pc.getReceivers();
-        const tracks: MediaStreamTrack[] = [];
-        for (const r of receivers) {
-          if (r.track) tracks.push(r.track);
-        }
-        if (tracks.length > 0) {
-          const stream = new MediaStream(tracks);
-          if (this.activeCall) {
-            this.activeCall.remoteStream = stream;
-            this.setSpeakerVolume(this.speakerVolume);
+  private startMediaDiagnostics(session: {
+    connection?: { getStats?: () => Promise<Map<string, Record<string, unknown>>> };
+    on: (event: string, listener: () => void) => void;
+  }): void {
+    const connection = session.connection;
+    if (this.currentSession !== session || typeof connection?.getStats !== 'function') return;
+    this.stopMediaDiagnostics?.();
+    const generation = this.connectionGeneration;
+    const startedAt = Date.now();
+    const summarize = createAudioStatsSummarizer();
+    let writeCounters = getMediaDiagnosticsWriter();
+    let fileWritePending = false;
+    let resetCounterFile = true;
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      stopped = true;
+      clearInterval(timer);
+      clearTimeout(deadline);
+      if (this.stopMediaDiagnostics === stop) this.stopMediaDiagnostics = null;
+    };
+    const current = () => !stopped && this.currentSession === session &&
+      this.connectionGeneration === generation;
+    const sample = async () => {
+      if (!current()) { stop(); return; }
+      if (this.mediaStatsPending) return;
+      this.mediaStatsPending = true;
+      try {
+        const stats = await connection.getStats!();
+        if (current()) {
+          const now = Date.now();
+          const serialized = JSON.stringify({
+            startedAtUnixMs: startedAt,
+            timestampUnixMs: now,
+            elapsedMs: now - startedAt,
+            speakerVolumePercent: this.speakerVolume,
+            ...summarize(stats),
+          });
+          console.info(`[media] ${serialized}`);
+          if (writeCounters && !fileWritePending) {
+            fileWritePending = true;
+            writeCounters(serialized, resetCounterFile)
+              .then(() => { resetCounterFile = false; })
+              .catch(() => {
+                writeCounters = null;
+                console.warn('[media] local counter export unavailable');
+              })
+              .finally(() => { fileWritePending = false; });
           }
         }
+      } catch {
+        if (current()) console.warn('[media] statistics unavailable');
+        stop();
+      } finally {
+        this.mediaStatsPending = false;
       }
-    } catch (err) {
-      console.warn('[sip] early media audio stream setup warning:', err);
-    }
+    };
+    this.stopMediaDiagnostics = stop;
+    session.on('ended', stop);
+    session.on('failed', stop);
+    deadline = setTimeout(stop, 600_000);
+    timer = setInterval(() => { void sample(); }, 2000);
+    void sample();
+  }
+
+  /**
+   * Publish remote audio for the call and silence the local ringback.
+   *
+   * Only called once playable audio exists (verified RTP, or a confirmed call):
+   * the receiver tracks returned by `getReceivers()` exist as soon as the
+   * local audio transceiver is created, so a 180 Ringing must not reach here.
+   */
+  private attachEarlyMediaAudio(
+    session: { connection?: unknown },
+    call: ActiveCall | null = this.activeCall,
+  ) {
+    // Async media callbacks from an ended/superseded leg must not touch a
+    // newer call.
+    if (!call || call.session !== session) return;
+    if (this.activeCall !== call && this.consultCall !== call) return;
+    const pc = earlyMediaConnection(session);
+    if (!pc) return;
+    if (!remoteAudioSends(pc.remoteDescription?.sdp)) return;
+    const tracks = audioReceiverTracks(pc);
+    if (tracks.length === 0) return;
+    call.remoteStream = new MediaStream(tracks);
+    stopOutgoingRingbackAfterMedia();
+    this.setSpeakerVolume(this.speakerVolume);
+  }
+
+  /**
+   * Poll native RTP statistics until the carrier is actually sending early
+   * media, then publish it and stop the local ringback.
+   *
+   * A `track` event is not proof of media: RN-WebRTC creates the audio
+   * receiver from our own transceiver as soon as the remote SDP is applied,
+   * and its only native mute/unmute events come from the remote *video* track
+   * adapter — audio tracks have no equivalent event. Received RTP is the
+   * concrete signal, and until it arrives the local ringback keeps playing.
+   *
+   * The poll runs for the whole ringing lifetime of the call, with no expiry:
+   * a carrier can start its announcement many seconds after the 183, and no
+   * further event fires when the first RTP packet arrives. Confirmation,
+   * failure, or any teardown stops it.
+   */
+  private watchEarlyMedia(session: { connection?: unknown }, callId: string): void {
+    if (this.currentSession !== session) return;
+    if (!this.activeCall || this.activeCall.id !== callId) return;
+    // Early media only exists for an outgoing call: the caller's 183 arrives
+    // before our answer, which is already sent on the inbound path.
+    if (this.activeCall.direction !== 'outbound') return;
+    if (this.earlyMediaWatchCall === callId) return;
+    this.stopEarlyMediaWatch();
+    this.earlyMediaWatchCall = callId;
+    const tick = async () => {
+      this.earlyMediaTimer = null;
+      if (this.earlyMediaWatchCall !== callId) return;
+      if (this.currentSession !== session) return;
+      if (!this.activeCall || this.activeCall.id !== callId) return;
+      let receiving = false;
+      try {
+        receiving = await this.earlyMediaReceiving(session);
+      } catch {
+        receiving = false;
+      }
+      // Re-check identity after the async stats sample: the call may have been
+      // confirmed, ended, or replaced while it was in flight.
+      if (this.earlyMediaWatchCall !== callId) return;
+      if (this.currentSession !== session) return;
+      if (!this.activeCall || this.activeCall.id !== callId) return;
+      if (receiving) {
+        this.stopEarlyMediaWatch();
+        this.attachEarlyMediaAudio(session, this.activeCall);
+        return;
+      }
+      this.earlyMediaTimer = setTimeout(() => { void tick(); }, EARLY_MEDIA_POLL_MS);
+    };
+    void tick();
+  }
+
+  /** Whether the peer connection currently carries real inbound audio. */
+  private async earlyMediaReceiving(session: { connection?: unknown }): Promise<boolean> {
+    const pc = earlyMediaConnection(session);
+    if (!pc) return false;
+    // No remote description or a non-sending audio section means no early
+    // media is possible yet (e.g. 180 Ringing without SDP).
+    if (!remoteAudioSends(pc.remoteDescription?.sdp)) return false;
+    if (audioReceiverTracks(pc).length === 0) return false;
+    // Only received RTP proves early media. Without a stats API there is no
+    // evidence, so the local ringback stays in charge until confirmation.
+    if (typeof pc.getStats !== 'function') return false;
+    const stats = await pc.getStats();
+    return hasInboundAudio(stats);
+  }
+
+  /** Cancel the early-media readiness poll (confirmation or teardown). */
+  private stopEarlyMediaWatch(): void {
+    this.earlyMediaWatchCall = null;
+    clearTimeout(this.earlyMediaTimer);
+    this.earlyMediaTimer = null;
   }
 
   /**
@@ -1657,6 +2336,9 @@ export class JsSipService {
    * minting relay credentials, otherwise JsSIP rejects the call locally.
    */
   private async resolveMediaGatewaySession(domain: string): Promise<GatewaySession | null> {
+    if (this.directSip) return null;
+    if (this.directVpn) return null;
+    if (this.directFallback) return null;
     const active = getActiveGatewaySession(domain, this.extension);
     if (active) {
       this.gatewaySession = active;
@@ -1671,11 +2353,16 @@ export class JsSipService {
   }
 
   private async resolveMediaConfiguration(): Promise<MediaConfiguration> {
-    const domain = this.serverHost || CONFIG.sipDomain;
+    const domain = this.directVpn && this.vpnProfile
+      ? this.vpnProfile.sipDomain
+      : (this.serverHost || CONFIG.sipDomain);
     const gatewaySession = await this.resolveMediaGatewaySession(domain);
+    const mediaHost = this.directVpn && this.vpnProfile
+      ? this.vpnProfile.sipDomain
+      : (this.directFallbackHost || domain);
     const cacheKey = gatewaySession
-      ? `gateway:${gatewaySession.apiURL}:${gatewaySession.deviceId}`
-      : `direct:${domain}:${this.extension}:${this.connectionGeneration}`;
+      ? `gateway:${gatewaySession.apiURL}:${gatewaySession.deviceId}:${gatewaySession.assignment.pbxId}:${gatewaySession.assignment.extension}`
+      : `direct:${mediaHost}:${this.extension}:${this.connectionGeneration}`;
     const now = Date.now();
     if (this.mediaConfigurationCache?.key === cacheKey &&
         this.mediaConfigurationCache.expiresAt > now) {
@@ -1686,17 +2373,19 @@ export class JsSipService {
     const promise = (async () => {
       let mediaConfiguration: MediaConfiguration;
       if (gatewaySession) {
-        // Gateway deployments always relay media; no P2P fallback.
+        // TURN credentials from the assigned PBX; normal ICE may use direct
+        // host/srflx candidates when they are available.
         mediaConfiguration = await gatewayMediaConfiguration(gatewaySession);
       } else {
-        mediaConfiguration = await getMediaConfiguration(domain, this.extension, this.password);
+        mediaConfiguration = this.directFallback
+          ? await getMediaConfiguration(mediaHost, this.extension, this.password,
+            { apiURL: this.directFallback.apiURL })
+          : await getMediaConfiguration(mediaHost, this.extension, this.password);
       }
       if (generation !== this.connectionGeneration) {
         throw new Error('Media configuration superseded by a newer connection');
       }
-      this.mediaRelayRequired = gatewaySession
-        ? true
-        : mediaConfiguration.iceTransportPolicy === 'relay';
+      this.mediaRelayRequired = mediaConfiguration.iceTransportPolicy === 'relay';
       return mediaConfiguration;
     })();
 
@@ -1708,9 +2397,7 @@ export class JsSipService {
     this.mediaConfigurationCache = entry;
     try {
       const mediaConfiguration = await promise;
-      this.mediaRelayRequired = gatewaySession
-        ? true
-        : mediaConfiguration.iceTransportPolicy === 'relay';
+      this.mediaRelayRequired = mediaConfiguration.iceTransportPolicy === 'relay';
       return mediaConfiguration;
     } catch (error) {
       if (this.mediaConfigurationCache === entry) this.mediaConfigurationCache = null;
@@ -1719,7 +2406,8 @@ export class JsSipService {
   }
 
   /**
-   * Acquire local microphone audio stream with echo cancellation and auto gain control.
+   * Acquire unclaimed microphone audio. The caller must still own its session
+   * before publishing this stream or changing live microphone gain.
    */
   private async getLocalAudioStream(): Promise<MediaStream | null> {
     if (Platform.OS === 'android') {
@@ -1779,9 +2467,7 @@ export class JsSipService {
         tracks.forEach((track: MediaStreamTrack) => { track.enabled = true; });
         console.log(`[sip] microphone acquired tracks=${tracks.length}`);
         const finalStream = tracks.length > 0 ? stream : null;
-        this.localStream = finalStream;
         resolve(finalStream);
-        this.setMicVolume(this.micVolume);
       })
       .catch((error) => {
         if (finished) return;
@@ -1798,46 +2484,186 @@ export class JsSipService {
    * Place an outbound call to a SIP extension or PSTN number.
    */
   async call(target: string): Promise<void> {
-    if (!this.ua || !this.ua.isRegistered()) {
+    await this.dialOutbound(target, 'primary');
+  }
+
+  /**
+   * Reserve the next outgoing INVITE before microphone/TURN work, then
+   * revalidate this attempt after every await. JsSIP emits newRTCSession
+   * synchronously before sending the INVITE, so a rejected/superseded
+   * attempt can never replace a live primary or consultation session.
+   */
+  private async dialOutbound(target: string, kind: OutboundCallKind): Promise<void> {
+    const ua = this.ua;
+    if (!ua || !ua.isRegistered()) {
       throw new Error('Softphone is not registered');
     }
+    if (this.outboundAttempt) {
+      throw new Error('Another call is already in progress');
+    }
+    if (kind === 'primary') {
+      if (this.activeCall || this.currentSession || this.attendedTransfer) {
+        throw new Error('Another call is already in progress');
+      }
+    } else if (
+      !this.activeCall ||
+      !this.attendedTransfer ||
+      this.attendedTransfer.status !== 'dialing' ||
+      this.activeCall.id !== this.attendedTransfer.originalCallId
+    ) {
+      throw new Error('No consultation call is waiting to be placed');
+    }
 
-    const localStream = await this.getLocalAudioStream();
-    if (!localStream) throw new Error('Microphone unavailable');
-    this.localStream = localStream;
-    const domain = this.serverHost || CONFIG.sipDomain;
-    const targetUri = `sip:${target}@${domain}`;
+    const attempt: OutboundCallAttempt = {
+      kind,
+      ua,
+      generation: this.connectionGeneration,
+      stream: null,
+      ownsStream: false,
+      outcome: 'pending',
+    };
+    this.outboundAttempt = attempt;
 
+    let relayOwned = false;
+    const preexistingStream = this.localStream;
+    const preexistingSession = this.currentSession;
     try {
+      const localStream = await this.getLocalAudioStream();
+      if (!localStream) throw new Error('Microphone unavailable');
+      attempt.stream = localStream;
+      // A returning implementation (or a deliberately shared capture) may hand
+      // back the primary/consult stream that already belongs to this service.
+      // That stream is borrowed and must never be stopped by this attempt.
+      attempt.ownsStream = localStream !== preexistingStream &&
+        localStream !== this.localStream;
+
+      if (!this.canDispatchOutbound(attempt)) {
+        throw new Error('Outbound call was superseded by another call or connection');
+      }
+
+      const domain = this.directVpn && this.vpnProfile
+        ? this.vpnProfile.sipDomain
+        : (this.serverHost || CONFIG.sipDomain);
+      const targetUri = `sip:${target}@${domain}`;
+
       // Relay credentials are mandatory on public servers: abort the call
-      // (and release the microphone) instead of connecting without audio.
+      // (and release this attempt's microphone) instead of connecting without audio.
       const mediaConfiguration = await this.resolveMediaConfiguration();
+      if (!this.canDispatchOutbound(attempt)) {
+        throw new Error('Outbound call was superseded by another call or connection');
+      }
 
       const options: Record<string, unknown> = {
         mediaConstraints: { audio: true, video: false },
         pcConfig: {
           ...mediaConfiguration,
-          iceCandidatePoolSize: 0,
+          // Media must stay UDP: never offer ICE-TCP host candidates, so a
+          // UDP-blocked network fails the call instead of silently using TCP.
+          tcpCandidatePolicy: 'disabled',
+          iceCandidatePoolSize: 2,
+          // Best measured receive ceiling: 50 packets (1 second at 20 ms).
+          audioJitterBufferMaxPackets: 50,
+          audioJitterBufferFastAccelerate: true,
         },
         sessionTimersExpires: 120,
       };
       options.mediaStream = localStream;
-      // Teardown of a just-ended call can arrive after this point. Capture the
-      // relay mode for the new session so that old-call cleanup cannot flip it.
-      // A cached gateway configuration also implies relay even when the
-      // previous session's teardown already cleared mediaRelayRequired.
-      const cachedGateway = this.mediaConfigurationCache?.key.startsWith('gateway:') === true;
-      this.pendingRelayRequired = cachedGateway
-        || this.mediaRelayRequired
-        || this.gatewaySession !== null
-        || mediaConfiguration.iceTransportPolicy === 'relay';
-      this.ua.call(targetUri, options);
+      // Never repoint the service at a borrowed stream: the live primary still
+      // owns it, and a newer call may already have replaced the pointer.
+      if (attempt.ownsStream) {
+        this.localStream = localStream;
+        this.setMicVolume(this.micVolume);
+      }
+      // Only an explicit relay-only configuration waits for TURN. Gateway mode
+      // otherwise uses the same direct/host path as any WebRTC call. The
+      // consultation branch reads mediaRelayRequired directly, so a pending
+      // flag here would leak into the next primary call.
+      if (kind === 'primary') {
+        this.pendingRelayRequired = this.mediaRelayRequired
+          || mediaConfiguration.iceTransportPolicy === 'relay';
+        relayOwned = true;
+      }
+      ua.call(targetUri, options);
+      if (attempt.outcome === 'rejected') {
+        throw new Error('Outbound call was rejected by another active call');
+      }
+      if (attempt.outcome === 'pending' && relayOwned) {
+        // No synchronous session consumed the relay claim (JsSIP always emits
+        // newRTCSession synchronously); do not leave it for a later call.
+        this.pendingRelayRequired = null;
+      }
+      // The synchronous newRTCSession handler consumed the reservation for an
+      // accepted call. Never leave a dead reservation behind if it did not.
+      attempt.stream = null;
+      if (this.outboundAttempt === attempt) this.outboundAttempt = null;
     } catch (err) {
-      this.pendingRelayRequired = null;
-      this.mediaRelayRequired = false;
-      this.releaseLocalStream();
+      if (this.outboundAttempt === attempt) this.outboundAttempt = null;
+      if (attempt.outcome !== 'accepted') {
+        if (kind === 'consult' && attempt.ownsStream &&
+            this.localStream === attempt.stream &&
+            this.currentSession === preexistingSession &&
+            this.ua === ua &&
+            this.connectionGeneration === attempt.generation) {
+          this.localStream = preexistingStream;
+        }
+        this.releaseCapturedStream(attempt);
+      }
+      if (relayOwned && attempt.outcome !== 'accepted') this.pendingRelayRequired = null;
+      if (!this.activeCall && !this.currentSession && !this.outboundAttempt &&
+          this.ua === ua && this.connectionGeneration === attempt.generation) {
+        this.mediaRelayRequired = false;
+      }
       console.error('[sip] outbound call dispatch failed:', err);
       throw err;
+    }
+  }
+
+  /** Whether this exact attempt still owns the primary/consult slot and UA. */
+  private canDispatchOutbound(attempt: OutboundCallAttempt): boolean {
+    if (this.outboundAttempt !== attempt ||
+        this.connectionGeneration !== attempt.generation ||
+        this.ua !== attempt.ua ||
+        !attempt.ua.isRegistered()) {
+      return false;
+    }
+    if (attempt.kind === 'consult') {
+      return this.activeCall !== null &&
+        this.attendedTransfer !== null &&
+        this.attendedTransfer.status === 'dialing' &&
+        this.activeCall.id === this.attendedTransfer.originalCallId;
+    }
+    return this.activeCall === null &&
+      this.currentSession === null &&
+      this.attendedTransfer === null;
+  }
+
+  /** A cancelled request cannot regain ownership after a later call ends. */
+  private invalidateOutboundAttempt(kind: OutboundCallKind): void {
+    const attempt = this.outboundAttempt;
+    if (!attempt || attempt.kind !== kind) return;
+    this.outboundAttempt = null;
+    attempt.outcome = 'rejected';
+    this.releaseCapturedStream(attempt);
+  }
+
+  /** Release only microphone audio owned by a failed media preparation. */
+  private releaseCapturedStream(attempt: LocalAudioCapture): void {
+    const stream = attempt.stream;
+    attempt.stream = null;
+    if (!stream || !attempt.ownsStream) return;
+    if (this.localStream === stream) {
+      this.releaseLocalStream();
+      return;
+    }
+    try {
+      const tracks = stream.getTracks ? stream.getTracks() : [];
+      for (const track of tracks) {
+        try {
+          track.stop();
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[sip] failed to release superseded capture:', err);
     }
   }
 
@@ -1882,7 +2708,12 @@ export class JsSipService {
       return false;
     }
 
-    const stillCurrent = () => this.currentSession === session && this.activeCall === activeCall;
+    const ua = this.ua;
+    const generation = this.connectionGeneration;
+    const preexistingStream = this.localStream;
+    const stillCurrent = () => this.currentSession === session &&
+      this.activeCall === activeCall && this.ua === ua &&
+      this.connectionGeneration === generation;
     // Microphone acquisition and relay discovery are independent. Run them
     // together so the answer path pays the slower cost, not the sum.
     const localStreamPromise = this.getLocalAudioStream();
@@ -1891,30 +2722,35 @@ export class JsSipService {
       localStreamPromise,
       mediaConfigurationPromise,
     ]);
+    const localStream = streamResult.status === 'fulfilled' ? streamResult.value : null;
+    const capture: LocalAudioCapture = {
+      stream: localStream,
+      ownsStream: localStream !== null && localStream !== preexistingStream &&
+        localStream !== this.localStream,
+    };
+    if (!stillCurrent()) {
+      this.releaseCapturedStream(capture);
+      return false;
+    }
 
     if (configurationResult.status === 'rejected') {
       this.mediaRelayRequired = false;
-      // getLocalAudioStream has already published the stream on this service;
-      // release it once rather than stopping its tracks twice.
-      this.releaseLocalStream();
-      if (!stillCurrent()) return false;
+      this.releaseCapturedStream(capture);
       console.error(
         `[sip][callId=${callId}] answer blocked: media configuration failed:`,
         configurationResult.reason,
       );
       return false;
     }
-    const localStream = streamResult.status === 'fulfilled' ? streamResult.value : null;
     if (!localStream) {
       this.mediaRelayRequired = false;
       console.error(`[sip][callId=${callId}] answer blocked: microphone unavailable`);
       return false;
     }
-    if (!stillCurrent()) {
-      localStream.getTracks().forEach(track => track.stop());
-      return false;
+    if (capture.ownsStream) {
+      this.localStream = localStream;
+      this.setMicVolume(this.micVolume);
     }
-    this.localStream = localStream;
     const mediaConfiguration = configurationResult.value;
 
     // Bounded ICE gathering depends on the media mode that `answer()` will
@@ -1925,7 +2761,12 @@ export class JsSipService {
       mediaStream: localStream,
       pcConfig: {
         ...mediaConfiguration,
-        iceCandidatePoolSize: 0,
+        // Media must stay UDP: never offer ICE-TCP host candidates, so a
+        // UDP-blocked network fails the call instead of silently using TCP.
+        tcpCandidatePolicy: 'disabled',
+        iceCandidatePoolSize: 2,
+        audioJitterBufferMaxPackets: 50,
+        audioJitterBufferFastAccelerate: true,
       },
     };
     // Install before answer(): peerconnection and early ICE events may be
@@ -1936,8 +2777,10 @@ export class JsSipService {
       session.answer(options);
     } catch (error) {
       if (this.answerDispatchedSession === session) this.answerDispatchedSession = null;
-      this.mediaRelayRequired = false;
-      this.releaseLocalStream();
+      if (stillCurrent()) {
+        this.mediaRelayRequired = false;
+        this.releaseCapturedStream(capture);
+      }
       console.error(`[sip][callId=${callId}] answer failed:`, error);
       return false;
     }
@@ -1954,7 +2797,10 @@ export class JsSipService {
    */
   async hangup(callId?: string): Promise<boolean> {
     if (!this.activeCall || (callId && this.activeCall.id !== callId)) return false;
+    this.clearOutgoingTimers();
+    this.clearSignalingWatchdog();
     stopOutgoingRingback();
+    this.stopEarlyMediaWatch();
     this.stopTrunkReconcile();
     console.log(`[sip][callId=${this.activeCall.id}] local hangup requested (status=${this.activeCall.status}, answerDispatched=${this.answerDispatchedSession === this.currentSession})`);
     if (this.activeCall?.status === 'ringing' && this.activeCall?.direction === 'inbound') {
@@ -1992,7 +2838,10 @@ export class JsSipService {
       return false;
     }
     const declinedCall = this.activeCall;
+    this.clearOutgoingTimers();
+    this.clearSignalingWatchdog();
     stopOutgoingRingback();
+    this.stopEarlyMediaWatch();
     this.stopTrunkReconcile();
     const session = this.currentSession as { terminate?: (opts?: unknown) => void } | null;
     if (!session || typeof session.terminate !== 'function') return false;
@@ -2124,6 +2973,21 @@ export class JsSipService {
     }
   }
 
+  private scheduleDirectRetry() {
+    if (this.directRetryAttempts > 0 || this.directVpn || !this.vpnProfile) return;
+    if (this.activeCall || this.state !== 'registered') return;
+    clearTimeout(this.directRetryTimer ?? undefined);
+    const generation = this.connectionGeneration;
+    this.directRetryTimer = setTimeout(() => {
+      this.directRetryTimer = null;
+      if (generation !== this.connectionGeneration) return;
+      if (this.directVpn || this.activeCall || this.state !== 'registered') return;
+      this.directRetryAttempts += 1;
+      console.log('[sip] retrying the embedded VPN after its handshake had time to complete');
+      void this.forceReconnect();
+    }, 15000);
+  }
+
   private scheduleReconnect() {
     clearTimeout(this.reconnectTimer);
     if (!this.extension || !this.password || !this.serverHost) return;
@@ -2210,8 +3074,27 @@ export class JsSipService {
   private watchCallHandover(value: unknown): void {
     const session = value as RecoverableSession;
     const generation = this.connectionGeneration;
-    session.on('confirmed', () => { void this.recoverCallMedia(); });
+    session.on('confirmed', () => {
+      // Only a recovery queued while ringing needs this deferral. Without the
+      // guard every normal call leaves a timer alive after teardown.
+      if (!this.mediaRecovery.has(session) || this.mediaRecoveryConfirmTimers.has(session)) return;
+      // A recovery queued while the call was still ringing used to send an
+      // ICE restart in the same tick as confirmation, racing the first RTP
+      // and DTLS setup. Give the fresh media path a moment; recoverCallMedia()
+      // skips the re-offer if inbound audio is already flowing.
+      const timer = setTimeout(() => {
+        this.mediaRecoveryConfirmTimers.delete(session);
+        if (!this.mediaRecovery.has(session)) return;
+        void this.recoverCallMedia();
+      }, MEDIA_RECOVERY_CONFIRM_DELAY_MS);
+      this.mediaRecoveryConfirmTimers.set(session, timer);
+    });
     const cleanup = () => {
+      const confirmTimer = this.mediaRecoveryConfirmTimers.get(session);
+      if (confirmTimer) {
+        clearTimeout(confirmTimer);
+        this.mediaRecoveryConfirmTimers.delete(session);
+      }
       this.mediaRecovery.delete(session);
       // A dropped transport must also recover registration after a call ends.
       // Run after the normal termination listener clears activeCall.
@@ -2221,6 +3104,18 @@ export class JsSipService {
     };
     session.on('ended', cleanup);
     session.on('failed', cleanup);
+  }
+
+  private async mediaPathHealthy(session: RecoverableSession): Promise<boolean> {
+    const connection = session.connection as {
+      getStats?: () => Promise<Map<string, unknown> | null | undefined>;
+    } | undefined;
+    if (typeof connection?.getStats !== 'function') return false;
+    try {
+      return hasInboundAudio(await connection.getStats());
+    } catch {
+      return false;
+    }
   }
 
   private async recoverCallMedia(): Promise<void> {
@@ -2242,6 +3137,11 @@ export class JsSipService {
         // Wait for initial answer or an in-progress hold/re-INVITE. Never send
         // overlapping offers or replace microphone/hold/mute/call identity.
         if (!session.isEstablished?.() || !session.isReadyToReOffer?.()) continue;
+        if (await this.mediaPathHealthy(session)) {
+          this.mediaRecovery.delete(session);
+          console.log('[sip] media recovery skipped; inbound RTP already flowing');
+          continue;
+        }
         try {
           const configuration = await this.resolveMediaConfiguration();
           if (generation !== this.connectionGeneration || handover !== this.handoverGeneration ||
@@ -2327,19 +3227,28 @@ export class JsSipService {
     this.networkDebounceTimer = null;
     clearTimeout(this.mediaRecoveryTimer ?? undefined);
     this.mediaRecoveryTimer = null;
+    for (const timer of this.mediaRecoveryConfirmTimers.values()) clearTimeout(timer);
+    this.mediaRecoveryConfirmTimers.clear();
     this.mediaRecovery.clear();
     this.mediaRecoveryRun = null;
     this.answerDispatchedSession = null;
+    this.clearOutgoingTimers();
+    this.clearSignalingWatchdog();
     stopOutgoingRingback();
+    this.stopEarlyMediaWatch();
     this.stopTrunkReconcile();
     clearTimeout(this.liveGainTimer ?? undefined);
     this.liveGainTimer = null;
     this.liveGainResolve?.(false);
     this.liveGainResolve = null;
     this.pendingGainDb = null;
+    this.stopMediaDiagnostics?.();
+    this.stopMediaDiagnostics = null;
     this.connectionGeneration += 1;
     clearTimeout(this.reconnectTimer ?? undefined);
     this.reconnectTimer = null;
+    clearTimeout(this.directRetryTimer ?? undefined);
+    this.directRetryTimer = null;
     this.stopKeepAlive();
     for (const controller of this.iceGatheringControllers) {
       controller.cancel();
@@ -2351,6 +3260,15 @@ export class JsSipService {
     // listeners' "this.ua !== ua" guard. ua.stop() can emit "unregistered"
     // synchronously, which used to schedule a reconnect after logout.
     this.ua = null;
+    // Clear transfer slots before SDK teardown: late consult callbacks must
+    // not restore the old primary, even if ua.stop() fails.
+    const hadTransfer = this.attendedTransfer !== null;
+    this.attendedTransfer = null;
+    this.consultSession = null;
+    this.consultCall = null;
+    this.primaryCall = null;
+    this.primaryManualHold = false;
+    if (hadTransfer) this.events.onAttendedTransferChange?.(null);
     if (ua) {
       try {
         ua.stop();
@@ -2359,10 +3277,18 @@ export class JsSipService {
     this.signalingSocket = null;
     this.currentSession = null;
     this.activeCall = null;
+    const outbound = this.outboundAttempt;
+    this.outboundAttempt = null;
+    if (outbound && outbound.outcome !== 'accepted') {
+      this.releaseCapturedStream(outbound);
+    }
     this.releaseLocalStream();
+    this.pendingRelayRequired = null;
     this.mediaRelayRequired = false;
     this.mediaConfigurationCache = null;
     this.gatewaySession = null;
+    this.directFallback = null;
+    this.directFallbackHost = '';
     if (notifyState) {
       this.setState('disconnected');
     }
@@ -2377,14 +3303,34 @@ export class JsSipService {
     if (this.state !== 'registered') return false;
     return (this.ua?.isConnected() && this.ua?.isRegistered()) ?? false;
   }
+
   /**
-   * Reorder audio payload types in local SDP so the user's preferred codec
-   * is placed at highest priority, and ensure inband FEC is enabled for Opus.
+   * Whether the phone is busy with a primary/consult session or a dial that
+   * has reserved the next outgoing INVITE. Consumers use this to keep audio
+   * managers alive for a rejected second dial instead of tearing down the
+   * live call they are actually in.
+   */
+  hasCallInProgress(): boolean {
+    return this.activeCall !== null ||
+      this.currentSession !== null ||
+      this.consultSession !== null ||
+      this.outboundAttempt !== null;
+  }
+  /**
+   * Restrict the audio offer to the user's preferred codec when offered,
+   * preserving other media sections and enabling inband FEC for Opus.
    */
   private prioritizeCodecInSdp(sdp: string, preferred: CodecPreference): string {
     if (!sdp) return sdp;
 
-    const lines = sdp.split('\r\n');
+    const allLines = sdp.split('\r\n');
+    const audioStart = allLines.findIndex((line) => line.startsWith('m=audio '));
+    if (audioStart < 0) return sdp;
+    const nextMedia = allLines.findIndex((line, index) =>
+      index > audioStart && line.startsWith('m='));
+    const audioEnd = nextMedia < 0 ? allLines.length : nextMedia;
+    const lines = allLines.slice(audioStart, audioEnd);
+    const offeredPayloads = new Set(lines[0].split(' ').slice(3));
     const targetCodec = preferred.toLowerCase();
 
     // 1. Build payload-to-codec mapping from rtpmap attributes
@@ -2404,7 +3350,7 @@ export class JsSipService {
     let targetPayload: string | null = null;
     if (preferred !== 'auto') {
       for (const [pt, codecName] of Object.entries(payloadToCodec)) {
-        if (codecName === targetCodec) {
+        if (codecName === targetCodec && offeredPayloads.has(pt)) {
           targetPayload = pt;
           break;
         }
@@ -2458,7 +3404,11 @@ export class JsSipService {
         }
       }
     }
-    return updatedLines.join('\r\n');
+    return [
+      ...allLines.slice(0, audioStart),
+      ...updatedLines,
+      ...allLines.slice(audioEnd),
+    ].join('\r\n');
   }
 }
 

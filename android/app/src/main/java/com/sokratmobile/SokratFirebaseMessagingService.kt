@@ -32,13 +32,38 @@ class SokratFirebaseMessagingService : ReactNativeFirebaseMessagingService() {
         }
 
         val canonicalCallId = callId!!
+        val activeExtension = IncomingCallStore.activeExtension(applicationContext)
+        if (!IncomingPushPolicy.extensionOwned(activeExtension, data["extension"])) {
+            Log.i(TAG, "[callId=$canonicalCallId] ignored push for another extension")
+            return
+        }
+        if (IncomingCallStore.isTerminated(applicationContext, canonicalCallId)) {
+            Log.i(TAG, "[callId=$canonicalCallId] ignored terminated incoming push")
+            return
+        }
+        val now = System.currentTimeMillis()
+        val sentAt = data["timestamp"]?.trim()?.toLongOrNull()
+        val freshness = IncomingPushPolicy.classify(now, sentAt)
+        val existing = IncomingCallStore.pending(applicationContext)
+            .firstOrNull { it.callId == canonicalCallId }
+        if (freshness != IncomingPushPolicy.Freshness.FRESH) {
+            // A duplicate must never dismiss or terminalize a call that is
+            // already live. Only a valid-but-too-old push with no live owner
+            // gets a tombstone so later retries stay suppressed.
+            if (IncomingPushPolicy.shouldMarkTerminal(freshness, existing != null)) {
+                IncomingCallStore.markTerminal(applicationContext, canonicalCallId, now)
+                IncomingCallNotificationHelper.dismissCallNotification(applicationContext, canonicalCallId)
+            }
+            Log.i(TAG, "[callId=$canonicalCallId] ignored stale incoming push")
+            return
+        }
         val callerId = data["callerId"] ?: "Unknown"
         // Prefer the phone's address book; provider/push labels are only a fallback.
         val deviceName = DeviceContactLookup.lookup(applicationContext, callerId)
         // Push-provided callerName is display metadata, not contact authority.
         val callerName = CallerDisplayName.resolve(callerId, deviceName)
         val extension = data["extension"] ?: ""
-        val timestamp = data["timestamp"]?.toLongOrNull() ?: System.currentTimeMillis()
+        val timestamp = existing?.timestamp ?: (sentAt ?: now)
 
         IncomingCallStore.upsertIncoming(
             applicationContext,

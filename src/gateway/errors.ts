@@ -9,6 +9,12 @@ export type GatewayErrorKind =
   | 'expired'
   | 'pbx_disabled'
   | 'fail_closed'
+  | 'unavailable'
+  | 'storage'
+  | 'route'
+  | 'blocked'
+  | 'conflict'
+  | 'enrollment'
   | 'network'
   | 'unauthorized'
   | 'invalid'
@@ -46,6 +52,9 @@ export const failClosed = (message: string, options: GatewayErrorOptions = {}): 
 export const isTerminalEnrollmentError = (error: unknown): boolean =>
   isGatewayError(error) && (error.kind === 'rejected' || error.kind === 'revoked' || error.kind === 'unauthorized');
 
+/** One approval wait, one sentence: used by the login flow and every caller. */
+export const APPROVAL_PENDING_MESSAGE = 'Waiting for administrator approval…';
+
 /** Login copy for enrollment failures. Reuses the existing login error/status slot. */
 export function describeEnrollmentError(error: unknown): string {
   if (!isGatewayError(error)) {
@@ -64,6 +73,20 @@ export function describeEnrollmentError(error: unknown): string {
       return 'The gateway rejected this device credential.';
     case 'fail_closed':
       return 'Gateway detected but unreachable. Direct PBX fallback is disabled.';
+    case 'unavailable':
+      return 'The gateway is busy. Retrying…';
+    case 'pending':
+      return APPROVAL_PENDING_MESSAGE;
+    case 'storage':
+      return 'The app could not read its saved gateway enrollment. Sign in again to re-enroll.';
+    case 'route':
+      return 'The server answered, but not as a PBX gateway. Check the Server field.';
+    case 'blocked':
+      return 'The network blocked the gateway request. Try again on another network.';
+    case 'conflict':
+      return 'Revoke the old device in the gateway dashboard, then sign in again.';
+    case 'enrollment':
+      return 'This account is not enrolled on the gateway. Sign in to request approval.';
     case 'network':
       return 'Cannot reach the gateway. Check the server host and try again.';
     case 'expired':

@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Diagnostic-only control surface for the downlink PCM capture.
+             src/audioDiagnostic is compiled for the audioDiagnostic build type
+             alone, so debug and release APKs contain neither this receiver nor
+             PlayoutCapture.
+
+             android:permission="android.permission.DUMP" restricts senders to
+             adb shell / the system: DUMP is a signature|privileged permission,
+             so ordinary apps cannot start or stop a capture. -->
+        <receiver
+            android:name="com.sokratmobile.diagnostics.PlayoutCaptureReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.sokratmobile.AUDIO_DIAGNOSTIC_START" />
+                <action android:name="com.sokratmobile.AUDIO_DIAGNOSTIC_STOP" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

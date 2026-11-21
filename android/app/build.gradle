@@ -1,3 +1,13 @@
+import com.android.build.api.instrumentation.AsmClassVisitorFactory
+import com.android.build.api.instrumentation.ClassContext
+import com.android.build.api.instrumentation.ClassData
+import com.android.build.api.instrumentation.InstrumentationParameters
+import com.android.build.api.instrumentation.InstrumentationScope
+import com.android.build.api.variant.ApplicationAndroidComponentsExtension
+import org.gradle.api.GradleException
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Opcodes
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
@@ -100,8 +110,13 @@ android {
         applicationId "com.sokratmobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 59
-        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.2.3"
+        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 101
+        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.3.4-direct-sip.4"
+    }
+    externalNativeBuild {
+        cmake {
+            path "src/main/jni/CMakeLists.txt"
+        }
     }
     signingConfigs {
         if (productionRelease) {
@@ -130,12 +145,39 @@ android {
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
+        // Diagnostic-only variant for the downlink PCM capture. It mirrors
+        // release (same signer, bundled JS, no debuggable flag) so it can
+        // update an installed release build in place, and it is the only
+        // variant that compiles src/audioDiagnostic and runs the WebRTC
+        // playout instrumentation below. Never distribute this variant.
+        audioDiagnostic {
+            initWith release
+            matchingFallbacks = ["release"]
+            debuggable = false
+            signingConfig productionRelease ? signingConfigs.production : signingConfigs.debug
+        }
+    }
+    // AGP 9 only creates the debug host-test component by default. Compile the
+    // diagnostic Java there for JVM tests without enabling dependency release tests.
+    sourceSets {
+        testDebug {
+            java.srcDirs += ["src/audioDiagnostic/java", "src/testAudioDiagnostic/java"]
+        }
     }
 }
+
 
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // The native receiver policy compiles against this exact SDK interface.
+    implementation("org.jitsi:webrtc") {
+        version { strictly("124.0.0") }
+    }
+    // Repackaged com.wireguard.android:tunnel 1.0.20260102. Upstream native
+    // libs hardcode /data/data/com.wireguard.android for the UAPI socket, so
+    // the native UAPI path is repacked for this app package's data directory.
+    implementation(files("libs/tunnel-sokrat.aar"))
     implementation platform("com.google.firebase:firebase-bom:33.7.0")
     implementation("com.google.firebase:firebase-messaging")
     implementation("androidx.core:core-ktx:1.13.1")
@@ -150,3 +192,232 @@ dependencies {
 
 // Firebase (RNFirebase): must be applied AFTER the Android plugin.
 apply plugin: "com.google.gms.google-services"
+// libwebrtc.jar is an external dependency artifact, so the hook has to be
+// registered with InstrumentationScope.ALL (project + dependency classes).
+// AGP applies it to the AAR's embedded jars as well.
+// A native interface call must never silently follow an AAR/header upgrade.
+// Pin both the resolved binary and the unmodified official header closure.
+def netEqSources = new groovy.json.JsonSlurper().parse(file("src/main/cpp/vendor/sources.json"))
+def sha256 = { File source ->
+    def digest = java.security.MessageDigest.getInstance("SHA-256")
+    source.withInputStream { input ->
+        byte[] buffer = new byte[65536]
+        int count
+        while ((count = input.read(buffer)) != -1) {
+            digest.update(buffer, 0, count)
+        }
+    }
+    digest.digest().encodeHex().toString()
+}
+def androidComponents = project.extensions.getByType(ApplicationAndroidComponentsExtension)
+androidComponents.onVariants(androidComponents.selector().all(), { variant ->
+    def variantSuffix = variant.name.capitalize()
+    def verifyNativeSdk = tasks.register("verifyNetEqSdk${variantSuffix}") {
+        inputs.file("src/main/cpp/vendor/sources.json")
+        inputs.files(fileTree("src/main/cpp/vendor") { exclude "sources.json" })
+        doLast {
+            def artifacts = configurations.getByName("${variant.name}RuntimeClasspath")
+                    .incoming.artifactView { view ->
+                        view.componentFilter { component ->
+                            component instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier &&
+                                    component.group == "org.jitsi" && component.module == "webrtc" &&
+                                    component.version == "124.0.0"
+                        }
+                        view.attributes {
+                            attribute(org.gradle.api.artifacts.type.ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, "aar")
+                        }
+                    }.files.files
+            if (artifacts.size() != 1 ||
+                    sha256(artifacts.first()) != netEqSources.aar.sha256) {
+                throw new GradleException("NetEq SDK binary differs from the pinned 124.0.0 AAR")
+            }
+            netEqSources.files.each { path, expected ->
+                def header = file("src/main/cpp/vendor/${path}")
+                if (!header.isFile() || sha256(header) != expected) {
+                    throw new GradleException("NetEq SDK header integrity failed: ${path}")
+                }
+            }
+        }
+    }
+    tasks.configureEach { task ->
+        if (task.name == "pre${variantSuffix}Build") {
+            task.dependsOn(verifyNativeSdk)
+        }
+    }
+    variant.instrumentation.transformClassesWith(
+            SokratNetEqReceiverFactory,
+            InstrumentationScope.ALL,
+            { params -> } as kotlin.jvm.functions.Function1)
+} as org.gradle.api.Action)
+
+androidComponents.onVariants(
+        androidComponents.selector().withBuildType("audioDiagnostic"),
+        { variant ->
+            variant.instrumentation.transformClassesWith(
+                    SokratPlayoutCallSiteFactory,
+                    InstrumentationScope.ALL,
+                    { params -> } as kotlin.jvm.functions.Function1
+            )
+        } as org.gradle.api.Action)
+
+abstract class SokratPlayoutCallSiteFactory
+        implements AsmClassVisitorFactory<InstrumentationParameters.None> {
+
+    @Override
+    ClassVisitor createClassVisitor(ClassContext classContext, ClassVisitor nextClassVisitor) {
+        if (classContext.currentClassData.className != SokratPlayoutCallSiteClassVisitor.TARGET_CLASS) {
+            return nextClassVisitor
+        }
+        return new SokratPlayoutCallSiteClassVisitor(instrumentationContext.apiVersion.get(), nextClassVisitor)
+    }
+
+    @Override
+    boolean isInstrumentable(ClassData classData) {
+        return classData.className == SokratPlayoutCallSiteClassVisitor.TARGET_CLASS
+    }
+}
+
+class SokratPlayoutCallSiteClassVisitor extends ClassVisitor {
+
+    static final String TARGET_CLASS = 'org.webrtc.audio.WebRtcAudioTrack$AudioTrackThread'
+    static final String TARGET_METHOD = 'run'
+    static final String TARGET_METHOD_DESCRIPTOR = '()V'
+    static final String AUDIO_TRACK_OWNER = 'android/media/AudioTrack'
+    static final String AUDIO_TRACK_WRITE = 'write'
+    static final String AUDIO_TRACK_WRITE_DESCRIPTOR = '(Ljava/nio/ByteBuffer;II)I'
+    static final String HOOK_OWNER = 'com/sokratmobile/diagnostics/PlayoutCapture'
+    // The static hook receives the original receiver as its first argument, so
+    // the stack (track, buffer, size, mode) is exactly the call's stack.
+    static final String HOOK_WRITE_DESCRIPTOR = '(Landroid/media/AudioTrack;Ljava/nio/ByteBuffer;II)I'
+
+    boolean hookInstalled = false
+    boolean targetMethodVisited = false
+    String unexpectedWrite = null
+
+    SokratPlayoutCallSiteClassVisitor(int api, ClassVisitor nextClassVisitor) {
+        super(api, nextClassVisitor)
+    }
+
+    @Override
+    MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+        MethodVisitor next = super.visitMethod(access, name, descriptor, signature, exceptions)
+        if (next == null || name != TARGET_METHOD || descriptor != TARGET_METHOD_DESCRIPTOR) {
+            return next
+        }
+        targetMethodVisited = true
+        return new SokratPlayoutCallSiteMethodVisitor(api, next, this)
+    }
+
+    void markHookInstalled() {
+        hookInstalled = true
+    }
+
+    void noteUnexpectedWrite(String description) {
+        if (unexpectedWrite == null) {
+            unexpectedWrite = description
+        }
+    }
+
+    @Override
+    void visitEnd() {
+        if (!hookInstalled) {
+            def reason
+            if (!targetMethodVisited) {
+                reason = 'the class no longer declares ' + TARGET_METHOD + TARGET_METHOD_DESCRIPTOR
+            } else if (unexpectedWrite != null) {
+                reason = 'the AudioTrack.write call has an unexpected shape (' + unexpectedWrite + ')'
+            } else {
+                reason = TARGET_METHOD + TARGET_METHOD_DESCRIPTOR + ' no longer calls AudioTrack.write(...)'
+            }
+            throw new GradleException(
+                    'audioDiagnostic instrumentation failed: ' + TARGET_CLASS +
+                            ' was instrumented but ' + reason + '. ' +
+                            'This WebRTC build is not the one this diagnostic was written for; ' +
+                            'refusing to produce an APK whose playout capture would silently record nothing. ' +
+                            'Update android/app/build.gradle for the new WebRTC bytecode.')
+        }
+        super.visitEnd()
+    }
+}
+
+class SokratPlayoutCallSiteMethodVisitor extends MethodVisitor {
+
+    private final SokratPlayoutCallSiteClassVisitor classVisitor
+
+    SokratPlayoutCallSiteMethodVisitor(int api, MethodVisitor next, SokratPlayoutCallSiteClassVisitor classVisitor) {
+        super(api, next)
+        this.classVisitor = classVisitor
+    }
+
+    @Override
+    void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean isInterface) {
+        if (owner == SokratPlayoutCallSiteClassVisitor.AUDIO_TRACK_OWNER &&
+                name == SokratPlayoutCallSiteClassVisitor.AUDIO_TRACK_WRITE) {
+            if (opcode == Opcodes.INVOKEVIRTUAL &&
+                    !isInterface &&
+                    descriptor == SokratPlayoutCallSiteClassVisitor.AUDIO_TRACK_WRITE_DESCRIPTOR) {
+                super.visitMethodInsn(
+                        Opcodes.INVOKESTATIC,
+                        SokratPlayoutCallSiteClassVisitor.HOOK_OWNER,
+                        SokratPlayoutCallSiteClassVisitor.AUDIO_TRACK_WRITE,
+                        SokratPlayoutCallSiteClassVisitor.HOOK_WRITE_DESCRIPTOR,
+                        false)
+                classVisitor.markHookInstalled()
+                return
+            }
+            classVisitor.noteUnexpectedWrite('opcode=' + opcode + ', descriptor=' + descriptor)
+        }
+        super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+    }
+}
+
+abstract class SokratNetEqReceiverFactory
+        implements AsmClassVisitorFactory<InstrumentationParameters.None> {
+    @Override
+    boolean isInstrumentable(ClassData data) {
+        return data.className == "org.webrtc.RtpReceiver"
+    }
+
+    @Override
+    ClassVisitor createClassVisitor(ClassContext context, ClassVisitor next) {
+        return new SokratNetEqReceiverVisitor(instrumentationContext.apiVersion.get(), next)
+    }
+}
+
+class SokratNetEqReceiverVisitor extends ClassVisitor {
+    boolean hookInstalled = false
+
+    SokratNetEqReceiverVisitor(int api, ClassVisitor next) {
+        super(api, next)
+    }
+
+    @Override
+    MethodVisitor visitMethod(int access, String name, String descriptor,
+                              String signature, String[] exceptions) {
+        MethodVisitor next = super.visitMethod(access, name, descriptor, signature, exceptions)
+        if (next == null || name != "<init>" || descriptor != "(J)V") {
+            return next
+        }
+        def owner = this
+        return new MethodVisitor(api, next) {
+            @Override
+            void visitInsn(int opcode) {
+                if (opcode == Opcodes.RETURN) {
+                    super.visitVarInsn(Opcodes.ALOAD, 0)
+                    super.visitMethodInsn(Opcodes.INVOKESTATIC, "org/webrtc/SokratNetEq",
+                            "configure", "(Lorg/webrtc/RtpReceiver;)V", false)
+                    owner.hookInstalled = true
+                }
+                super.visitInsn(opcode)
+            }
+        }
+    }
+
+    @Override
+    void visitEnd() {
+        if (!hookInstalled) {
+            throw new GradleException("NetEq receiver constructor hook not installed; refusing APK")
+        }
+        super.visitEnd()
+    }
+}

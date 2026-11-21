@@ -1,10 +1,10 @@
 /**
- * Sokrat VOICE React Native shims for sip.js and WebRTC.
+ * Sokrat VOICE React Native shims for JsSIP and WebRTC.
  * MUST be imported as the first line of index.js before any other imports.
  */
 import { registerGlobals } from 'react-native-webrtc';
 
-// 1. Shims for browser window and Web Audio globals used by sip.js
+// 1. Shims for browser window and Web Audio globals used by the SIP/WebRTC stack
 const g = globalThis as Record<string, unknown>;
 
 if (typeof g.window !== 'object' || !g.window) {
@@ -19,7 +19,7 @@ if (typeof win.removeEventListener !== 'function') {
   win.removeEventListener = () => {};
 }
 
-// Dummy AudioContext for sip.js WebAudioSessionDescriptionHandler top-level instantiation
+// Browser Web Audio compatibility for the JsSIP/WebRTC stack
 if (typeof g.AudioContext !== 'function') {
   class DummyAudioContext {
     state = 'running';

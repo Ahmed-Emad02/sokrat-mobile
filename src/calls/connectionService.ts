@@ -3,6 +3,7 @@ import { NativeModules, Platform } from 'react-native';
 type ConnectionServiceModule = {
   start?: () => void;
   stop?: () => void;
+  setCallAudioActive?: (active: boolean) => void;
 };
 
 const native = NativeModules.SokratConnectionService as ConnectionServiceModule | undefined;
@@ -14,6 +15,16 @@ export function startConnectionService(): void {
     native?.start?.();
   } catch {
     // A missing service must never prevent login or SIP registration.
+  }
+}
+
+/** Promote or demote the Android foreground service for active call audio. */
+export function setCallAudioActive(active: boolean): void {
+  if (Platform.OS !== 'android') return;
+  try {
+    native?.setCallAudioActive?.(active);
+  } catch {
+    // Call audio must still work if the native service promotion is unavailable.
   }
 }
 

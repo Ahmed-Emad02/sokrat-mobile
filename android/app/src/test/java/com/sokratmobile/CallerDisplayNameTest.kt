@@ -5,13 +5,13 @@ import org.junit.Test
 
 class CallerDisplayNameTest {
     @Test
-    fun usesNumberForPlaceholderAndMissingNames() {
+    fun doesNotUseNumberAsCallerNameForPlaceholdersOrMissingNames() {
         for (name in listOf("", "Unknown", " unknown caller ", "Incoming Call", "غير معروف")) {
-            assertEquals("+44 20 1234 5678", CallerDisplayName.resolve("+44 20 1234 5678", name))
+            assertEquals("Unknown", CallerDisplayName.resolve("+44 20 1234 5678", name))
         }
-        assertEquals("*43", CallerDisplayName.resolve("*43", "Unknown"))
-        assertEquals("٢٠٤", CallerDisplayName.resolve("٢٠٤"))
-        assertEquals("204", CallerDisplayName.resolve("sip:204@pbx.example", "Unknown"))
+        assertEquals("Unknown", CallerDisplayName.resolve("*43", "Unknown"))
+        assertEquals("Unknown", CallerDisplayName.resolve("٢٠٤"))
+        assertEquals("Unknown", CallerDisplayName.resolve("sip:204@pbx.example", "Unknown"))
     }
 
     @Test

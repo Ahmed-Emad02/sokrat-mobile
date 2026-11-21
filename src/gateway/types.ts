@@ -27,6 +27,23 @@ export type EnrollmentStatus =
   | 'expired'
   | 'pbx_disabled';
 
+export type GatewayDirectFallback = {
+  wsURL: string;
+  apiURL: string;
+};
+
+export type GatewayVpnProfile = {
+  enabled: boolean;
+  endpoint: string;
+  serverPublicKey: string;
+  address: string;
+  allowedIPs: string[];
+  privateSipUrl: string;
+  sipDomain: string;
+  mtu: number;
+  keepaliveSeconds: number;
+};
+
 export type GatewayAssignment = {
   deviceId: string;
   pbxId: string;
@@ -35,6 +52,10 @@ export type GatewayAssignment = {
   wsURL: string;
   apiURL: string;
   mediaIps: string[];
+  /** Public PBX endpoints, present only when this PBX opted in. */
+  directFallback?: GatewayDirectFallback;
+  /** Embedded WireGuard direct-PBX profile, when enabled by the PBX. */
+  vpn?: GatewayVpnProfile;
 };
 
 /** One reachable gateway origin in a logical cluster. */

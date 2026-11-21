@@ -6,9 +6,12 @@ describe('mobile push token lifecycle', () => {
   let remove: jest.Mock;
   let getRecord: jest.Mock;
   let getActive: jest.Mock;
+  let getAccount: jest.Mock;
+  let dismissNative: jest.Mock;
   let onRefresh: (token: string) => void;
   let onState: (state: string) => void;
   let backgroundMessage: (message: unknown) => Promise<void>;
+  let foregroundMessage: (message: unknown) => Promise<void>;
   const session = { assignment: { extension: '201' } };
 
   beforeEach(() => {
@@ -16,12 +19,23 @@ describe('mobile push token lifecycle', () => {
     jest.useFakeTimers();
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
+    const stored = new Map<string, string>();
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    AsyncStorage.getItem.mockImplementation(async (key: string) => stored.get(key) ?? null);
+    AsyncStorage.setItem.mockImplementation(async (key: string, value: string) => {
+      stored.set(key, value);
+    });
+    AsyncStorage.removeItem.mockImplementation(async (key: string) => {
+      stored.delete(key);
+    });
     getToken = jest.fn().mockResolvedValue('test-fcm-token');
     deleteToken = jest.fn().mockResolvedValue(undefined);
     register = jest.fn().mockResolvedValue(undefined);
     remove = jest.fn().mockResolvedValue(undefined);
     getRecord = jest.fn().mockResolvedValue(session);
     getActive = jest.fn().mockReturnValue(null);
+    getAccount = jest.fn().mockResolvedValue({ extension: '201' });
+    dismissNative = jest.fn();
     jest.doMock('react-native', () => ({
       Platform: { OS: 'android' },
       AppState: { addEventListener: (_: string, handler: typeof onState) => { onState = handler; } },
@@ -31,8 +45,12 @@ describe('mobile push token lifecycle', () => {
       getToken,
       deleteToken,
       setBackgroundMessageHandler: (_: unknown, handler: typeof backgroundMessage) => { backgroundMessage = handler; },
-      onMessage: jest.fn(),
+      onMessage: (_: unknown, handler: typeof foregroundMessage) => { foregroundMessage = handler; },
       onTokenRefresh: (_: unknown, handler: typeof onRefresh) => { onRefresh = handler; },
+    }));
+    jest.doMock('../src/calls/nativeCallNotification', () => ({
+      dismissNativeCallNotification: dismissNative,
+      setNativeActiveExtension: jest.fn(),
     }));
     jest.doMock('../src/gateway/session', () => ({
       getPersistedGatewayRecord: getRecord,
@@ -46,7 +64,7 @@ describe('mobile push token lifecycle', () => {
       UUID_PATTERN: /^[a-f0-9-]{36}$/,
     }));
     jest.doMock('../src/storage/store', () => ({
-      StorageService: { getAccount: jest.fn().mockResolvedValue({ extension: '201' }) },
+      StorageService: { getAccount },
     }));
     const { CONFIG } = require('../src/config');
     CONFIG.sipDomain = 'gateway.example';
@@ -236,5 +254,94 @@ describe('mobile push token lifecycle', () => {
     } });
     await settle();
     expect(incoming).not.toHaveBeenCalled();
+  });
+
+  it('dismisses a stale-account background push instead of leaving a native ring', async () => {
+    const callId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    push.initPush(jest.fn());
+    await backgroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202',
+      extension: 'old-extension', timestamp: String(Date.now()),
+    } });
+
+    expect(dismissNative).toHaveBeenCalledWith(callId);
+  });
+
+  it('validates the account in the foreground handler, not just the background handler', async () => {
+    const callId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const incoming = jest.fn();
+    await push.initPush(incoming);
+    await settle();
+    await foregroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202',
+      extension: 'old-extension', timestamp: String(Date.now()),
+    } });
+
+    expect(incoming).not.toHaveBeenCalled();
+    expect(dismissNative).toHaveBeenCalledWith(callId);
+  });
+
+  it('does not replay a persisted call for the previous extension', async () => {
+    const callId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    await backgroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202',
+      extension: '201', timestamp: String(Date.now()),
+    } });
+    getAccount.mockResolvedValue({ extension: '202' });
+    const incoming = jest.fn();
+    push.initPush(incoming);
+    await settle();
+
+    expect(incoming).not.toHaveBeenCalled();
+    expect(dismissNative).toHaveBeenCalledWith(callId);
+  });
+
+  it('rejects a provider push older than the 15 second ingress window', async () => {
+    const callId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const incoming = jest.fn();
+    push.initPush(incoming);
+    await backgroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202', extension: '201',
+      timestamp: String(Date.now() - 16_000),
+    } });
+
+    expect(incoming).not.toHaveBeenCalled();
+  });
+
+  it('rejects a provider push with no timestamp instead of treating it as fresh', async () => {
+    const callId = '11111111-1111-4111-8111-111111111111';
+    const incoming = jest.fn();
+    push.initPush(incoming);
+    await backgroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202', extension: '201',
+    } });
+
+    expect(incoming).not.toHaveBeenCalled();
+  });
+
+  it('does not let a late incoming task resurrect a call after cancel', async () => {
+    const callId = '99999999-9999-4999-8999-999999999999';
+    const incoming = jest.fn();
+    push.initPush(incoming);
+    await backgroundMessage({ data: {
+      msg: 'cancel-call', callId, extension: '201', timestamp: String(Date.now()),
+    } });
+    await backgroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202',
+      extension: '201', timestamp: String(Date.now()),
+    } });
+
+    expect(incoming).not.toHaveBeenCalled();
+  });
+
+  it('accepts a provider push inside the 15 second ingress window', async () => {
+    const callId = '22222222-2222-4222-8222-222222222222';
+    const incoming = jest.fn();
+    await push.initPush(incoming);
+    await backgroundMessage({ data: {
+      msg: 'incoming-call', callId, callerId: '202',
+      extension: '201', timestamp: String(Date.now() - 14_000),
+    } });
+    expect(incoming).toHaveBeenCalledWith(expect.objectContaining({ callId }));
   });
 });

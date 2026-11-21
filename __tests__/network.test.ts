@@ -146,10 +146,77 @@ describe('normalizeIceServers / requiresRelay', () => {
     expect(requiresRelay([{ urls: ['stun:a.example.com', 'stun:b.example.com'] }])).toBe(false);
     expect(requiresRelay([])).toBe(false);
   });
+
+  test('drops TCP endpoints from mixed lists but keeps UDP credentials', () => {
+    const input = {
+      urls: [
+        'turn:turn.example.com:3478?transport=udp',
+        'turn:turn.example.com:3478?transport=tcp',
+        'TURN:turn.example.com:3478?TRANSPORT=TCP',
+        'turn:turn.example.com:3478',
+        'stun:stun.example.com:3478',
+      ],
+      username: 'u',
+      credential: 'c',
+    };
+
+    expect(normalizeIceServers([input])).toEqual([
+      {
+        urls: [
+          'turn:turn.example.com:3478?transport=udp',
+          'turn:turn.example.com:3478',
+          'stun:stun.example.com:3478',
+        ],
+        username: 'u',
+        credential: 'c',
+      },
+    ]);
+    // The caller's entry is left untouched.
+    expect(input.urls).toHaveLength(5);
+  });
+
+  test('refuses TCP, TLS and ambiguous transport forms instead of rewriting them', () => {
+    expect(
+      normalizeIceServers([
+        'turn:turn.example.com:3478?transport=tcp',
+        'turns:turn.example.com:5349',
+        'stuns:stun.example.com:5349',
+        'turn:turn.example.com:3478?transport=quic',
+        'turn:turn.example.com:3478?transport=udp&transport=udp',
+        'turn:turn.example.com:3478?transport=udp&foo=bar',
+        'turn:turn.example.com:3478?',
+        'http://turn.example.com:3478',
+        { urls: ['turn:turn.example.com:3478'], username: 'u', credential: 'c' },
+      ]),
+    ).toEqual([{ urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' }]);
+  });
+
+  test('legacy url keys cannot smuggle TCP endpoints past the filter', () => {
+    expect(
+      normalizeIceServers([
+        { url: 'turn:turn.example.com:3478?transport=tcp', username: 'u', credential: 'c' },
+        { url: ['turn:turn.example.com:3478', 'turn:turn.example.com:3478?transport=tcp'] },
+      ]),
+    ).toEqual([{ urls: 'turn:turn.example.com:3478' }]);
+  });
+
+  test('keeps implicit and explicit UDP STUN/TURN endpoints including IPv6', () => {
+    const urls = [
+      'stun:stun.example.com:3478',
+      'stun:stun.example.com:3478?transport=udp',
+      'turn:turn.example.com:3478',
+      'turn:turn.example.com:3478?transport=udp',
+      'turn:[2001:db8::2]:3478?transport=udp',
+      'stun:[2001:db8::1]:3478',
+    ];
+    expect(normalizeIceServers(urls.map(url => ({ urls: url })))).toEqual(
+      urls.map(url => ({ urls: url })),
+    );
+  });
 });
 
 describe('buildMediaConfiguration', () => {
-  test('forces relay policy only when TURN credentials are present', () => {
+  test('keeps TURN as a fallback without forcing relay policy', () => {
     const configuration = buildMediaConfiguration({
       iceServers: [
         { urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' },
@@ -157,7 +224,7 @@ describe('buildMediaConfiguration', () => {
       ],
     });
 
-    expect(configuration.iceTransportPolicy).toBe('relay');
+    expect(configuration.iceTransportPolicy).toBeUndefined();
     expect(configuration.iceServers).toHaveLength(2);
   });
 
@@ -170,7 +237,41 @@ describe('buildMediaConfiguration', () => {
   test('accepts snake_case payloads', () => {
     expect(buildMediaConfiguration({ ice_servers: ['turn:turn.example.com:3478'] })).toEqual({
       iceServers: [{ urls: 'turn:turn.example.com:3478' }],
-      iceTransportPolicy: 'relay',
+    });
+  });
+
+  test('treats TCP-only or TLS-only payloads as unavailable', () => {
+    expect(() =>
+      buildMediaConfiguration({
+        iceServers: [
+          {
+            urls: ['turn:turn.example.com:3478?transport=tcp', 'turns:turn.example.com:5349'],
+            username: 'u',
+            credential: 'c',
+          },
+        ],
+      }),
+    ).toThrow('Audio relay unavailable');
+    expect(() =>
+      buildMediaConfiguration({ iceServers: ['turn:turn.example.com:3478?transport=tcp'] }),
+    ).toThrow('Audio relay unavailable');
+  });
+
+  test('keeps only the UDP endpoint of a mixed payload', () => {
+    expect(
+      buildMediaConfiguration({
+        iceServers: [
+          {
+            urls: ['turn:turn.example.com:3478?transport=udp', 'turn:turn.example.com:3478?transport=tcp'],
+            username: 'u',
+            credential: 'c',
+          },
+        ],
+      }),
+    ).toEqual({
+      iceServers: [
+        { urls: 'turn:turn.example.com:3478?transport=udp', username: 'u', credential: 'c' },
+      ],
     });
   });
 
@@ -212,7 +313,7 @@ describe('getMediaConfiguration', () => {
     expect(headers['X-Sokrat-Signature']).toBe(
       expectedSignature('pw', `160\n${headers['X-Sokrat-Timestamp']}\nGET\n/api/extension/v1/whoami`),
     );
-    expect(configuration.iceTransportPolicy).toBe('relay');
+    expect(configuration.iceTransportPolicy).toBeUndefined();
     expect(configuration.iceServers).toEqual([
       { urls: 'turn:turn.example.com:3478', username: 'turn-user', credential: 'turn-secret' },
     ]);
@@ -228,6 +329,17 @@ describe('getMediaConfiguration', () => {
     );
   });
 
+  test('uses an explicit fallback API origin and scheme', async () => {
+    const fetcher = jest.fn(async () => jsonResponse({ iceServers: ['stun:stun.example.com:3478'] }));
+    await getMediaConfiguration('public-pbx.example.com:8080', '160', 'pw', {
+      fetcher: fetcher as unknown as typeof fetch,
+      apiURL: 'https://public-pbx.example.com:8443/',
+    });
+    expect((fetcher.mock.calls[0] as unknown as [string])[0]).toBe(
+      `https://public-pbx.example.com:8443${MEDIA_CONFIGURATION_PATH}`,
+    );
+  });
+
   test('surfaces authorization failures with the status code', async () => {
     const fetcher = jest.fn(async () => jsonResponse({ error: 'bad signature' }, 401));
     await expect(
@@ -237,6 +349,20 @@ describe('getMediaConfiguration', () => {
 
   test('rejects unusable relay payloads', async () => {
     const fetcher = jest.fn(async () => jsonResponse({ iceServers: [] }));
+    await expect(
+      getMediaConfiguration('pbx.example.com', '160', 'pw', { fetcher: fetcher as unknown as typeof fetch }),
+    ).rejects.toThrow('Audio relay unavailable');
+  });
+
+  test('rejects a direct PBX relay payload that only offers TCP/TLS media', async () => {
+    const fetcher = jest.fn(async () =>
+      jsonResponse({
+        iceServers: [
+          { urls: 'turn:turn.example.com:3478?transport=tcp', username: 'u', credential: 'c' },
+          'turns:turn.example.com:5349',
+        ],
+      }),
+    );
     await expect(
       getMediaConfiguration('pbx.example.com', '160', 'pw', { fetcher: fetcher as unknown as typeof fetch }),
     ).rejects.toThrow('Audio relay unavailable');

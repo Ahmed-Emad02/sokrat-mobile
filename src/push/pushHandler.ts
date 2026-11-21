@@ -27,6 +27,7 @@ import {
   sendGatewayHeartbeat,
 } from '../gateway/session';
 import type { GatewaySession } from '../gateway/types';
+import { dismissNativeCallNotification, setNativeActiveExtension } from '../calls/nativeCallNotification';
 import { createRegistrationRetry } from './registrationRetry';
 
 export type PushPayload = {
@@ -78,13 +79,19 @@ type PushHandler = (payload: PushPayload) => void;
 type CancelHandler = (payload: CancelPayload) => void;
 
 const PENDING_CALLS_KEY = '@sokrat/pending-incoming-calls';
+const CANCELED_CALLS_KEY = '@sokrat/canceled-incoming-calls';
 const PUSH_APP_VERSION_KEY = '@sokrat/push-app-version';
 const MAX_PENDING_AGE_MS = 90_000;
+const MAX_PROVIDER_PUSH_AGE_MS = 15_000;
+const MAX_FUTURE_PUSH_SKEW_MS = 5_000;
+const CANCEL_TOMBSTONE_MS = 120_000;
 
 let onIncoming: PushHandler | null = null;
 let onCancel: CancelHandler | null = null;
 let onChatMessage: ChatPushHandler | null = null;
 let currentExtension = '';
+/** Direct-SIP accounts have no gateway push/chat service; never register or retry. */
+let directPush = false;
 let voipTokenCache: string | null = null;
 let fcmTokenCache: string | null = null;
 let lastFcmTokenAt = 0;
@@ -94,6 +101,8 @@ let lastPushRegisterError = '';
 let pendingAndroidPayload: PushPayload | null = null;
 let lastDeliveredCallId = '';
 let lastWakeTimestamp = 0;
+const canceledCallIds = new Map<string, number>();
+let pendingStateQueue: Promise<unknown> = Promise.resolve();
 const registrationRetry = createRegistrationRetry();
 const tokenRetry = createRegistrationRetry();
 let tokenListenersInitialized = false;
@@ -101,6 +110,7 @@ let repairInFlight = false;
 let repairQueued = false;
 
 function registerCachedToken() {
+  if (directPush) return;
   const extension = currentExtension;
   const host = CONFIG.sipDomain;
   const token = Platform.OS === 'ios' ? voipTokenCache : fcmTokenCache;
@@ -206,13 +216,21 @@ function normalizeIncomingPayload(data: RawPushPayload): PushPayload | null {
     console.error(`[push] rejected incoming payload: invalid callId=${data.callId || 'missing'}`);
     return null;
   }
+  const rawTimestamp = typeof data.timestamp === 'string' ? data.timestamp.trim() : '';
+  const sentAt = Number(rawTimestamp);
+  const age = Date.now() - sentAt;
+  if (!rawTimestamp || !Number.isFinite(sentAt) || sentAt <= 0 ||
+      age > MAX_PROVIDER_PUSH_AGE_MS || age < -MAX_FUTURE_PUSH_SKEW_MS) {
+    console.error('[push] rejected incoming payload: stale or invalid timestamp');
+    return null;
+  }
   return {
     type: 'incoming-call',
     msg: 'incoming-call',
     callerId: data.callerId || 'Unknown',
     callerName: providerCallerName(data.callerId || '', data.callerName),
-    extension: data.extension || '',
-    timestamp: data.timestamp || String(Date.now()),
+    extension: (data.extension || '').trim(),
+    timestamp: rawTimestamp,
     sipWss: data.sipWss,
     callId: data.callId,
     nativePresented: '1',
@@ -226,6 +244,58 @@ export function normalizeCancelPayload(data: RawPushPayload): CancelPayload | nu
   return { type: 'cancel-call', callId: data.callId };
 }
 
+function withPendingState<T>(task: () => Promise<T>): Promise<T> {
+  const run = pendingStateQueue.then(task, task);
+  pendingStateQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+function pruneCanceledCalls(now = Date.now()): void {
+  for (const [callId, at] of canceledCallIds) {
+    if (now - at > CANCEL_TOMBSTONE_MS) canceledCallIds.delete(callId);
+  }
+}
+
+function isCanceledCall(callId: string): boolean {
+  pruneCanceledCalls();
+  return canceledCallIds.has(callId);
+}
+
+async function readCanceledCalls(): Promise<Record<string, number>> {
+  try {
+    const encoded = await AsyncStorage.getItem(CANCELED_CALLS_KEY);
+    if (!encoded) return {};
+    const parsed = JSON.parse(encoded) as Record<string, unknown>;
+    const now = Date.now();
+    const canceled: Record<string, number> = {};
+    for (const [callId, value] of Object.entries(parsed)) {
+      const at = Number(value);
+      if (UUID_PATTERN.test(callId) && Number.isFinite(at) && at > 0 &&
+          now - at <= CANCEL_TOMBSTONE_MS) {
+        const newest = Math.max(at, canceledCallIds.get(callId) ?? 0);
+        canceled[callId] = newest;
+        canceledCallIds.set(callId, newest);
+      }
+    }
+    pruneCanceledCalls(now);
+    return canceled;
+  } catch (error) {
+    console.warn('[push] failed to load canceled calls:', error);
+    return {};
+  }
+}
+
+async function rememberCanceledCall(callId: string): Promise<void> {
+  canceledCallIds.set(callId, Date.now());
+  await withPendingState(async () => {
+    const canceled = await readCanceledCalls();
+    const canceledAt = Date.now();
+    canceled[callId] = canceledAt;
+    canceledCallIds.set(callId, canceledAt);
+    await AsyncStorage.setItem(CANCELED_CALLS_KEY, JSON.stringify(canceled));
+  });
+}
+
 function isFresh(payload: PushPayload): boolean {
   const timestamp = Number(payload.timestamp);
   return Number.isFinite(timestamp) &&
@@ -233,14 +303,16 @@ function isFresh(payload: PushPayload): boolean {
     Math.abs(Date.now() - timestamp) <= MAX_PENDING_AGE_MS;
 }
 
-async function loadPendingCalls(): Promise<Record<string, PushPayload>> {
+async function readPendingCalls(): Promise<Record<string, PushPayload>> {
   try {
+    const canceled = await readCanceledCalls();
     const encoded = await AsyncStorage.getItem(PENDING_CALLS_KEY);
     if (!encoded) return {};
     const parsed = JSON.parse(encoded) as Record<string, PushPayload>;
     const fresh = Object.fromEntries(
       Object.entries(parsed).filter(([callId, payload]) =>
-        UUID_PATTERN.test(callId) && payload.callId === callId && isFresh(payload)
+        UUID_PATTERN.test(callId) && payload.callId === callId && isFresh(payload) &&
+        !canceled[callId] && !isCanceledCall(callId)
       ),
     );
     if (Object.keys(fresh).length !== Object.keys(parsed).length) {
@@ -253,10 +325,23 @@ async function loadPendingCalls(): Promise<Record<string, PushPayload>> {
   }
 }
 
-async function persistPendingCall(payload: PushPayload): Promise<void> {
-  const calls = await loadPendingCalls();
-  calls[payload.callId] = payload;
-  await AsyncStorage.setItem(PENDING_CALLS_KEY, JSON.stringify(calls));
+async function loadPendingCalls(): Promise<Record<string, PushPayload>> {
+  return withPendingState(readPendingCalls);
+}
+
+async function persistPendingCall(payload: PushPayload): Promise<boolean> {
+  return withPendingState(async () => {
+    const canceled = await readCanceledCalls();
+    if (canceled[payload.callId] || isCanceledCall(payload.callId)) return false;
+    const calls = await readPendingCalls();
+    const existing = calls[payload.callId];
+    // A duplicate must not move the accepted call's dispatch anchor backwards.
+    calls[payload.callId] = existing
+      ? { ...payload, timestamp: existing.timestamp }
+      : payload;
+    await AsyncStorage.setItem(PENDING_CALLS_KEY, JSON.stringify(calls));
+    return true;
+  });
 }
 
 async function loadNewestPendingCall(): Promise<PushPayload | null> {
@@ -265,6 +350,11 @@ async function loadNewestPendingCall(): Promise<PushPayload | null> {
 }
 
 function deliverIncomingCall(payload: PushPayload) {
+  if (isCanceledCall(payload.callId)) {
+    void clearPendingIncomingCall(payload.callId);
+    dismissNativeCallNotification(payload.callId);
+    return;
+  }
   if (payload.callId === lastDeliveredCallId) return;
   if (!onIncoming) {
     pendingAndroidPayload = payload;
@@ -277,14 +367,18 @@ function deliverIncomingCall(payload: PushPayload) {
 
 export async function clearPendingIncomingCall(callId?: string): Promise<void> {
   if (!callId) {
-    await AsyncStorage.removeItem(PENDING_CALLS_KEY);
+    await withPendingState(async () => {
+      await AsyncStorage.removeItem(PENDING_CALLS_KEY);
+    });
     pendingAndroidPayload = null;
     lastDeliveredCallId = '';
     return;
   }
-  const calls = await loadPendingCalls();
-  delete calls[callId];
-  await AsyncStorage.setItem(PENDING_CALLS_KEY, JSON.stringify(calls));
+  await withPendingState(async () => {
+    const calls = await readPendingCalls();
+    delete calls[callId];
+    await AsyncStorage.setItem(PENDING_CALLS_KEY, JSON.stringify(calls));
+  });
   if (pendingAndroidPayload?.callId === callId) pendingAndroidPayload = null;
   if (lastDeliveredCallId === callId) lastDeliveredCallId = '';
 }
@@ -334,9 +428,8 @@ async function bootstrapHeadlessSip(storedAccount: SavedAccount, label: string):
     const { getSharedJsSipService } = require('../sip/JsSipService');
     const headlessSip = getSharedJsSipService();
     if (headlessSip.isRegistered()) return true;
-    // Hydrate the approved gateway assignment first: a gateway-enrolled device
-    // must wake through the ticket/relay path, never the direct PBX socket.
-    await getOrLoadGatewaySession(storedAccount.serverHost, storedAccount.extension);
+    // connect() uses the cached approved assignment; only first enrollment
+    // falls through to the full gateway claim path.
     if (!headlessSip.isConnectedOrConnecting()) {
       console.log(`[push][${label}] headless bootstrapping SIP for ext=${storedAccount.extension}`);
       await headlessSip.connect(
@@ -376,7 +469,9 @@ if (Platform.OS === 'android') {
       const cancelPayload = normalizeCancelPayload(rawData);
       if (cancelPayload) {
         console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (background)`);
+        await rememberCanceledCall(cancelPayload.callId);
         await clearPendingIncomingCall(cancelPayload.callId);
+        dismissNativeCallNotification(cancelPayload.callId);
         if (onCancel) onCancel(cancelPayload);
         return;
       }
@@ -386,11 +481,18 @@ if (Platform.OS === 'android') {
       // queued JS call for the previous extension or wake SIP under a new login.
       const { StorageService } = require('../storage/store');
       const storedAccount = await StorageService.getAccount();
-      if (!storedAccount || payload.extension !== storedAccount.extension) {
+      if (!storedAccount || payload.extension !== storedAccount.extension.trim()) {
         console.warn('[push] stale account payload ignored');
+        dismissNativeCallNotification(payload.callId);
+        await clearPendingIncomingCall(payload.callId);
         return;
       }
-      await persistPendingCall(payload);
+      const persisted = await persistPendingCall(payload);
+      if (!persisted || isCanceledCall(payload.callId)) {
+        await clearPendingIncomingCall(payload.callId);
+        dismissNativeCallNotification(payload.callId);
+        return;
+      }
       console.log(`[push][callId=${payload.callId}] headless payload persisted`);
       deliverIncomingCall(payload);
 
@@ -456,13 +558,28 @@ export async function initPush(onIncomingCall: PushHandler, onCancelCall?: Cance
         const cancelPayload = normalizeCancelPayload(rawData);
         if (cancelPayload) {
           console.log(`[push][callId=${cancelPayload.callId}] cancel-call received (foreground)`);
+          await rememberCanceledCall(cancelPayload.callId);
           await clearPendingIncomingCall(cancelPayload.callId);
+          dismissNativeCallNotification(cancelPayload.callId);
           if (onCancel) onCancel(cancelPayload);
           return;
         }
         const payload = normalizeIncomingPayload(rawData);
         if (!payload) return;
-        await persistPendingCall(payload);
+        const { StorageService } = require('../storage/store');
+        const storedAccount = await StorageService.getAccount();
+        if (!storedAccount || payload.extension !== storedAccount.extension.trim()) {
+          console.warn('[push] stale account payload ignored (foreground)');
+          dismissNativeCallNotification(payload.callId);
+          await clearPendingIncomingCall(payload.callId);
+          return;
+        }
+        const persisted = await persistPendingCall(payload);
+        if (!persisted || isCanceledCall(payload.callId)) {
+          await clearPendingIncomingCall(payload.callId);
+          dismissNativeCallNotification(payload.callId);
+          return;
+        }
         deliverIncomingCall(payload);
       });
       AppState.addEventListener('change', (state) => {
@@ -473,14 +590,26 @@ export async function initPush(onIncomingCall: PushHandler, onCancelCall?: Cance
       });
       tokenListenersInitialized = true;
       refreshAndroidToken();
-      void (async () => {
-        const payload = pendingAndroidPayload || await loadNewestPendingCall();
-        pendingAndroidPayload = null;
-        if (payload) deliverIncomingCall(payload);
-      })();
     } catch (error) {
       console.warn('[push] FCM init failed:', error);
     }
+  }
+
+  if (Platform.OS === 'android') {
+    void (async () => {
+      const payload = pendingAndroidPayload || await loadNewestPendingCall();
+      pendingAndroidPayload = null;
+      if (!payload) return;
+      const { StorageService } = require('../storage/store');
+      const storedAccount = await StorageService.getAccount().catch(() => null);
+      if (!storedAccount || payload.extension !== storedAccount.extension.trim() ||
+          isCanceledCall(payload.callId)) {
+        dismissNativeCallNotification(payload.callId);
+        await clearPendingIncomingCall(payload.callId);
+        return;
+      }
+      deliverIncomingCall(payload);
+    })();
   }
 }
 
@@ -489,12 +618,18 @@ export function bindChatPushHandler(handler: ChatPushHandler | null): void {
   onChatMessage = handler;
 }
 
-export function bindExtension(extension: string) {
+export function bindExtension(extension: string, direct = false) {
   registrationRetry.stop();
   tokenRetry.stop();
   currentExtension = extension;
-  registerCachedToken();
-  void refreshAndroidTokenForAppVersion();
+  directPush = direct;
+  // Persist the account owner natively before any token registration or push
+  // bootstrap can run, so the service never presents another extension's call.
+  setNativeActiveExtension(extension);
+  if (!directPush) {
+    registerCachedToken();
+    void refreshAndroidTokenForAppVersion();
+  }
 }
 
 /**
@@ -539,7 +674,7 @@ export async function sendTokenToGateway(
   host = CONFIG.sipDomain,
 ): Promise<boolean> {
   const ext = extension || currentExtension;
-  if (!ext || !host) return false;
+  if (!ext || !host || directPush) return false;
   try {
     const deviceUuid = await getDeviceUuid();
     const gateway = await resolvePushGateway(host, ext);
@@ -611,6 +746,14 @@ export async function unregisterCurrentDevice(): Promise<void> {
   if (!currentExtension) return;
   const extension = currentExtension;
   currentExtension = '';
+  if (directPush) {
+    directPush = false;
+    setNativeActiveExtension('');
+    return;
+  }
+  // Clear the native owner before unregistering so a delayed push cannot ring
+  // after logout/switch. The token removal still uses the captured session.
+  setNativeActiveExtension('');
   await settled;
   try {
     const deviceUuid = await getDeviceUuid();

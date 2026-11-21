@@ -10,7 +10,7 @@
  *   POST /api/gateway/register-device
  *   POST /api/gateway/remove-device
  */
-import { normalizeIceServers, requiresRelay, type IceServer, type MediaConfiguration } from '../network';
+import { normalizeIceServers, type IceServer, type MediaConfiguration } from '../network';
 import { GatewayError, failClosed } from './errors';
 import type {
   ClaimResponse,
@@ -19,6 +19,7 @@ import type {
   GatewayAssignment,
   GatewayCallState,
   GatewayCapabilities,
+  GatewayVpnProfile,
 } from './types';
 import { gatewayAuthHeaders, joinUrl } from './urls';
 
@@ -65,6 +66,23 @@ function bodyNumber(body: JsonBody, key: string): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function parseVpnProfile(raw: unknown): GatewayVpnProfile | null {
+  const vpn = asRecord(raw);
+  if (!vpn || vpn.enabled !== true) return null;
+  const endpoint = bodyString(vpn, 'endpoint');
+  const serverPublicKey = bodyString(vpn, 'serverPublicKey');
+  const address = bodyString(vpn, 'address');
+  const privateSipUrl = bodyString(vpn, 'privateSipUrl');
+  const sipDomain = bodyString(vpn, 'sipDomain');
+  const allowedIPs = Array.isArray(vpn.allowedIPs)
+    ? vpn.allowedIPs.filter((item): item is string => typeof item === 'string')
+    : [];
+  if (!endpoint || !serverPublicKey || !address || !privateSipUrl || !sipDomain || !allowedIPs.length) return null;
+  const mtu = typeof vpn.mtu === 'number' ? vpn.mtu : 1380;
+  const keepaliveSeconds = typeof vpn.keepaliveSeconds === 'number' ? vpn.keepaliveSeconds : 25;
+  return { enabled: true, endpoint, serverPublicKey, address, allowedIPs, privateSipUrl, sipDomain, mtu, keepaliveSeconds };
+}
+
 function parseAssignment(body: JsonBody): GatewayAssignment | null {
   const assignment = asRecord(body?.assignment);
   if (!assignment) return null;
@@ -76,6 +94,13 @@ function parseAssignment(body: JsonBody): GatewayAssignment | null {
   const mediaIps = Array.isArray(assignment.mediaIps)
     ? assignment.mediaIps.filter((ip): ip is string => typeof ip === 'string')
     : [];
+  const fallbackRaw = asRecord(assignment.directFallback);
+  const fallbackWs = bodyString(fallbackRaw, 'wsURL');
+  const fallbackApi = bodyString(fallbackRaw, 'apiURL');
+  const directFallback = fallbackWs && fallbackApi
+    ? { wsURL: fallbackWs, apiURL: fallbackApi }
+    : undefined;
+  const vpn = parseVpnProfile(assignment.vpn);
   return {
     deviceId,
     pbxId: bodyString(assignment, 'pbxId'),
@@ -84,6 +109,8 @@ function parseAssignment(body: JsonBody): GatewayAssignment | null {
     wsURL,
     apiURL,
     mediaIps,
+    ...(directFallback ? { directFallback } : {}),
+    ...(vpn ? { vpn } : {}),
   };
 }
 
@@ -185,8 +212,23 @@ export class GatewayClient {
     }
 
     if (result.status === 404) return null;
+    // A busy or briefly unavailable gateway is present, not absent: retry
+    // instead of telling the user it is unreachable and stopping the login.
+    if (result.status === 429 || result.status >= 500) {
+      throw new GatewayError('unavailable', `Gateway busy (HTTP ${result.status})`, {
+        status: result.status,
+        retryAfterMs: DEFAULT_BUSY_RETRY_MS,
+      });
+    }
+    if (result.status === 403 || result.status === 401) {
+      throw new GatewayError('blocked', `Gateway request refused (HTTP ${result.status})`, {
+        status: result.status,
+      });
+    }
     if (result.status !== 200) {
-      throw failClosed(`Gateway capability probe failed (HTTP ${result.status})`, {
+      // Anything else means the origin answered but is not this gateway
+      // (wrong port, a different vhost, an intercepting proxy).
+      throw new GatewayError('route', `Server answered HTTP ${result.status}, not a PBX gateway`, {
         status: result.status,
       });
     }
@@ -212,10 +254,16 @@ export class GatewayClient {
       throw new GatewayError('expired', 'Enrollment request expired', { status });
     }
     if (status === 409) {
-      throw new GatewayError('pbx_disabled', 'PBX disabled for this account', {
-        status,
-        retryAfterMs: bodyNumber(body, 'retryAfterMs') ?? DEFAULT_BUSY_RETRY_MS,
-      });
+      const code = bodyString(body, 'error') || bodyString(body, 'code');
+      // `pending_cap_reached` is back-pressure: keep waiting. Every other 409
+      // here is an identity conflict that only an administrator can clear.
+      if (code === 'pending_cap_reached') {
+        throw new GatewayError('pbx_disabled', 'PBX disabled for this account', {
+          status,
+          retryAfterMs: bodyNumber(body, 'retryAfterMs') ?? DEFAULT_BUSY_RETRY_MS,
+        });
+      }
+      throw new GatewayError('conflict', code || 'enrollment_conflict', { status, code });
     }
     if (status !== 200 && status !== 201) {
       throw new GatewayError('invalid', `Enrollment failed (HTTP ${status})`, { status });
@@ -289,8 +337,24 @@ export class GatewayClient {
     const raw: unknown = body?.iceServers ?? body?.ice_servers;
     const iceServers: IceServer[] = normalizeIceServers(raw);
     if (!iceServers.length) throw new GatewayError('invalid', 'Audio relay unavailable');
-    // The gateway always mints relay credentials; never fall back to P2P.
-    return { iceServers, iceTransportPolicy: requiresRelay(iceServers) ? 'relay' : undefined };
+    // TURN remains available, but host/STUN candidates may use a direct path.
+    return { iceServers };
+  }
+
+  async vpnProfile(publicKey?: string): Promise<GatewayVpnProfile | null> {
+    const registering = typeof publicKey === 'string' && publicKey.length > 0;
+    const { status, body } = await this.call('/api/gateway/vpn/profile', {
+      method: registering ? 'POST' : 'GET',
+      headers: { Accept: 'application/json', ...this.tenantHeaders(registering) },
+      ...(registering ? { body: JSON.stringify({ publicKey }) } : {}),
+    });
+    if (status === 404) return null;
+    if (status === 401 || status === 403) {
+      throw new GatewayError('unauthorized', 'Gateway rejected the VPN profile request', { status });
+    }
+    if (status === 409 || status === 410) throw new GatewayError('pbx_disabled', 'PBX is no longer available', { status });
+    if (status !== 200) throw new GatewayError('invalid', `VPN profile failed (HTTP ${status})`, { status });
+    return parseVpnProfile(body?.vpn);
   }
 
   async sipTicket(): Promise<{ ticket: string; expiresIn: number }> {

@@ -5,11 +5,14 @@ import App from '../App';
 import { RingingScreen } from '../src/ui/RingingScreen';
 import { SipEvents, ActiveCall, IncomingCallInfo } from '../src/sip/JsSipService';
 import { CallActionPayload } from '../src/calls/nativeCallNotification';
+import { CancelPayload, PushPayload } from '../src/push/pushHandler';
 import { resolveCallerName } from '../src/calls/callerNameResolver';
 
 let mockEvents: SipEvents;
 let mockNativeAction: (payload: CallActionPayload) => void;
-let mockPush: (payload: any) => void;
+let mockPush: (payload: PushPayload) => void;
+let mockCancel: (payload: CancelPayload) => void;
+let mockPendingNativeCalls: CallActionPayload[] = [];
 const mockSip = {
   activeCall: null as ActiveCall | null,
   answer: jest.fn(async () => true),
@@ -53,6 +56,7 @@ jest.mock('../src/calls/telephony', () => ({ subscribeGsmCallState: () => () => 
 jest.mock('../src/calls/incall', () => ({
   startCallManagers: jest.fn(), stopCallManagers: jest.fn(),
   startRingtone: jest.fn(), stopRingtone: jest.fn(),
+  setIncomingRingtone: jest.fn(),
   startOutgoingRingback: jest.fn(), stopOutgoingRingback: jest.fn(),
   setCallWindowActive: jest.fn(),
   subscribeAudioDeviceChanges: () => () => {},
@@ -66,7 +70,10 @@ jest.mock('../src/sip/JsSipService', () => ({
   getSharedJsSipService: (events: SipEvents) => { mockEvents = events; return mockSip; },
 }));
 jest.mock('../src/push/pushHandler', () => ({
-  initPush: (callback: (payload: any) => void) => { mockPush = callback; },
+  initPush: (callback: (payload: PushPayload) => void, cancel?: (payload: CancelPayload) => void) => {
+    mockPush = callback;
+    if (cancel) mockCancel = cancel;
+  },
   bindExtension: jest.fn(),
   askNotificationPermission: jest.fn(),
   clearPendingIncomingCall: (id?: string) => mockClearPending(id),
@@ -75,7 +82,7 @@ jest.mock('../src/push/pushHandler', () => ({
 }));
 jest.mock('../src/calls/nativeCallNotification', () => ({
   ...jest.requireActual('../src/calls/nativeCallNotification'),
-  getPendingNativeCalls: async () => [],
+  getPendingNativeCalls: async () => mockPendingNativeCalls,
   subscribeNativeCallAction: (callback: (payload: CallActionPayload) => void) => {
     mockNativeAction = callback;
     return () => {};
@@ -90,20 +97,41 @@ jest.mock('../src/ui/StandardPhoneScreen', () => ({ StandardPhoneScreen: () => n
 jest.mock('../src/ui/LoginScreen', () => ({ LoginScreen: () => null }));
 
 const callId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-function native(action: CallActionPayload['action']): CallActionPayload {
-  return { action, callId, callerId: 'caller', callerName: 'Unknown', extension: 'employee', timestamp: String(Date.now()) };
+const secondCallId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+function nativeFor(
+  id: string,
+  action: CallActionPayload['action'],
+  caller = 'caller',
+): CallActionPayload {
+  return {
+    action, callId: id, callerId: caller, callerName: 'Unknown',
+    extension: 'employee', timestamp: String(Date.now()),
+  };
 }
-function invite(): ActiveCall {
+function native(action: CallActionPayload['action']): CallActionPayload {
+  return nativeFor(callId, action);
+}
+function pushFor(id: string, caller = 'caller'): PushPayload {
+  return {
+    type: 'incoming-call', msg: 'incoming-call', callerId: caller,
+    callerName: 'Unknown', extension: 'employee', timestamp: String(Date.now()),
+    callId: id, nativePresented: '1',
+  };
+}
+function inviteFor(id: string, target = 'caller'): ActiveCall {
   const call: ActiveCall = {
-    id: callId, target: 'caller', targetName: 'Unknown', direction: 'inbound',
+    id, target, targetName: 'Unknown', direction: 'inbound',
     status: 'ringing', isMuted: false, isHeld: false, session: {},
   };
   mockSip.activeCall = call;
   mockEvents.onIncomingCall({
-    type: 'incoming-call', callId, callerId: 'caller', callerName: 'Unknown',
+    type: 'incoming-call', callId: id, callerId: target, callerName: 'Unknown',
     extension: 'employee', timestamp: Date.now(),
   } as IncomingCallInfo);
   return call;
+}
+function invite(): ActiveCall {
+  return inviteFor(callId);
 }
 
 describe('notification Answer / pending INVITE coordination', () => {
@@ -111,7 +139,9 @@ describe('notification Answer / pending INVITE coordination', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockSip.activeCall = null;
+    mockRingingProps = null;
     mockSip.answer.mockResolvedValue(true);
+    mockPendingNativeCalls = [];
     jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     await act(async () => { renderer = ReactTestRenderer.create(<App />); });
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
@@ -162,7 +192,10 @@ describe('notification Answer / pending INVITE coordination', () => {
       call.status = 'active';
       mockEvents.onCallEstablished(call);
       mockNativeAction(native('SHOW'));
-      mockPush({ ...native('SHOW'), type: 'incoming-call' });
+      mockPush({
+        ...native('SHOW'), type: 'incoming-call', msg: 'incoming-call',
+        nativePresented: '1',
+      });
     });
     expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
   });
@@ -232,8 +265,9 @@ describe('notification Answer / pending INVITE coordination', () => {
     // Push B arrives before B's INVITE. It must be suppressed and dismissed.
     await act(async () => {
       mockPush({
-        type: 'incoming-call', callId: otherId, callerId: 'caller-b',
-        callerName: 'Caller B', extension: 'employee', timestamp: String(Date.now()),
+        type: 'incoming-call', msg: 'incoming-call', callId: otherId,
+        callerId: 'caller-b', callerName: 'Caller B', extension: 'employee',
+        timestamp: String(Date.now()), nativePresented: '1',
       });
     });
     expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
@@ -287,6 +321,92 @@ describe('notification Answer / pending INVITE coordination', () => {
     await act(async () => { renderer = ReactTestRenderer.create(<App />); });
     expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(1);
     await act(async () => { await renderer.root.findByType(RingingScreen).props.onAnswer(); });
+    expect(mockSip.answer).toHaveBeenCalledWith(callId);
+  });
+
+  test('first push owns the single incoming overlay; a second push is dismissed', async () => {
+    await act(async () => { mockPush(pushFor(callId, 'caller-a')); });
+    await act(async () => { mockPush(pushFor(secondCallId, 'caller-b')); });
+
+    expect(mockRingingProps?.callerId).toBe('caller-a');
+    expect(mockDismiss).toHaveBeenCalledWith(secondCallId);
+    expect(mockDismiss).not.toHaveBeenCalledWith(callId);
+  });
+
+  test('a native action for a different call cannot replace the first push overlay', async () => {
+    await act(async () => { mockPush(pushFor(callId, 'caller-a')); });
+    await act(async () => {
+      mockNativeAction(nativeFor(secondCallId, 'SHOW', 'caller-b'));
+    });
+
+    expect(mockRingingProps?.callerId).toBe('caller-a');
+    expect(mockDismiss).toHaveBeenCalledWith(secondCallId);
+  });
+
+  test('cancel clears a pending Answer and cannot answer a different INVITE', async () => {
+    await act(async () => { mockNativeAction(native('ANSWER')); });
+    await act(async () => { mockCancel({ type: 'cancel-call', callId }); });
+    await act(async () => { inviteFor(secondCallId, 'caller-b'); });
+
+    expect(mockSip.answer).not.toHaveBeenCalled();
+    expect(mockSip.decline).not.toHaveBeenCalledWith(secondCallId);
+  });
+
+  test('cancel for an active call cannot make the ongoing End action inert', async () => {
+    const call = invite();
+    call.status = 'active';
+    mockSip.activeCall = call;
+    await act(async () => { mockEvents.onCallEstablished(call); });
+    await act(async () => { mockCancel({ type: 'cancel-call', callId }); });
+    await act(async () => { mockNativeAction(native('END')); });
+
+    expect(mockSip.hangup).toHaveBeenCalledWith(callId);
+  });
+
+  test('unanswered push overlay timeout clears the persisted pending call', async () => {
+    await act(async () => { mockPush(pushFor(callId)); });
+    await act(async () => { jest.advanceTimersByTime(45_001); });
+
+    expect(mockClearPending).toHaveBeenCalledWith(callId);
+    expect(renderer.root.findAllByType(RingingScreen)).toHaveLength(0);
+  });
+
+  test('late terminal event for an old call does not erase a newer pending Answer', async () => {
+    await act(async () => {
+      mockNativeAction(nativeFor(secondCallId, 'ANSWER', 'caller-b'));
+    });
+    await act(async () => {
+      mockEvents.onCallEnded(callId, 'NORMAL_CLEARING');
+    });
+    await act(async () => { inviteFor(secondCallId, 'caller-b'); });
+
+    expect(mockSip.answer).toHaveBeenCalledWith(secondCallId);
+  });
+
+  test('an accepted push remains answerable at 20s inside the 90s call window', async () => {
+    const payload = pushFor(callId);
+    payload.timestamp = String(Date.now() - 14_000);
+    await act(async () => {
+      mockPush(payload);
+      invite();
+    });
+    await act(async () => { jest.advanceTimersByTime(6_000); });
+    await act(async () => { await renderer.root.findByType(RingingScreen).props.onAnswer(); });
+    expect(mockSip.answer).toHaveBeenCalledWith(callId);
+    expect(renderer.root.findByType(RingingScreen).props.answerRequested).toBe(true);
+  });
+
+  test('mount applies a pending native ANSWER only to its matching INVITE', async () => {
+    mockPendingNativeCalls = [nativeFor(callId, 'ANSWER')];
+    await act(async () => {
+      renderer.unmount();
+      renderer = ReactTestRenderer.create(<App />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockRingingProps?.answerRequested).toBe(true);
+
+    await act(async () => { inviteFor(callId); });
     expect(mockSip.answer).toHaveBeenCalledWith(callId);
   });
 });

@@ -3,6 +3,7 @@
  * Persists user account, server configuration, call history, and contacts.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { IncomingRingtone } from '../calls/ringtonePref';
 
 export type CodecPreference = 'auto' | 'opus' | 'g722' | 'pcmu' | 'pcma';
 
@@ -12,10 +13,18 @@ export interface SavedAccount {
   serverHost: string;
   /** Optional LAN/Local gateway origin for automatic fallback. */
   fallbackHost?: string;
+  /** Connect straight to the PBX over WS/WSS; skip gateway enrollment/approval. */
+  directSip?: boolean;
   useTls: boolean;
   dnd: boolean;
   autoAnswer: boolean;
   preferredCodec?: CodecPreference;
+  /** Incoming-call ringtone choice; missing means the phone's own ringtone. */
+  incomingRingtone?: IncomingRingtone;
+  /** Local file:// URI of the picked custom ringtone when the choice is custom. */
+  incomingRingtoneUri?: string;
+  /** Display name of the picked custom ringtone file. */
+  incomingRingtoneName?: string;
   micVolume?: number;
   speakerVolume?: number;
 }
@@ -45,8 +54,8 @@ export interface WhatsAppPrefs {
 }
 
 export const DEFAULT_WHATSAPP_PREFS: WhatsAppPrefs = {
-  countryCode: '',
-  promptEnabled: true,
+  countryCode: '20',
+  promptEnabled: false,
 };
 
 const KEYS = {
@@ -270,10 +279,20 @@ export const StorageService = {
     try {
       const data = await AsyncStorage.getItem(KEYS.WHATSAPP);
       if (!data) return { ...DEFAULT_WHATSAPP_PREFS };
-      const parsed = JSON.parse(data) as Partial<WhatsAppPrefs>;
+      const parsed = JSON.parse(data) as Partial<WhatsAppPrefs> & { defaultsVersion?: number };
+      const storedCode = typeof parsed.countryCode === 'string' ? parsed.countryCode : '';
+      const storedPrompt = typeof parsed.promptEnabled === 'boolean' ? parsed.promptEnabled : true;
+      const hasCurrentDefaults = typeof parsed.defaultsVersion === 'number' && parsed.defaultsVersion >= 2;
+      const legacyDefaults = !hasCurrentDefaults && storedCode === '' && storedPrompt === true;
       return {
-        countryCode: typeof parsed.countryCode === 'string' ? parsed.countryCode : '',
-        promptEnabled: parsed.promptEnabled !== false,
+        countryCode: legacyDefaults
+          ? DEFAULT_WHATSAPP_PREFS.countryCode
+          : (storedCode || DEFAULT_WHATSAPP_PREFS.countryCode),
+        promptEnabled: legacyDefaults
+          ? DEFAULT_WHATSAPP_PREFS.promptEnabled
+          : (typeof parsed.promptEnabled === 'boolean'
+              ? parsed.promptEnabled
+              : DEFAULT_WHATSAPP_PREFS.promptEnabled),
       };
     } catch {
       return { ...DEFAULT_WHATSAPP_PREFS };
@@ -287,6 +306,7 @@ export const StorageService = {
         JSON.stringify({
           countryCode: prefs.countryCode.trim(),
           promptEnabled: prefs.promptEnabled !== false,
+          defaultsVersion: 2,
         }),
       );
     } catch (err) {

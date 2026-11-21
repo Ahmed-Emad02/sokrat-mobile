@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, themedStyles, ThemeColors } from '../theme';
 import { useI18n } from '../i18n';
 import {
@@ -57,11 +58,12 @@ function renderToastIcon(type: ToastType, colors: ThemeColors) {
 
 export function ToastContainer() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { t } = useI18n();
   const styles = useMemo(() => themedStyles(rawStyles, colors), [colors]);
   const [current, setCurrent] = useState<ToastMessage | null>(null);
   const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(-50)).current;
+  const translateY = useRef(new Animated.Value(50)).current;
   const timerRef = useRef<number | null>(null);
   useEffect(() => {
     const handler: ToastListener = (toast) => {
@@ -75,7 +77,7 @@ export function ToastContainer() {
             useNativeDriver: true,
           }),
           Animated.timing(translateY, {
-            toValue: -50,
+            toValue: 50,
             duration: 180,
             useNativeDriver: true,
           }),
@@ -118,6 +120,7 @@ export function ToastContainer() {
       style={[
         styles.container,
         {
+          bottom: Math.max(insets.bottom, 12) + 80,
           opacity,
           transform: [{ translateY }],
           borderColor: borderByType(current.type, colors),
@@ -146,7 +149,6 @@ export function ToastContainer() {
 const rawStyles = StyleSheet.create({
   container: {
     position: 'absolute',
-    top: 48,
     left: 14,
     right: 14,
     zIndex: 999999,

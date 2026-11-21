@@ -64,9 +64,22 @@ export type MediaConfiguration = {
 export type MediaConfigurationOptions = {
   timeoutMs?: number;
   fetcher?: typeof fetch;
+  /** Use this API origin (scheme/host/port) instead of the plain HTTP host. */
+  apiURL?: string;
 };
 
 const TURN_URL_PATTERN = /^turns?:/i;
+const UDP_ICE_URL_PATTERN = /^(?:stun|turn):[^\s?#]+(?:\?transport=udp)?$/i;
+
+/**
+ * This deployment carries media over UDP only. Accept `stun:`/`turn:` URLs with
+ * either the implicit UDP default or an explicit `?transport=udp`; refuse TCP,
+ * TLS (`turns:`/`stuns:`) and unknown/ambiguous transport parameters instead of
+ * rewriting them to UDP.
+ */
+function isUdpIceUrl(url: string): boolean {
+  return UDP_ICE_URL_PATTERN.test(url);
+}
 
 /**
  * Accept both `host`, `host:port` and full URLs typed into the login screen,
@@ -87,7 +100,10 @@ export function splitHost(host: string): { hostname: string; port?: string } {
   };
 }
 
-/** Keep only usable ICE entries; drop blanks instead of shipping a broken pcConfig. */
+/**
+ * Keep only usable UDP ICE entries; drop blanks and TCP/TLS endpoints instead
+ * of shipping a broken or silently downgraded pcConfig.
+ */
 export function normalizeIceServers(raw: unknown): IceServer[] {
   if (!Array.isArray(raw)) return [];
   const servers: IceServer[] = [];
@@ -95,7 +111,7 @@ export function normalizeIceServers(raw: unknown): IceServer[] {
     // Tolerate both `{ urls }` objects and bare URL strings.
     if (typeof entry === 'string') {
       const url = entry.trim();
-      if (url) servers.push({ urls: url });
+      if (isUdpIceUrl(url)) servers.push({ urls: url });
       continue;
     }
     if (!entry || typeof entry !== 'object') continue;
@@ -104,7 +120,7 @@ export function normalizeIceServers(raw: unknown): IceServer[] {
     const urls = (Array.isArray(source) ? source : [source])
       .filter((url): url is string => typeof url === 'string')
       .map(url => url.trim())
-      .filter(url => url.length > 0);
+      .filter(isUdpIceUrl);
     if (!urls.length) continue;
     const server: IceServer = { urls: urls.length === 1 ? urls[0] : urls };
     if (typeof value.username === 'string' && value.username) server.username = value.username;
@@ -123,15 +139,18 @@ export function requiresRelay(servers: IceServer[]): boolean {
 }
 
 /**
- * Turn an `/api/mobile/ice` payload into a `pcConfig`.
- * Relay policy is only forced when a TURN server is actually present —
- * otherwise `relay` would leave the peer connection without candidates.
+ * Resolve the ICE configuration for a call.
+ *
+ * TURN is a fallback, not a mandate: WebRTC may use host/srflx candidates when
+ * they work and relay through TURN when they do not. This keeps LAN and
+ * low-latency paths direct while retaining the assigned PBX's relay. Only UDP
+ * ICE endpoints survive normalization; TCP/TLS-only payloads fail closed.
  */
 export function buildMediaConfiguration(payload: unknown): MediaConfiguration {
   const record = (payload || {}) as { iceServers?: unknown; ice_servers?: unknown };
   const iceServers = normalizeIceServers(record.iceServers ?? record.ice_servers);
   if (!iceServers.length) throw new Error('Audio relay unavailable');
-  return requiresRelay(iceServers) ? { iceServers, iceTransportPolicy: 'relay' } : { iceServers };
+  return { iceServers };
 }
 
 function errorMessage(error: unknown): string {
@@ -156,7 +175,9 @@ export async function getMediaConfiguration(
   if (!hostname) throw new Error('Server host is not configured');
   if (isPrivateHost(hostname)) return { iceServers: [] };
 
-  const url = `http://${hostname}${port ? `:${port}` : ''}${MEDIA_CONFIGURATION_PATH}`;
+  const url = options.apiURL
+    ? `${options.apiURL.replace(/\/+$/, '')}${MEDIA_CONFIGURATION_PATH}`
+    : `http://${hostname}${port ? `:${port}` : ''}${MEDIA_CONFIGURATION_PATH}`;
   const fetcher = options.fetcher ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? MEDIA_CONFIGURATION_TIMEOUT_MS);

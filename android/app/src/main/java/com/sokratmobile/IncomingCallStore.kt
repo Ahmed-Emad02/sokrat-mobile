@@ -1,15 +1,15 @@
 package com.sokratmobile
 
 import android.content.Context
-import org.json.JSONArray
 import org.json.JSONObject
-import java.util.UUID
 
 object IncomingCallStore {
     private const val PREFS = "sokrat_incoming_calls"
     private const val KEY_RECORDS = "records"
     private const val KEY_TOMBSTONES = "tombstones"
-    const val MAX_AGE_MS = 90_000L
+    private const val KEY_ACTIVE_EXTENSION = "active_extension"
+    const val RECORD_TTL_MS = 90_000L
+    const val CANCEL_TOMBSTONE_MS = 120_000L
 
     data class Record(
         val callId: String,
@@ -33,6 +33,32 @@ object IncomingCallStore {
             put("notificationShown", notificationShown)
             put("bootstrapForwarded", bootstrapForwarded)
         }
+    }
+
+    @Synchronized
+    fun activeExtension(context: Context): String? =
+        sharedPreferences(context).getString(KEY_ACTIVE_EXTENSION, null)
+
+    /**
+     * Persist the account that owns native incoming-call state. Returns the
+     * call ids whose records belonged to a different extension and were purged.
+     */
+    @Synchronized
+    fun setActiveExtension(context: Context, extension: String): List<String> {
+        val normalized = extension.trim()
+        val preferences = sharedPreferences(context)
+        val previous = preferences.getString(KEY_ACTIVE_EXTENSION, null)
+        if (previous == normalized) return emptyList()
+        // Binding must reach disk before token registration/bootstrap starts.
+        preferences.edit().putString(KEY_ACTIVE_EXTENSION, normalized).commit()
+        val stale = if (normalized.isBlank()) {
+            pending(context)
+        } else {
+            pending(context).filter { it.extension.trim() != normalized }
+        }
+        val callIds = stale.map { it.callId }
+        callIds.forEach { remove(context, it) }
+        return callIds
     }
 
     fun isValidCallId(callId: String?): Boolean {
@@ -97,7 +123,7 @@ object IncomingCallStore {
         val now = System.currentTimeMillis()
         val tombstones = readTombstones(context)
         val terminalAt = tombstones[callId] ?: return false
-        if (now - terminalAt > MAX_AGE_MS) {
+        if (now - terminalAt > CANCEL_TOMBSTONE_MS) {
             tombstones.remove(callId)
             writeTombstones(context, tombstones)
             return false
@@ -127,7 +153,7 @@ object IncomingCallStore {
     }
 
     @Synchronized
-    private fun markTerminal(context: Context, callId: String, at: Long = System.currentTimeMillis()) {
+    fun markTerminal(context: Context, callId: String, at: Long = System.currentTimeMillis()) {
         val tombstones = readTombstones(context)
         tombstones[callId] = at
         writeTombstones(context, tombstones)
@@ -156,9 +182,11 @@ object IncomingCallStore {
         return records.values.sortedBy { it.timestamp }
     }
 
+    private fun sharedPreferences(context: Context) =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
     private fun readRecords(context: Context): MutableMap<String, Record> {
-        val encoded = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_RECORDS, null)
+        val encoded = sharedPreferences(context).getString(KEY_RECORDS, null)
             ?: return mutableMapOf()
         val now = System.currentTimeMillis()
         return try {
@@ -169,7 +197,7 @@ object IncomingCallStore {
                 val key = keys.next()
                 val value = objectValue.optJSONObject(key) ?: continue
                 val timestamp = value.optLong("timestamp", 0L)
-                if (!isValidCallId(key) || timestamp <= 0L || now - timestamp > MAX_AGE_MS) continue
+                if (!isValidCallId(key) || timestamp <= 0L || now - timestamp > RECORD_TTL_MS) continue
                 records[key] = Record(
                     callId = key,
                     callerId = value.optString("callerId", "Unknown"),
@@ -189,8 +217,7 @@ object IncomingCallStore {
     }
 
     private fun readTombstones(context: Context): MutableMap<String, Long> {
-        val encoded = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_TOMBSTONES, null) ?: return mutableMapOf()
+        val encoded = sharedPreferences(context).getString(KEY_TOMBSTONES, null) ?: return mutableMapOf()
         val now = System.currentTimeMillis()
         return try {
             val objectValue = JSONObject(encoded)
@@ -199,7 +226,7 @@ object IncomingCallStore {
             while (keys.hasNext()) {
                 val key = keys.next()
                 val at = objectValue.optLong(key, 0L)
-                if (isValidCallId(key) && at > 0L && now - at <= MAX_AGE_MS) {
+                if (isValidCallId(key) && at > 0L && now - at <= CANCEL_TOMBSTONE_MS) {
                     tombstones[key] = at
                 }
             }
@@ -212,7 +239,7 @@ object IncomingCallStore {
     private fun writeTombstones(context: Context, tombstones: Map<String, Long>) {
         val objectValue = JSONObject()
         tombstones.forEach { (callId, at) -> objectValue.put(callId, at) }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        sharedPreferences(context)
             .edit()
             .putString(KEY_TOMBSTONES, objectValue.toString())
             .apply()
@@ -221,7 +248,7 @@ object IncomingCallStore {
     private fun writeRecords(context: Context, records: Map<String, Record>) {
         val objectValue = JSONObject()
         records.forEach { (callId, record) -> objectValue.put(callId, record.toJson()) }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        sharedPreferences(context)
             .edit()
             .putString(KEY_RECORDS, objectValue.toString())
             .apply()
