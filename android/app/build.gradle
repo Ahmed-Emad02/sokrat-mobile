@@ -110,8 +110,8 @@ android {
         applicationId "com.sokratmobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 102
-        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.3.4-direct-sip.5"
+        versionCode productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_CODE.toInteger() : 103
+        versionName productionRelease ? releaseValues.SOKRAT_ANDROID_VERSION_NAME : "1.3.4-direct-sip.6"
     }
     externalNativeBuild {
         cmake {

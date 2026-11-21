@@ -29,6 +29,8 @@ import {
   stopOutgoingRingback,
   stopOutgoingRingbackAfterMedia,
   setMicrophoneMute,
+  getAudioDeviceState,
+  setPreferredCallInputDevice,
 } from '../calls/incall';
 import {
   INITIAL_TRUNK_RECONCILE_MEMORY,
@@ -2465,6 +2467,11 @@ export class JsSipService {
         clearTimeout(timer);
         const tracks = stream.getAudioTracks?.() || [];
         tracks.forEach((track: MediaStreamTrack) => { track.enabled = true; });
+        // The route is normally applied before capture starts. Re-assert the
+        // preferred physical microphone after AudioRecord exists so devices
+        // whose policy re-selects input on route setup still use the requested
+        // handset path from the first packet.
+        setPreferredCallInputDevice(getAudioDeviceState().selectedDevice);
         console.log(`[sip] microphone acquired tracks=${tracks.length}`);
         const finalStream = tracks.length > 0 ? stream : null;
         resolve(finalStream);

@@ -26,9 +26,11 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.facebook.react.module.annotations.ReactModule
+import com.oney.WebRTCModule.WebRTCModule
 import kotlin.math.roundToInt
 import android.media.AudioManager
 import android.media.AudioDeviceInfo
+import org.webrtc.audio.JavaAudioDeviceModule
 import android.os.Build
 import android.view.WindowManager
 import android.net.ConnectivityManager
@@ -491,6 +493,78 @@ class CallNotificationModule(reactContext: ReactApplicationContext) : ReactConte
         } catch (e: Exception) {
             android.util.Log.e("CallNotificationModule", "setAudioRoute failed", e)
             promise.reject("AUDIO_ROUTE_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Android's communication policy picks a different physical microphone for
+     * the earpiece and loudspeaker routes on some devices (bottom mic for the
+     * handset, rear mic for speaker). The rear path can sound materially clearer
+     * in a handset call, so pin the WebRTC AudioRecord to it for the earpiece
+     * route. Other routes keep the platform default so headsets are not
+     * overridden.
+     */
+    @ReactMethod
+    fun setPreferredInputDevice(kind: String, promise: Promise) {
+        try {
+            val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (audioManager == null) {
+                promise.reject("AUDIO_MANAGER_NULL", "AudioManager not available")
+                return
+            }
+
+            val requested = kind.uppercase()
+            val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            // The rear microphone shares TYPE_BUILTIN_MIC with the bottom
+            // microphone on current Android releases; the port name/address
+            // is the only public discriminator.
+            fun AudioDeviceInfo.isBackMic(): Boolean {
+                val name = productName?.toString().orEmpty()
+                val addr = address.orEmpty()
+                return name.contains("back", ignoreCase = true) ||
+                    addr.contains("back", ignoreCase = true) ||
+                    addr.endsWith(":back", ignoreCase = true)
+            }
+            val device = if (requested == "BACK_MIC") {
+                inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC && it.isBackMic() }
+            } else {
+                null
+            }
+            if (requested != "DEFAULT" && device == null) {
+                // Not every handset exposes a separate rear microphone. Keep
+                // the platform-selected input rather than failing the call.
+                android.util.Log.w(
+                    "CallNotificationModule",
+                    "setPreferredInputDevice($kind): no matching input device; keeping default",
+                )
+                promise.resolve(false)
+                return
+            }
+
+            val webRtcModule = reactApplicationContext.getNativeModule(WebRTCModule::class.java)
+            if (webRtcModule == null) {
+                promise.resolve(false)
+                return
+            }
+            // react-native-webrtc does not expose its AudioDeviceModule. The
+            // field is package-private in the module; read the live instance so
+            // AudioRecord.setPreferredDevice can be changed during a call.
+            val admField = webRtcModule.javaClass.getDeclaredField("mAudioDeviceModule")
+            admField.isAccessible = true
+            val adm = admField.get(webRtcModule) as? JavaAudioDeviceModule
+            if (adm == null) {
+                promise.resolve(false)
+                return
+            }
+            adm.setPreferredInputDevice(device)
+            android.util.Log.d(
+                "CallNotificationModule",
+                "setPreferredInputDevice($kind): ${device?.productName ?: "platform default"}",
+            )
+            promise.resolve(true)
+        } catch (e: Exception) {
+            android.util.Log.e("CallNotificationModule", "setPreferredInputDevice failed", e)
+            promise.reject("INPUT_DEVICE_ERROR", e.message, e)
         }
     }
 

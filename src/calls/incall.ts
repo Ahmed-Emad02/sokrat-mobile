@@ -235,6 +235,23 @@ function hasNativeAudioRouting(): boolean {
   return Platform.OS === 'android' && typeof CallNotificationNative?.setAudioRoute === 'function';
 }
 
+/**
+ * On this handset Android selects the bottom microphone for the earpiece and
+ * the rear microphone for the loudspeaker. The rear path is clearer in a
+ * handset call, so pin WebRTC to it whenever the user is on the earpiece.
+ * Headset routes must keep the platform-selected input.
+ */
+export function setPreferredCallInputDevice(route: AudioRouteType): void {
+  if (Platform.OS !== 'android' ||
+      typeof CallNotificationNative?.setPreferredInputDevice !== 'function') {
+    return;
+  }
+  const kind = route === 'EARPIECE' ? 'BACK_MIC' : 'DEFAULT';
+  void CallNotificationNative.setPreferredInputDevice(kind).catch?.((err: unknown) => {
+    console.warn('[incall] setPreferredInputDevice error:', err);
+  });
+}
+
 const routeWaiters = new Set<() => void>();
 
 function waitForAudioRoute(route: AudioRouteType, timeoutMs: number): Promise<AudioDeviceState> {
@@ -354,6 +371,20 @@ async function applyAudioRoute(route: AudioRouteType, generation: number): Promi
       console.warn(
         `[incall] audio route ${route} not applied; active=${state.selectedDevice}`,
       );
+    }
+    // Apply after the route is confirmed: Android can re-run input-device
+    // selection when it moves between earpiece and loudspeaker. Re-assert once
+    // the audio patch settles, but only if this route is still selected.
+    setPreferredCallInputDevice(route);
+    if (route === 'EARPIECE') {
+      setTimeout(() => {
+        if (!audioSessionActive ||
+            generation !== audioSessionGeneration ||
+            getAudioDeviceState().selectedDevice !== 'EARPIECE') {
+          return;
+        }
+        setPreferredCallInputDevice('EARPIECE');
+      }, 600);
     }
     return state;
   } catch (err) {
