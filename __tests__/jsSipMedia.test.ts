@@ -1790,6 +1790,32 @@ describe('JsSipService media + instance id', () => {
       expect(events.onCallEnded).not.toHaveBeenCalled();
     });
 
+    test('GSM preemption marks the service call and resumes that same call on IDLE', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const active = service.activeCall!;
+
+      // RINGING/OFFHOOK: the service-owned call receives the flag, not just a
+      // React-state copy.
+      expect(service.setGsmInterrupted(true)).toBe(true);
+      expect(service.activeCall).toBe(active);
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.isHeld).toBe(true);
+      expect(service.activeCall?.isGsmInterrupted).toBe(true);
+
+      // IDLE: resume the same service-owned call and clear the flag.
+      expect(service.setGsmInterrupted(false)).toBe(true);
+      expect(service.activeCall).toBe(active);
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.isHeld).toBe(false);
+      expect(service.activeCall?.isGsmInterrupted).toBe(false);
+
+      await expect(service.hangup('gsm-primary')).resolves.toBe(true);
+    });
+
     test('two rapid outbound dials reserve one attempt before microphone work resolves', async () => {
       mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
       const service = createService();

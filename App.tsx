@@ -596,12 +596,13 @@ export default function App() {
             xferStatus === 'recovering';
           if (!inMidTransfer) {
             console.log('[app] auto-holding VoIP call due to GSM cellular preemption');
-            sipRef.current?.setHold(true);
-            updateActiveCall({
-              ...serviceCall,
-              isHeld: true,
-              isGsmInterrupted: true,
-            });
+            if (sipRef.current?.setGsmInterrupted(true)) {
+              updateActiveCall({
+                ...serviceCall,
+                isHeld: true,
+                isGsmInterrupted: true,
+              });
+            }
           }
         }
       } else if (gsmState === 'IDLE') {
@@ -609,12 +610,13 @@ export default function App() {
         // This avoids resuming the wrong line after a swap.
         if (serviceCall.isGsmInterrupted) {
           console.log('[app] GSM cellular call ended; auto-resuming VoIP call');
-          sipRef.current?.setHold(false);
-          updateActiveCall({
-            ...serviceCall,
-            isHeld: false,
-            isGsmInterrupted: false,
-          });
+          if (sipRef.current?.setGsmInterrupted(false)) {
+            updateActiveCall({
+              ...serviceCall,
+              isHeld: false,
+              isGsmInterrupted: false,
+            });
+          }
         }
       }
     });

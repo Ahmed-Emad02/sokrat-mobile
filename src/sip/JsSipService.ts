@@ -2988,6 +2988,26 @@ export class JsSipService {
     return this.setHold(nextHeld);
   }
 
+  /**
+   * Mark the selected service call as held by a GSM/cellular preemption.
+   * Keeping the flag on the service-owned call prevents the UI copy from
+   * holding one object while auto-resume checks a different one.
+   */
+  setGsmInterrupted(interrupted: boolean): boolean {
+    const call = this.activeCall;
+    if (!call) return false;
+    if (interrupted) {
+      if (call.status !== 'active' || call.isHeld) return false;
+      call.isGsmInterrupted = true;
+      this.setHold(true);
+      return true;
+    }
+    if (!call.isGsmInterrupted) return false;
+    call.isGsmInterrupted = false;
+    this.setHold(false);
+    return true;
+  }
+
   setHold(hold: boolean): boolean {
     const session = this.currentSession as { hold?: () => void; unhold?: () => void } | null;
     if (!this.activeCall) return false;
