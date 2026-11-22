@@ -9,8 +9,8 @@
 export const MIC_AGC_CENTER_DB = -6;
 export const MIC_AGC_MIN_DB = -9;
 export const MIC_AGC_MAX_DB = -3;
-export const MIC_AGC_TARGET_LEVEL_DBFS = -18;
-export const MIC_AGC_SILENCE_DBFS = -55;
+export const MIC_AGC_TARGET_LEVEL_DBFS = -24;
+export const MIC_AGC_SILENCE_DBFS = -38;
 export const MIC_AGC_STEP_DB = 0.5;
 
 /** WebRTC media-source.audioLevel is a linear RMS value in [0, 1]. */
@@ -29,5 +29,6 @@ export function nextMicAgcGain(currentGainDb: number, audioLevel: number): numbe
     (MIC_AGC_TARGET_LEVEL_DBFS - measuredDb) * 0.25;
   const clampedTarget = Math.max(MIC_AGC_MIN_DB, Math.min(MIC_AGC_MAX_DB, targetGainDb));
   const step = Math.max(-MIC_AGC_STEP_DB, Math.min(MIC_AGC_STEP_DB, clampedTarget - currentGainDb));
-  return Math.max(MIC_AGC_MIN_DB, Math.min(MIC_AGC_MAX_DB, currentGainDb + step));
+  const next = currentGainDb + step;
+  return Math.max(MIC_AGC_MIN_DB, Math.min(MIC_AGC_MAX_DB, Math.round(next * 10) / 10));
 }

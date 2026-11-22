@@ -9,18 +9,19 @@ import {
 import { getMediaSourceAudioLevel } from '../src/sip/MediaDiagnostics';
 
 describe('microphone AGC', () => {
-  test('holds the gain at silence instead of amplifying it', () => {
+  test('holds the gain at silence and room noise instead of amplifying it', () => {
     expect(nextMicAgcGain(MIC_AGC_CENTER_DB, 0)).toBe(MIC_AGC_CENTER_DB);
     expect(nextMicAgcGain(MIC_AGC_CENTER_DB, 1e-7)).toBe(MIC_AGC_CENTER_DB);
+    expect(nextMicAgcGain(MIC_AGC_CENTER_DB, 10 ** (-42 / 20))).toBe(MIC_AGC_CENTER_DB);
   });
 
   test('keeps a nominal speech level at the -6 dB centre', () => {
-    const nominal = 10 ** (-18 / 20);
+    const nominal = 10 ** (-24 / 20);
     expect(nextMicAgcGain(MIC_AGC_CENTER_DB, nominal)).toBe(MIC_AGC_CENTER_DB);
   });
 
   test('raises quiet speech toward the upper bound in bounded steps', () => {
-    const quiet = 10 ** (-40 / 20);
+    const quiet = 10 ** (-32 / 20);
     const next = nextMicAgcGain(MIC_AGC_CENTER_DB, quiet);
     expect(next).toBeCloseTo(MIC_AGC_CENTER_DB + MIC_AGC_STEP_DB, 6);
     expect(next).toBeLessThanOrEqual(MIC_AGC_MAX_DB);
