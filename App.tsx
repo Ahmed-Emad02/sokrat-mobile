@@ -237,6 +237,20 @@ async function reconcileMissedCalls(
   }
 }
 
+/**
+ * Root-effect unmount teardown. A live SIP call owns both the UA and the
+ * gateway session generation; resetting either invalidates its next ticket.
+ */
+export function teardownRootEffect(
+  hasCallInProgress: boolean,
+  resetGatewaySessionFn: () => void,
+  disconnectSip: () => void,
+): void {
+  if (hasCallInProgress) return;
+  resetGatewaySessionFn();
+  disconnectSip();
+}
+
 export default function App() {
   const { colors, isDark } = useTheme();
   useEffect(() => {
@@ -1658,11 +1672,11 @@ export default function App() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
       ++accountGenerationRef.current;
       enrollmentAbortRef.current?.abort();
-      resetGatewaySession();
       // The root effect can unmount while a call is live (remount/strict
-      // mode). Disconnecting would tear down the registered UA and media
-      // under that call; leave SIP teardown to the hangup/end path.
-      if (!sip.hasCallInProgress()) sip.disconnect();
+      // mode). Keep both the SIP UA and its gateway-session ownership alive:
+      // resetting the session increments the generation and invalidates the
+      // HandoverSocket's next ticket request.
+      teardownRootEffect(sip.hasCallInProgress(), resetGatewaySession, () => sip.disconnect());
       unsubscribeNativeAction();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

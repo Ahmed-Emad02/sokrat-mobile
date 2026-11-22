@@ -374,6 +374,21 @@ export class JsSipService {
     return this.speakerVolume;
   }
 
+  /** Return the real SIP Call-ID for a call, distinct from JsSIP session.id. */
+  private getSipCallId(callId: string): string | null {
+    // Only a service-owned call that still matches this id may contribute an
+    // identity. Never borrow currentSession from a newer call: a stale gain
+    // request must not validate against the new call's SIP Call-ID.
+    const call = [this.activeCall, this.primaryCall, this.consultCall]
+      .find((candidate): candidate is ActiveCall => candidate?.id === callId);
+    if (!call) return null;
+    const session = call.session as {
+      _request?: { call_id?: string };
+      _dialog?: { id?: { call_id?: string } };
+    } | null;
+    return session?._request?.call_id || session?._dialog?.id?.call_id || null;
+  }
+
   async setLiveMicGain(gainDb: number, callId?: string): Promise<boolean> {
     const targetCallId = callId || this.activeCall?.id;
     this.micGainDb = clampMicGainDb(gainDb);
@@ -384,6 +399,9 @@ export class JsSipService {
     // account fully local instead of firing a request that can only fail.
     if (this.directSip) return false;
 
+    // Capture identity at request time; the delayed callback must not pair an
+    // old callId with whatever session happens to be current 150ms later.
+    const sipCallId = this.getSipCallId(targetCallId);
     this.pendingGainDb = this.micGainDb;
     clearTimeout(this.liveGainTimer ?? undefined);
     this.liveGainResolve?.(false);
@@ -394,6 +412,10 @@ export class JsSipService {
         const gain = this.pendingGainDb ?? this.micGainDb;
         this.liveGainTimer = null;
         this.liveGainResolve = null;
+        if (this.getSipCallId(targetCallId) !== sipCallId) {
+          resolve(false);
+          return;
+        }
         if (this.appliedMicGainCallId === targetCallId && this.appliedMicGainDb === gain) {
           resolve(true);
           return;
@@ -419,6 +441,7 @@ export class JsSipService {
             body: JSON.stringify({
               extension: this.extension,
               callId: targetCallId,
+              sipCallId: sipCallId || undefined,
               micGainDb: gain,
               gainDb: gain,
             }),
@@ -1037,11 +1060,30 @@ export class JsSipService {
       terminate: (options?: unknown) => void;
       refer?: (target: string, opts?: unknown) => void;
       _localHold?: boolean;
+      _status?: string;
+      isEstablished?: () => boolean;
+      onTransportError?: () => void;
       connection?: {
         getReceivers?: () => Array<{ track?: MediaStreamTrack }>;
         getStats?: () => Promise<Map<string, Record<string, unknown>>>;
       };
     };
+    // JsSIP terminates a session on the first transport error, including a
+    // pending re-INVITE/hold/ICE refresh on an already-confirmed dialog. Keep
+    // established dialogs alive for the signaling watchdog/recovery window;
+    // non-established sessions retain JsSIP's immediate failure behavior.
+    const originalOnTransportError = typeof session.onTransportError === 'function'
+      ? session.onTransportError.bind(session)
+      : null;
+    session.onTransportError = () => {
+      const confirmed = session._status === 'confirmed' || session.isEstablished?.() === true;
+      if (this.currentSession === session && confirmed) {
+        console.warn(`[sip][callId=${callId}] transport error on established dialog; preserving session for recovery`);
+        return;
+      }
+      originalOnTransportError?.();
+    };
+
     const req = (requestObj || session._request || session.request) as {
       getHeader?: (name: string) => string | undefined;
       headers?: Record<string, Array<{ raw: string }>>;

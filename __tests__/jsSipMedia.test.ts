@@ -1408,6 +1408,27 @@ describe('JsSipService media + instance id', () => {
       expect(JSON.parse(volumeCall![1].body)).toMatchObject({ micGainDb: 31 });
     });
 
+    test('does not attach a newer SIP Call-ID to a stale gain request', async () => {
+      const { service, session } = await activeSession();
+      const oldCall = service.activeCall!;
+      (oldCall.session as { _request?: { call_id?: string } })._request = { call_id: 'old-sip-call-id' };
+      const newSession = createSession();
+      (newSession as { _request?: { call_id?: string } })._request = { call_id: 'new-sip-call-id' };
+      const fetchMock = globalThis.fetch as unknown as jest.Mock;
+      fetchMock.mockClear();
+
+      const pending = service.setLiveMicGain(-6, oldCall.id);
+      // Ownership changes before the 150ms dispatch callback.
+      Reflect.set(service, 'currentSession', newSession);
+      Reflect.set(service, 'activeCall', { ...oldCall, id: 'new-call', session: newSession });
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(pending).resolves.toBe(false);
+      expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/call/volume'))).toHaveLength(0);
+      Reflect.set(service, 'activeCall', oldCall);
+      Reflect.set(service, 'currentSession', session);
+    });
+
     test('logout cancels a pending handover and does not register again', async () => {
       const { service, reconnect } = await activeSession();
       service.handleNetworkChange({ isConnected: true, networkType: 'WIFI' });
@@ -1854,6 +1875,24 @@ describe('JsSipService media + instance id', () => {
       expect(primary.session.terminate).toHaveBeenCalledTimes(1);
       expect(primary.track.stop).toHaveBeenCalledTimes(1);
       expect(events.onCallEnded).not.toHaveBeenCalled();
+    });
+
+    test('a transport error on a confirmed dialog does not terminate the call', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const service = createService();
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const session = primary.session as FakeSession & { _status?: string; onTransportError?: () => void };
+
+      // JsSIP calls this before emitting `disconnected`; a pending
+      // re-INVITE/hold/ICE refresh must not end an established call.
+      session._status = 'confirmed';
+      session.onTransportError?.();
+      expect(primary.session.terminate).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.status).toBe('active');
+
     });
 
     test('GSM preemption marks the service call and resumes that same call on IDLE', async () => {
