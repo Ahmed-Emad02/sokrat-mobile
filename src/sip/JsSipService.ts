@@ -8,7 +8,7 @@ import JsSIP from 'jssip';
 import { mediaDevices, MediaStream, MediaStreamTrack, RTCRtpReceiver } from 'react-native-webrtc';
 import { CONFIG, getPushGateway, getSipWss } from '../config';
 import { CALL_VOLUME_PATH, extensionHeaders, getMediaConfiguration, MediaConfiguration } from '../network';
-import { createAudioStatsSummarizer, describeSdpForLog, type SdpLogSummary } from './MediaDiagnostics';
+import { createAudioStatsSummarizer, describeSdpForLog, getMediaSourceAudioLevel, type SdpLogSummary } from './MediaDiagnostics';
 import { delay } from '../gateway/enrollment';
 import { isTerminalEnrollmentError } from '../gateway/errors';
 import { ensureVpn, getVpnPublicKey, type VpnProfile } from '../vpn/VpnManager';
@@ -48,6 +48,7 @@ import {
   speakerPercentToGain,
 } from '../calls/audioLevels';
 import { dismissNativeCallNotification, getMediaDiagnosticsWriter } from '../calls/nativeCallNotification';
+import { MIC_AGC_CENTER_DB, nextMicAgcGain } from '../calls/micAgc';
 import { CodecPreference } from '../storage/store';
 import { resolveCallerName } from '../calls/callerNameResolver';
 import { callDisplayName, usableProviderName } from '../calls/callerName';
@@ -346,6 +347,7 @@ export class JsSipService {
   setMicVolume(percent: number): void {
     this.micVolume = Math.max(0, Math.min(MIC_MAX_PERCENT, percent));
     this.micGainDb = micPercentToDb(this.micVolume);
+    this.micAgcSuspended = true;
     if (this.activeCall) {
       void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
     }
@@ -354,6 +356,7 @@ export class JsSipService {
   setMicGainDb(gainDb: number): void {
     this.micGainDb = clampMicGainDb(gainDb);
     this.micVolume = micDbToPercent(this.micGainDb);
+    this.micAgcSuspended = true;
     if (this.activeCall) {
       void this.setLiveMicGain(this.micGainDb, this.activeCall.id);
     }
@@ -535,6 +538,8 @@ export class JsSipService {
   private connectionGeneration = 0;
   private stopMediaDiagnostics: (() => void) | null = null;
   private mediaStatsPending = false;
+  private micAgcGainDb = MIC_AGC_CENTER_DB;
+  private micAgcSuspended = false;
   /** Early-media RTP readiness poll (see watchEarlyMedia). */
   private earlyMediaTimer: ReturnType<typeof setTimeout> | null = null;
   /** Call id with a live early-media poll, or null. */
@@ -1900,6 +1905,14 @@ export class JsSipService {
     };
     const current = () => !stopped && this.currentSession === session &&
       this.connectionGeneration === generation;
+    // Start every confirmed call at the measured handset sweet spot. The
+    // local volume API is PBX-side, so this is the only stable capture-gain
+    // actuator exposed by the current stack.
+    this.micAgcGainDb = MIC_AGC_CENTER_DB;
+    this.micAgcSuspended = false;
+    if (this.activeCall) {
+      void this.setLiveMicGain(MIC_AGC_CENTER_DB, this.activeCall.id);
+    }
     const sample = async () => {
       if (!current()) { stop(); return; }
       if (this.mediaStatsPending) return;
@@ -1907,6 +1920,14 @@ export class JsSipService {
       try {
         const stats = await connection.getStats!();
         if (current()) {
+          const level = getMediaSourceAudioLevel(stats);
+          if (level !== null && this.activeCall && !this.micAgcSuspended) {
+            const nextGain = nextMicAgcGain(this.micAgcGainDb, level);
+            if (Math.abs(nextGain - this.micAgcGainDb) >= 0.01) {
+              this.micAgcGainDb = nextGain;
+              void this.setLiveMicGain(nextGain, this.activeCall.id);
+            }
+          }
           const now = Date.now();
           const serialized = JSON.stringify({
             startedAtUnixMs: startedAt,

@@ -299,9 +299,8 @@ function UnifiedAudioControls({
   const micDb = micPercentToDb(micVolume);
   const micDbLabel = micDb === 0 ? '0 dB • Calibrated' : `${micDb > 0 ? '+' : ''}${micDb} dB`;
   const micDescription = compact
-    ? `${micDbLabel} capture gain`
-    : `Microphone capture gain (${micDbLabel}). Applied directly to live calls.` +
-      (micDb > 12 ? ' High boost may clip loud speech.' : '');
+    ? `${micDbLabel} AGC target`
+    : `Microphone AGC target (${micDbLabel}). Calls start at -6 dB; moving this slider during a call pauses AGC.`;
   const speakerGain = speakerPercentToGain(speakerVolume);
   const speakerBoostDb = speakerGainToDb(speakerGain);
   const speakerBoostLabel =

@@ -18,6 +18,17 @@ const AUDIO_TYPES: Record<string, true> = {
 const CANDIDATE_TYPES: Record<string, true> = { host: true, srflx: true, prflx: true, relay: true };
 const PROTOCOLS: Record<string, true> = { udp: true, tcp: true, tls: true };
 
+/** Read the local capture RMS reported by WebRTC's media-source stats. */
+export function getMediaSourceAudioLevel(stats: Map<string, RtcStat>): number | null {
+  for (const report of stats.values()) {
+    if (report.type !== 'media-source' ||
+        (report.kind !== 'audio' && report.mediaType !== 'audio')) continue;
+    const level = report.audioLevel;
+    if (typeof level === 'number' && Number.isFinite(level)) return level;
+  }
+  return null;
+}
+
 /** Temporary local diagnosis: never serialize raw reports, SDP, addresses or credentials. */
 export type SdpLogSummary = {
   mAudioPayloads: string[];
