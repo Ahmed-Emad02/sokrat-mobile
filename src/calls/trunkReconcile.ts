@@ -23,6 +23,15 @@ export function shouldReconcileTrunk(direction: 'inbound' | 'outbound', target: 
   return direction === 'outbound' && isExternalDestination(target);
 }
 
+/**
+ * Trunk reconciliation only guards call setup. Once the SIP dialog is
+ * confirmed the PBX call-state snapshot is advisory: a transient trunk-gone
+ * or caller-gone sample must not end a live conversation, so polling stops.
+ */
+export function shouldContinueTrunkReconcile(status: string): boolean {
+  return status !== 'active' && status !== 'held';
+}
+
 /** Consecutive PBX samples required before the client trusts a "gone" state. */
 export const TRUNK_RECONCILE_MISSES = 2;
 

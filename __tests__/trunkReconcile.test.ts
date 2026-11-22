@@ -2,6 +2,7 @@ import {
   INITIAL_TRUNK_RECONCILE_MEMORY,
   isExternalDestination,
   nextTrunkReconcileAction,
+  shouldContinueTrunkReconcile,
   shouldReconcileTrunk,
 } from '../src/calls/trunkReconcile';
 
@@ -30,6 +31,13 @@ describe('dongle trunk reconciliation policy', () => {
 
   test('never reconciles an inbound session', () => {
     expect(shouldReconcileTrunk('inbound', '+201012345678')).toBe(false);
+  });
+
+  test('stops reconciling once the call is established', () => {
+    expect(shouldContinueTrunkReconcile('calling')).toBe(true);
+    expect(shouldContinueTrunkReconcile('ringing')).toBe(true);
+    expect(shouldContinueTrunkReconcile('active')).toBe(false);
+    expect(shouldContinueTrunkReconcile('held')).toBe(false);
   });
 });
 

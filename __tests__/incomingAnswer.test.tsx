@@ -15,6 +15,7 @@ let mockCancel: (payload: CancelPayload) => void;
 let mockPendingNativeCalls: CallActionPayload[] = [];
 const mockSip = {
   activeCall: null as ActiveCall | null,
+  hasCallInProgress: jest.fn(() => false),
   answer: jest.fn(async () => true),
   decline: jest.fn(async () => true),
   hangup: jest.fn(async (_id?: string) => true),

@@ -8,6 +8,7 @@ describe('heartbeat wake ACK', () => {
     isRegistered: jest.Mock;
     isConnectedOrConnecting: jest.Mock;
     connect: jest.Mock;
+    hasCallInProgress: jest.Mock;
   };
 
   const account = {
@@ -39,6 +40,7 @@ describe('heartbeat wake ACK', () => {
       isRegistered: jest.fn().mockReturnValue(true),
       isConnectedOrConnecting: jest.fn().mockReturnValue(true),
       connect: jest.fn().mockResolvedValue(undefined),
+      hasCallInProgress: jest.fn().mockReturnValue(false),
     };
 
     jest.doMock('react-native', () => ({
@@ -118,6 +120,21 @@ describe('heartbeat wake ACK', () => {
 
     expect(sip.connect).toHaveBeenCalledTimes(1);
     expect(sendHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it('does not ACK or reconnect a wake during an active call', async () => {
+    sip.hasCallInProgress.mockReturnValue(true);
+
+    await wake();
+
+    expect(sip.connect).not.toHaveBeenCalled();
+    expect(sendHeartbeat).not.toHaveBeenCalled();
+
+    // The ignored wake is not recorded as acknowledged: once the call ends,
+    // the same timestamp must still produce an ACK.
+    sip.hasCallInProgress.mockReturnValue(false);
+    await wake();
+    expect(sendHeartbeat).toHaveBeenCalledTimes(1);
   });
 
   it('does not ACK a wake for a different extension', async () => {

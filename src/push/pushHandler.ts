@@ -396,6 +396,15 @@ async function handleWake(rawData: RawPushPayload): Promise<boolean> {
   const wakeTimestamp = Number(rawData.timestamp) || 0;
   if (wakeTimestamp && wakeTimestamp === lastWakeTimestamp) return true;
   require('../calls/connectionService').startConnectionService();
+  // A wake that arrives during a live call/consult leg must not touch SIP:
+  // connecting would replace the registered transport under the call, and an
+  // ACK would suppress wakes the gateway still needs while the device is busy.
+  const { getSharedJsSipService } = require('../sip/JsSipService');
+  const activeSip = getSharedJsSipService();
+  if (activeSip.hasCallInProgress()) {
+    console.log('[push] heartbeat wake ignored during an active call');
+    return true;
+  }
   // Never ACK a wake before SIP is registered. The gateway treats an ACK as
   // proof the device is awake and suppresses the next wake for 180 seconds.
   const sipReady = await bootstrapHeadlessSip(storedAccount, 'keepalive');

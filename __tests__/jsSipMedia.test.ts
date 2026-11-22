@@ -805,6 +805,45 @@ describe('JsSipService media + instance id', () => {
   });
 
 
+  test('never terminates a confirmed call when relay gathering later times out', async () => {
+    mockMediaConfiguration.mockResolvedValue(relayConfiguration);
+    const { stream } = createStream();
+    (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(stream);
+
+    const service = createService();
+    await service.connect('160', 'pw', 'pbx.example.com', false);
+    await service.call('102');
+
+    const ua = mockUaInstances[0];
+    const session = createSession('outgoing');
+    jest.useFakeTimers();
+    try {
+      ua.emit('newRTCSession', { session, request: {} });
+      setLocalSdp(session, [HOST_CANDIDATE]);
+      session.emit('icecandidate', { candidate: HOST_CANDIDATE, ready: jest.fn() });
+
+      // Initial setup is still bounded: confirmation arrives before the
+      // no-relay budget expires, so aborting would now kill a live call.
+      jest.advanceTimersByTime(ICE_RELAY_WAIT_MS - 100);
+      session.emit('confirmed', {});
+      expect(service.activeCall?.status).toBe('active');
+      jest.advanceTimersByTime(200);
+      expect(session.terminate).not.toHaveBeenCalled();
+
+      // A later ICE restart (hold/unhold reINVITE) gathers no relay either;
+      // it must not arm relay enforcement against the established dialog.
+      setGatheringState(session, 'complete');
+      setGatheringState(session, 'gathering');
+      session.emit('icecandidate', { candidate: HOST_CANDIDATE, ready: jest.fn() });
+      jest.advanceTimersByTime(ICE_RELAY_WAIT_MS);
+      expect(session.terminate).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe(session.id);
+      expect(service.activeCall?.status).toBe('active');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('prefetches media configuration while ringing and reuses it for answer', async () => {
     mockMediaConfiguration.mockResolvedValue(relayConfiguration);
     const { stream } = createStream();
@@ -1429,7 +1468,7 @@ describe('JsSipService media + instance id', () => {
       jest.spyOn(console, 'warn').mockImplementation(() => {});
       const start = Reflect.get(service, 'startMicAgc').bind(service);
 
-      start(session);
+      start(session, 'agc-call');
       await jest.advanceTimersByTimeAsync(700_000);
 
       expect(stats.mock.calls.length).toBeGreaterThan(300);
@@ -1440,6 +1479,33 @@ describe('JsSipService media + instance id', () => {
       const settledCalls = stats.mock.calls.length;
       await jest.advanceTimersByTimeAsync(10_000);
       expect(stats.mock.calls.length).toBe(settledCalls);
+    });
+
+    test('keeps AGC bound to the confirmed call id during a consultation', async () => {
+      const service = createService();
+      const session = createSession();
+      const stats = jest.fn().mockResolvedValue(new Map([
+        ['source', { type: 'media-source', kind: 'audio', audioLevel: 10 ** (-32 / 20) }],
+      ]));
+      Object.assign(session.connection, { getStats: stats });
+      Reflect.set(service, 'currentSession', session);
+      Reflect.set(service, 'activeCall', { id: 'primary-call' });
+      const setLiveGain = jest.spyOn(service, 'setLiveMicGain').mockResolvedValue(true);
+      const start = Reflect.get(service, 'startMicAgc').bind(service);
+
+      start(session, 'primary-call');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(setLiveGain).toHaveBeenCalledWith(-6, 'primary-call');
+
+      // An attended transfer moves the active line to the consultation, but
+      // the primary session's AGC must never apply gain to that other call.
+      Reflect.set(service, 'activeCall', { id: 'consult-call' });
+      const callsBefore = setLiveGain.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(setLiveGain.mock.calls.length).toBe(callsBefore);
+      for (const call of setLiveGain.mock.calls) {
+        expect(call[1]).toBe('primary-call');
+      }
     });
 
     test('ignores a stale confirmed event without stopping current diagnostics', async () => {
@@ -1994,6 +2060,38 @@ describe('JsSipService media + instance id', () => {
       );
       expect(service.activeCall?.id).toBe('consult-session');
       expect(primary.session.terminate).not.toHaveBeenCalled();
+    });
+
+    test('an ended consultation releases only its own capture', async () => {
+      mockMediaConfiguration.mockResolvedValue({ iceServers: [] });
+      const events = { ...createEvents(), onAttendedTransferChange: jest.fn() };
+      const service = createService(events);
+      await service.connect('160', 'pw', 'pbx.example.com', false);
+      const ua = mockUaInstances[0];
+      const primary = await establishInboundPrimary(service, ua);
+      const consultStream = createStream();
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValueOnce(consultStream.stream);
+
+      await expect(service.startAttendedTransfer('150')).resolves.toBeUndefined();
+      const consult = createSession('outgoing');
+      consult.id = 'consult-session';
+      ua.emit('newRTCSession', { session: consult, request: {} });
+      consult.emit('confirmed', {});
+      expect(service.activeCall?.id).toBe('consult-session');
+
+      consult.emit('ended', { cause: 'Terminated' });
+
+      // The consultation capture is stopped, but the primary line keeps its
+      // original microphone and becomes the active call again.
+      expect(consultStream.track.stop).toHaveBeenCalledTimes(1);
+      expect(primary.track.stop).not.toHaveBeenCalled();
+      expect(service.activeCall?.id).toBe('gsm-primary');
+      expect(service.activeCall?.status).toBe('active');
+      expect(events.onAttendedTransferChange).toHaveBeenLastCalledWith(null);
+
+      await expect(service.hangup('gsm-primary')).resolves.toBe(true);
+      expect(primary.track.stop).toHaveBeenCalledTimes(1);
+      expect(consultStream.track.stop).toHaveBeenCalledTimes(1);
     });
 
     test('a failed consultation preparation keeps and resumes the borrowed primary microphone', async () => {

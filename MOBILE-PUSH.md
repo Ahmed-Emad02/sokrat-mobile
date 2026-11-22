@@ -147,7 +147,9 @@ The wake ACK is sent only after `JsSipService.isRegistered()` reports success;
 registration refresh and 20 s keepalive are local checks. A half-open WebSocket
 can therefore report a stale registered state; the heartbeat path logs
 `heartbeat ACK deferred`, `no gateway session`, or `heartbeat ACK failed` to
-distinguish the failing phase.
+distinguish the failing phase. A wake that arrives while a call or consultation
+leg is active is ignored without reconnecting SIP or sending an ACK, so it
+cannot replace the transport under the live call.
 
 **Cold vs background:** an idle `SokratConnectionService` foreground service means
 the app process is not process-cold. Android force-stop blocks FCM by design and

@@ -1659,7 +1659,10 @@ export default function App() {
       ++accountGenerationRef.current;
       enrollmentAbortRef.current?.abort();
       resetGatewaySession();
-      sip.disconnect();
+      // The root effect can unmount while a call is live (remount/strict
+      // mode). Disconnecting would tear down the registered UA and media
+      // under that call; leave SIP teardown to the hangup/end path.
+      if (!sip.hasCallInProgress()) sip.disconnect();
       unsubscribeNativeAction();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

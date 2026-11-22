@@ -142,14 +142,18 @@ thread crashes the app on Android 16.
 ## Call teardown safety
 
 An outbound call can never ring forever. A signaling transport lost during a
-call gets an 8 s grace to reconnect (the handover socket reopens with a fresh
+call gets a 25 s grace to reconnect (outlasting the gateway's 20 s handover
+window, plus a reconnect margin; the handover socket reopens with a fresh
 ticket); if it stays down the call ends locally with `SIGNALING_LOST` instead of
 freezing the screen and ringback. Outbound ringing is bounded at 60 s
 (`NO_ANSWER`, HTTP-style 408), and a 2xx that never reaches `confirmed` is
 abandoned after 10 s. A received 2xx stops the local ringback immediately.
-Dongle-routed calls also reconcile gateway call-state every 2 s: two samples
-with the trunk gone, or two samples with the caller gone after it was once
-seen, end the call. Internal extension calls never start reconciliation.
+Dongle-routed calls also reconcile gateway call-state every 2 s while the call
+is still being established: two samples with the trunk gone, or two samples
+with the caller gone after it was once seen, end the call. Once the call is
+confirmed reconciliation stops, so a transient `TRUNK_LOST`/`CALLER_GONE`
+sample cannot cut a live conversation. Internal extension calls never start
+reconciliation.
 
 ## Internal calls and primary-session ownership
 

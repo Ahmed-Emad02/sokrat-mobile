@@ -35,6 +35,7 @@ import {
 import {
   INITIAL_TRUNK_RECONCILE_MEMORY,
   nextTrunkReconcileAction,
+  shouldContinueTrunkReconcile,
   shouldReconcileTrunk,
   TRUNK_STATE_PATH,
 } from '../calls/trunkReconcile';
@@ -84,8 +85,11 @@ export const ICE_RELAY_WAIT_MS = 2000;
  * grace window ends the call instead of freezing the UI/ringback; an outbound
  * session rings for at most the ring timeout, and a 2xx that never confirms is
  * abandoned after the confirmation timeout.
+ *
+ * The signaling grace must outlast the gateway's 20 s handover window (plus a
+ * reconnect margin), otherwise a healthy handover is aborted mid-call.
  */
-export const SIGNALING_GRACE_MS = 8000;
+export const SIGNALING_GRACE_MS = 25_000;
 export const OUTGOING_RING_TIMEOUT_MS = 60_000;
 export const CONFIRMATION_TIMEOUT_MS = 10_000;
 
@@ -480,6 +484,8 @@ export class JsSipService {
     this.events.onStateChange(this.state);
   }
   private localStream: MediaStream | null = null;
+  /** Capture owned by the consultation leg; the primary stream stays localStream. */
+  private consultStream: MediaStream | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: number | null = null;
   private keepAliveTimer: number | null = null;
@@ -710,7 +716,9 @@ export class JsSipService {
     this.trunkPollCallId = callId;
     this.trunkPollMemory = INITIAL_TRUNK_RECONCILE_MEMORY;
     const poll = async (): Promise<void> => {
-      if (this.trunkPollCallId !== callId || this.activeCall?.id !== callId) {
+      if (this.trunkPollCallId !== callId ||
+          this.activeCall?.id !== callId ||
+          !shouldContinueTrunkReconcile(this.activeCall.status)) {
         this.stopTrunkReconcile();
         return;
       }
@@ -728,7 +736,12 @@ export class JsSipService {
         if (this.trunkPollCallId !== callId) return;
         console.warn('[sip] trunk state poll failed:', error);
       }
-      if (this.trunkPollCallId !== callId || this.activeCall?.id !== callId) return;
+      if (this.trunkPollCallId !== callId ||
+          this.activeCall?.id !== callId ||
+          !shouldContinueTrunkReconcile(this.activeCall.status)) {
+        this.stopTrunkReconcile();
+        return;
+      }
       const decision = nextTrunkReconcileAction(state, this.trunkPollMemory);
       this.trunkPollMemory = decision.memory;
       if (decision.action === 'end') {
@@ -1434,6 +1447,9 @@ export class JsSipService {
       if (this.currentSession !== session) return;
       this.stopEarlyMediaWatch();
       this.clearOutgoingTimers();
+      // The dialog is established: the PBX call-state snapshot is no longer
+      // authoritative for this call, so its reconcile poll must stop.
+      this.stopTrunkReconcile();
       if (this.activeCall?.id === call.id) {
         this.activeCall.status = 'active';
         if (!this.activeCall.startTime) this.activeCall.startTime = Date.now();
@@ -1445,7 +1461,7 @@ export class JsSipService {
       }
       this.attachEarlyMediaAudio(session, call);
       stopOutgoingRingbackAfterMedia();
-      this.startMicAgc(session);
+      this.startMicAgc(session, call.id);
       this.startMediaDiagnostics(session);
     });
 
@@ -1658,6 +1674,7 @@ export class JsSipService {
   // -----------------------------------------------------------------------
   private _recoverFromFailedConsult(errorMsg?: string) {
     this.invalidateOutboundAttempt('consult');
+    this.releaseConsultStream();
     this.consultSession = null;
     this.consultCall = null;
     if (!this.attendedTransfer) return;
@@ -1702,6 +1719,7 @@ export class JsSipService {
     }
     this.consultSession = null;
     this.consultCall = null;
+    this.releaseConsultStream();
     this.primaryCall = null;
     this.primaryManualHold = false;
     this.attendedTransfer = null;
@@ -1806,6 +1824,9 @@ export class JsSipService {
           // down the agent leg, this is the only completion signal we get.
           this._cleanupAttendedTransfer(true);
           stopCallManagers();
+          // Both legs are now owned by the PBX; release the agent's local
+          // capture so the microphone does not stay open after the transfer.
+          this.releaseLocalStream();
           const primaryId = this.primaryCall?.id || this.activeCall?.id || '';
           this.currentSession = null;
           this.activeCall = null;
@@ -1890,11 +1911,16 @@ export class JsSipService {
    * Keep microphone AGC alive for the full call, independent of the bounded
    * media-diagnostics capture. Stats failures are retried; a failed request
    * must not silently freeze the gain for the rest of the call.
+   *
+   * Gain is bound to the call id confirmed for this session, never
+   * `activeCall.id`: during an attended transfer the active line flips to the
+   * consultation leg, and the primary's AGC must keep targeting its own PBX
+   * channel.
    */
   private startMicAgc(session: {
     connection?: { getStats?: () => Promise<Map<string, Record<string, unknown>>> };
     on: (event: string, listener: () => void) => void;
-  }): void {
+  }, callId: string): void {
     const connection = session.connection;
     if (this.currentSession !== session || typeof connection?.getStats !== 'function') return;
     this.stopMicAgc?.();
@@ -1915,8 +1941,8 @@ export class JsSipService {
 
     this.micAgcGainDb = MIC_AGC_CENTER_DB;
     this.micAgcSuspended = false;
-    if (this.activeCall) {
-      void this.setLiveMicGain(MIC_AGC_CENTER_DB, this.activeCall.id);
+    if (this.activeCall?.id === callId) {
+      void this.setLiveMicGain(MIC_AGC_CENTER_DB, callId);
     }
 
     const sample = async () => {
@@ -1930,11 +1956,11 @@ export class JsSipService {
         const stats = await connection.getStats!();
         if (!current()) return;
         const level = getMediaSourceAudioLevel(stats);
-        if (level !== null && this.activeCall && !this.micAgcSuspended) {
+        if (level !== null && this.activeCall?.id === callId && !this.micAgcSuspended) {
           const nextGain = nextMicAgcGain(this.micAgcGainDb, level);
           if (Math.abs(nextGain - this.micAgcGainDb) >= 0.01) {
             this.micAgcGainDb = nextGain;
-            void this.setLiveMicGain(nextGain, this.activeCall.id);
+            void this.setLiveMicGain(nextGain, callId);
           }
         }
       } catch {
@@ -2121,12 +2147,27 @@ export class JsSipService {
   }
 
   /**
+   * Whether this call id's SIP dialog is already confirmed. Relay enforcement
+   * protects the initial SDP handshake only: once a call is established an
+   * ICE restart (hold/unhold or reINVITE) that cannot gather a relay
+   * candidate must not terminate the live conversation.
+   */
+  private isEstablishedCall(callId: string): boolean {
+    if (this.activeCall?.id === callId) return this.activeCall.status === 'active';
+    if (this.consultCall?.id === callId) return this.consultCall.status === 'active';
+    return this.primaryCall?.id === callId && this.primaryCall.status === 'active';
+  }
+
+  /**
    * Bounded ICE gathering.
    *
    * Relay-required sessions (gateway/TURN) wait for the first `typ relay`
    * candidate to reach `localDescription`, then a short grace, and finally call
    * JsSIP's own `ready()` exactly once. If no relay candidate arrives within
    * the cap, the session is terminated: a relay-less SDP is never sent.
+   *
+   * Established calls are exempt: aborting a confirmed dialog over a failed
+   * ICE restart would drop a live call. Initial setup keeps the 408 behaviour.
    *
    * Non-relay (direct PBX) sessions keep JsSIP's default behaviour and only log
    * gathering diagnostics.
@@ -2221,6 +2262,12 @@ export class JsSipService {
       finished = true;
       inCycle = false;
       clearTimers();
+      if (this.isEstablishedCall(callId)) {
+        console.warn(
+          `[sip][callId=${callId}] ${reason}; established call keeps its current media path`,
+        );
+        return;
+      }
       console.error(
         `[sip][callId=${callId}] ${reason}; aborting instead of sending relay-less SDP`,
       );
@@ -2266,6 +2313,12 @@ export class JsSipService {
      */
     const startCycle = () => {
       if (cancelled || !relayRequired || inCycle) return;
+      if (this.isEstablishedCall(callId)) {
+        console.log(
+          `[sip][callId=${callId}] established call ICE restart; relay enforcement skipped`,
+        );
+        return;
+      }
       inCycle = true;
       finished = false;
       relaySeen = false;
@@ -2383,13 +2436,8 @@ export class JsSipService {
     session.on('failed', () => controller.cancel());
   }
 
-  /**
-   * Stop and drop the local microphone stream. Safe to call repeatedly and
-   * from error paths, so failed calls/answers never leave the mic open.
-   */
-  private releaseLocalStream(): void {
-    const stream = this.localStream;
-    this.localStream = null;
+  /** Stop every track of a capture without assuming which call owns it. */
+  private stopMediaStream(stream: MediaStream | null, label: string): void {
     if (!stream) return;
     try {
       const tracks = stream.getTracks ? stream.getTracks() : [];
@@ -2399,8 +2447,28 @@ export class JsSipService {
         } catch {}
       }
     } catch (err) {
-      console.warn('[sip] failed to release local stream:', err);
+      console.warn(`[sip] failed to release ${label} stream:`, err);
     }
+  }
+
+  /**
+   * Stop and drop the local microphone stream. Safe to call repeatedly and
+   * from error paths, so failed calls/answers never leave the mic open.
+   */
+  private releaseLocalStream(): void {
+    const stream = this.localStream;
+    this.localStream = null;
+    this.stopMediaStream(stream, 'local');
+  }
+
+  /**
+   * Stop and drop only the consultation capture. The primary call keeps its
+   * own stream and remains the mic after a consult cancel/failure/end.
+   */
+  private releaseConsultStream(): void {
+    const stream = this.consultStream;
+    this.consultStream = null;
+    this.stopMediaStream(stream, 'consultation');
   }
 
   /**
@@ -2614,7 +2682,6 @@ export class JsSipService {
 
     let relayOwned = false;
     const preexistingStream = this.localStream;
-    const preexistingSession = this.currentSession;
     try {
       const localStream = await this.getLocalAudioStream();
       if (!localStream) throw new Error('Microphone unavailable');
@@ -2658,9 +2725,16 @@ export class JsSipService {
       options.mediaStream = localStream;
       // Never repoint the service at a borrowed stream: the live primary still
       // owns it, and a newer call may already have replaced the pointer.
+      // A consultation capture is owned by that leg alone and must not
+      // replace the primary's `localStream`; track it separately so a consult
+      // cancel/failure/end stops only its own microphone.
       if (attempt.ownsStream) {
-        this.localStream = localStream;
-        this.setMicVolume(this.micVolume);
+        if (kind === 'consult') {
+          this.consultStream = localStream;
+        } else {
+          this.localStream = localStream;
+          this.setMicVolume(this.micVolume);
+        }
       }
       // Only an explicit relay-only configuration waits for TURN. Gateway mode
       // otherwise uses the same direct/host path as any WebRTC call. The
@@ -2687,13 +2761,6 @@ export class JsSipService {
     } catch (err) {
       if (this.outboundAttempt === attempt) this.outboundAttempt = null;
       if (attempt.outcome !== 'accepted') {
-        if (kind === 'consult' && attempt.ownsStream &&
-            this.localStream === attempt.stream &&
-            this.currentSession === preexistingSession &&
-            this.ua === ua &&
-            this.connectionGeneration === attempt.generation) {
-          this.localStream = preexistingStream;
-        }
         this.releaseCapturedStream(attempt);
       }
       if (relayOwned && attempt.outcome !== 'accepted') this.pendingRelayRequired = null;
@@ -2743,16 +2810,8 @@ export class JsSipService {
       this.releaseLocalStream();
       return;
     }
-    try {
-      const tracks = stream.getTracks ? stream.getTracks() : [];
-      for (const track of tracks) {
-        try {
-          track.stop();
-        } catch {}
-      }
-    } catch (err) {
-      console.warn('[sip] failed to release superseded capture:', err);
-    }
+    if (this.consultStream === stream) this.consultStream = null;
+    this.stopMediaStream(stream, 'superseded capture');
   }
 
   /**
@@ -3393,6 +3452,7 @@ export class JsSipService {
       this.releaseCapturedStream(outbound);
     }
     this.releaseLocalStream();
+    this.releaseConsultStream();
     this.pendingRelayRequired = null;
     this.mediaRelayRequired = false;
     this.mediaConfigurationCache = null;
