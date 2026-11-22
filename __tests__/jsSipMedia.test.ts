@@ -1414,6 +1414,34 @@ describe('JsSipService media + instance id', () => {
       expect(log).toHaveBeenCalledTimes(1);
     });
 
+    test('keeps AGC alive beyond diagnostics timeout and retries a stats failure', async () => {
+      const service = createService();
+      const session = createSession();
+      const stats = jest.fn()
+        .mockRejectedValueOnce(new Error('transient stats failure'))
+        .mockResolvedValue(new Map([
+          ['source', { type: 'media-source', kind: 'audio', audioLevel: 10 ** (-40 / 20) }],
+        ]));
+      Object.assign(session.connection, { getStats: stats });
+      Reflect.set(service, 'currentSession', session);
+      Reflect.set(service, 'activeCall', { id: 'agc-call' });
+      const setLiveGain = jest.spyOn(service, 'setLiveMicGain').mockResolvedValue(true);
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const start = Reflect.get(service, 'startMicAgc').bind(service);
+
+      start(session);
+      await jest.advanceTimersByTimeAsync(700_000);
+
+      expect(stats.mock.calls.length).toBeGreaterThan(300);
+      expect(setLiveGain).toHaveBeenCalled();
+      const stop = Reflect.get(service, 'stopMicAgc');
+      expect(typeof stop).toBe('function');
+      stop.call(service);
+      const settledCalls = stats.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(stats.mock.calls.length).toBe(settledCalls);
+    });
+
     test('ignores a stale confirmed event without stopping current diagnostics', async () => {
       const service = createService();
       const obsolete = createSession();

@@ -538,6 +538,8 @@ export class JsSipService {
   private connectionGeneration = 0;
   private stopMediaDiagnostics: (() => void) | null = null;
   private mediaStatsPending = false;
+  private stopMicAgc: (() => void) | null = null;
+  private micAgcPending = false;
   private micAgcGainDb = MIC_AGC_CENTER_DB;
   private micAgcSuspended = false;
   /** Early-media RTP readiness poll (see watchEarlyMedia). */
@@ -675,6 +677,8 @@ export class JsSipService {
     this.stopTrunkReconcile();
     this.stopMediaDiagnostics?.();
     this.stopMediaDiagnostics = null;
+    this.stopMicAgc?.();
+    this.stopMicAgc = null;
     if (this.attendedTransfer) this._cleanupAttendedTransfer(false);
     stopCallManagers();
     this.releaseLocalStream();
@@ -1441,6 +1445,7 @@ export class JsSipService {
       }
       this.attachEarlyMediaAudio(session, call);
       stopOutgoingRingbackAfterMedia();
+      this.startMicAgc(session);
       this.startMediaDiagnostics(session);
     });
 
@@ -1881,6 +1886,77 @@ export class JsSipService {
     this.events.onAttendedTransferChange?.({ ...this.attendedTransfer });
   }
 
+  /**
+   * Keep microphone AGC alive for the full call, independent of the bounded
+   * media-diagnostics capture. Stats failures are retried; a failed request
+   * must not silently freeze the gain for the rest of the call.
+   */
+  private startMicAgc(session: {
+    connection?: { getStats?: () => Promise<Map<string, Record<string, unknown>>> };
+    on: (event: string, listener: () => void) => void;
+  }): void {
+    const connection = session.connection;
+    if (this.currentSession !== session || typeof connection?.getStats !== 'function') return;
+    this.stopMicAgc?.();
+    const generation = this.connectionGeneration;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastFailureLog = 0;
+    const stop = () => {
+      stopped = true;
+      clearTimeout(timer);
+      if (this.stopMicAgc === stop) this.stopMicAgc = null;
+    };
+    const current = () => !stopped && this.currentSession === session &&
+      this.connectionGeneration === generation;
+    const schedule = (delayMs = 2000) => {
+      if (!stopped) timer = setTimeout(() => { void sample(); }, delayMs);
+    };
+
+    this.micAgcGainDb = MIC_AGC_CENTER_DB;
+    this.micAgcSuspended = false;
+    if (this.activeCall) {
+      void this.setLiveMicGain(MIC_AGC_CENTER_DB, this.activeCall.id);
+    }
+
+    const sample = async () => {
+      if (!current()) { stop(); return; }
+      if (this.micAgcPending) {
+        schedule(500);
+        return;
+      }
+      this.micAgcPending = true;
+      try {
+        const stats = await connection.getStats!();
+        if (!current()) return;
+        const level = getMediaSourceAudioLevel(stats);
+        if (level !== null && this.activeCall && !this.micAgcSuspended) {
+          const nextGain = nextMicAgcGain(this.micAgcGainDb, level);
+          if (Math.abs(nextGain - this.micAgcGainDb) >= 0.01) {
+            this.micAgcGainDb = nextGain;
+            void this.setLiveMicGain(nextGain, this.activeCall.id);
+          }
+        }
+      } catch {
+        if (current()) {
+          const now = Date.now();
+          if (now - lastFailureLog >= 30_000) {
+            lastFailureLog = now;
+            console.warn('[sip] microphone AGC statistics unavailable; retrying');
+          }
+        }
+      } finally {
+        this.micAgcPending = false;
+        schedule();
+      }
+    };
+
+    this.stopMicAgc = stop;
+    session.on('ended', stop);
+    session.on('failed', stop);
+    void sample();
+  }
+
   private startMediaDiagnostics(session: {
     connection?: { getStats?: () => Promise<Map<string, Record<string, unknown>>> };
     on: (event: string, listener: () => void) => void;
@@ -1905,14 +1981,6 @@ export class JsSipService {
     };
     const current = () => !stopped && this.currentSession === session &&
       this.connectionGeneration === generation;
-    // Start every confirmed call at the measured handset sweet spot. The
-    // local volume API is PBX-side, so this is the only stable capture-gain
-    // actuator exposed by the current stack.
-    this.micAgcGainDb = MIC_AGC_CENTER_DB;
-    this.micAgcSuspended = false;
-    if (this.activeCall) {
-      void this.setLiveMicGain(MIC_AGC_CENTER_DB, this.activeCall.id);
-    }
     const sample = async () => {
       if (!current()) { stop(); return; }
       if (this.mediaStatsPending) return;
@@ -1920,14 +1988,6 @@ export class JsSipService {
       try {
         const stats = await connection.getStats!();
         if (current()) {
-          const level = getMediaSourceAudioLevel(stats);
-          if (level !== null && this.activeCall && !this.micAgcSuspended) {
-            const nextGain = nextMicAgcGain(this.micAgcGainDb, level);
-            if (Math.abs(nextGain - this.micAgcGainDb) >= 0.01) {
-              this.micAgcGainDb = nextGain;
-              void this.setLiveMicGain(nextGain, this.activeCall.id);
-            }
-          }
           const now = Date.now();
           const serialized = JSON.stringify({
             startedAtUnixMs: startedAt,
@@ -3272,6 +3332,8 @@ export class JsSipService {
     this.pendingGainDb = null;
     this.stopMediaDiagnostics?.();
     this.stopMediaDiagnostics = null;
+    this.stopMicAgc?.();
+    this.stopMicAgc = null;
     this.connectionGeneration += 1;
     clearTimeout(this.reconnectTimer ?? undefined);
     this.reconnectTimer = null;
