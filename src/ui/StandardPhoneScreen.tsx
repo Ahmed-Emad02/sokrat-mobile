@@ -125,7 +125,6 @@ function VolumeSlider({
   max = 100,
   presets = [25, 50, 75, 100],
   compact = false,
-  dense = false,
 }: {
   label: string;
   value: number;
@@ -135,7 +134,6 @@ function VolumeSlider({
   max?: number;
   presets?: number[];
   compact?: boolean;
-  dense?: boolean;
 }) {
   const styles = useScreenStyles();
   const [trackWidth, setTrackWidth] = useState(250);
@@ -180,45 +178,37 @@ function VolumeSlider({
   );
 
   return (
-    <View style={[
-      styles.volSliderContainer,
-      compact && styles.volSliderContainerCompact,
-      dense && styles.volSliderContainerDense,
-    ]}>
+    <View style={[styles.volSliderContainer, compact && styles.volSliderContainerCompact]}>
       <View style={styles.volSliderHeader}>
         <View style={styles.volSliderTitleRow}>
           {icon}
-          <Text style={[styles.volSliderLabel, compact && styles.volSliderLabelCompact, dense && styles.volSliderLabelDense]}>{label}</Text>
+          <Text style={[styles.volSliderLabel, compact && styles.volSliderLabelCompact]}>{label}</Text>
         </View>
-        <View style={[styles.volSliderValueBadge, compact && styles.volSliderValueBadgeCompact, dense && styles.volSliderValueBadgeDense]}>
-          <Text style={[styles.volSliderValueText, compact && styles.volSliderValueTextCompact, dense && styles.volSliderValueTextDense]}>{value}%</Text>
+        <View style={[styles.volSliderValueBadge, compact && styles.volSliderValueBadgeCompact]}>
+          <Text style={[styles.volSliderValueText, compact && styles.volSliderValueTextCompact]}>{value}%</Text>
         </View>
       </View>
 
-      {!dense && (
-        <Text
-          numberOfLines={compact ? 1 : undefined}
-          style={[styles.volSliderSub, compact && styles.volSliderSubCompact]}
-        >
-          {description}
-        </Text>
-      )}
+      <Text
+        numberOfLines={compact ? 1 : undefined}
+        style={[styles.volSliderSub, compact && styles.volSliderSubCompact]}
+      >
+        {description}
+      </Text>
 
       {/* Interactive Slider Track with +/- Steppers */}
-      <View style={[styles.volSliderControlsRow, compact && styles.volSliderControlsRowCompact, dense && styles.volSliderControlsRowDense]}>
-        {!dense && (
-          <TouchableOpacity
-            style={[styles.volStepBtn, compact && styles.volStepBtnCompact]}
-            onPress={() => onChange(Math.max(0, value - 5))}
-            activeOpacity={0.6}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Text style={[styles.volStepBtnText, compact && styles.volStepBtnTextCompact]}>−</Text>
-          </TouchableOpacity>
-        )}
+      <View style={[styles.volSliderControlsRow, compact && styles.volSliderControlsRowCompact]}>
+        <TouchableOpacity
+          style={[styles.volStepBtn, compact && styles.volStepBtnCompact]}
+          onPress={() => onChange(Math.max(0, value - 5))}
+          activeOpacity={0.6}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={[styles.volStepBtnText, compact && styles.volStepBtnTextCompact]}>−</Text>
+        </TouchableOpacity>
 
         <View
-          style={[styles.volTrackTouchArea, compact && styles.volTrackTouchAreaCompact, dense && styles.volTrackTouchAreaDense]}
+          style={[styles.volTrackTouchArea, compact && styles.volTrackTouchAreaCompact]}
           onLayout={(e) => {
             const w = e.nativeEvent.layout.width;
             if (w > 0) setTrackWidth(w);
@@ -237,20 +227,18 @@ function VolumeSlider({
             pointerEvents="none"
           />
         </View>
-        {!dense && (
-          <TouchableOpacity
-            style={[styles.volStepBtn, compact && styles.volStepBtnCompact]}
-            onPress={() => onChange(Math.min(max, value + 5))}
-            activeOpacity={0.6}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Text style={[styles.volStepBtnText, compact && styles.volStepBtnTextCompact]}>+</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          style={[styles.volStepBtn, compact && styles.volStepBtnCompact]}
+          onPress={() => onChange(Math.min(max, value + 5))}
+          activeOpacity={0.6}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={[styles.volStepBtnText, compact && styles.volStepBtnTextCompact]}>+</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Preset Pills */}
-      {!dense && <View style={[styles.volPresetRow, compact && styles.volPresetRowCompact]}>
+      <View style={[styles.volPresetRow, compact && styles.volPresetRowCompact]}>
         {presets.map((p) => {
           const isSelected = value === p;
           return (
@@ -276,7 +264,85 @@ function VolumeSlider({
             </TouchableOpacity>
           );
         })}
-      </View>}
+      </View>
+    </View>
+  );
+}
+
+function InCallVolumeRow({
+  icon,
+  label,
+  value,
+  max,
+  onChange,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  const styles = useScreenStyles();
+  const [trackWidth, setTrackWidth] = useState(220);
+  const trackWidthRef = useRef(trackWidth);
+  const valueRef = useRef(value);
+  const gestureStartRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  trackWidthRef.current = trackWidth;
+  valueRef.current = value;
+  onChangeRef.current = onChange;
+
+  const valueAt = useCallback((localX: number) => {
+    const width = trackWidthRef.current > 0 ? trackWidthRef.current : 200;
+    return Math.round(Math.max(0, Math.min(max, (localX / width) * max)));
+  }, [max]);
+
+  const panResponder = useMemo(
+    () => PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: (event) => {
+        const next = typeof event.nativeEvent.locationX === 'number'
+          ? valueAt(event.nativeEvent.locationX)
+          : valueRef.current;
+        gestureStartRef.current = next;
+        if (next !== valueRef.current) onChangeRef.current(next);
+      },
+      onPanResponderMove: (_event, gesture) => {
+        const width = trackWidthRef.current > 0 ? trackWidthRef.current : 200;
+        const next = Math.round(
+          Math.max(0, Math.min(max, gestureStartRef.current + (gesture.dx / width) * max)),
+        );
+        if (next !== valueRef.current) onChangeRef.current(next);
+      },
+    }),
+    [max, valueAt],
+  );
+
+  const percent = `${Math.max(0, Math.min(100, (value / max) * 100))}%`;
+  return (
+    <View style={styles.inCallVolumeRow}>
+      <View style={styles.inCallVolumeIdentity}>
+        <View style={styles.inCallVolumeIcon}>{icon}</View>
+        <Text style={styles.inCallVolumeLabel} numberOfLines={1}>{label}</Text>
+      </View>
+      <View
+        style={styles.inCallVolumeTrackTouch}
+        onLayout={(event) => {
+          const width = event.nativeEvent.layout.width;
+          if (width > 0) setTrackWidth(width);
+        }}
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.inCallVolumeRail} pointerEvents="none">
+          <View style={[styles.inCallVolumeFill, { width: percent }]} pointerEvents="none" />
+        </View>
+        <View style={[styles.inCallVolumeThumb, { left: percent }]} pointerEvents="none" />
+      </View>
+      <Text style={styles.inCallVolumeValue}>{value}%</Text>
     </View>
   );
 }
@@ -293,7 +359,6 @@ function UnifiedAudioControls({
   onChooseAudioRoute,
   showRouteControls = true,
   compact = false,
-  dense = false,
 }: {
   speakerVolume: number;
   micVolume: number;
@@ -306,7 +371,6 @@ function UnifiedAudioControls({
   onChooseAudioRoute?: (route: AudioRouteType) => Promise<AudioDeviceState>;
   showRouteControls?: boolean;
   compact?: boolean;
-  dense?: boolean;
 }) {
   const styles = useScreenStyles();
   const { colors } = useTheme();
@@ -329,29 +393,25 @@ function UnifiedAudioControls({
   return (
     <View style={styles.unifiedAudioContainer}>
       <VolumeSlider
-        label={t(dense ? 'Speaker' : 'Speaker Output Volume')}
+        label={t('Speaker Output Volume')}
         value={speakerVolume}
         onChange={onChangeSpeaker}
-        icon={<SpeakerIcon size={dense ? 15 : 18} color={colors.brand} />}
+        icon={<SpeakerIcon size={18} color={colors.brand} />}
         description={speakerDescription}
         max={SPEAKER_MAX_PERCENT}
         presets={[50, 100, 125, 150, 195]}
         compact={compact}
-        dense={dense}
       />
 
-      {dense && <View style={styles.unifiedAudioDenseDivider} />}
-
       <VolumeSlider
-        label={t(dense ? 'Microphone' : 'Microphone Sensitivity')}
+        label={t('Microphone Sensitivity')}
         value={micVolume}
         onChange={onChangeMic}
-        icon={<MicIcon size={dense ? 15 : 18} color={colors.brand} />}
+        icon={<MicIcon size={18} color={colors.brand} />}
         description={micDescription}
         max={MIC_MAX_PERCENT}
         presets={[0, 25, 50, 100, 150]}
         compact={compact}
-        dense={dense}
       />
 
       {showRouteControls !== false && (
@@ -1681,17 +1741,20 @@ function StandardPhoneScreenInner({
 
             </View>
             <View style={styles.inCallVolumeInline}>
-              <UnifiedAudioControls
-                speakerVolume={editSpeakerVol}
-                micVolume={editMicVol}
-                speakerStep={inCallSpeakerStep}
-                isSpeakerOn={isSpeakerOn}
-                onChangeSpeaker={handleSpeakerChange}
-                onChangeMic={handleMicChange}
-                onToggleSpeaker={onToggleSpeaker}
-                showRouteControls={false}
-                compact
-                dense
+              <InCallVolumeRow
+                icon={<SpeakerIcon size={15} color={colors.brand} />}
+                label={t('Speaker')}
+                value={editSpeakerVol}
+                max={SPEAKER_MAX_PERCENT}
+                onChange={handleSpeakerChange}
+              />
+              <View style={styles.inCallVolumeDivider} />
+              <InCallVolumeRow
+                icon={<MicIcon size={15} color={colors.brand} />}
+                label={t('Microphone')}
+                value={editMicVol}
+                max={MIC_MAX_PERCENT}
+                onChange={handleMicChange}
               />
             </View>
           </View>
@@ -4471,8 +4534,77 @@ const rawStyles = StyleSheet.create({
   inCallVolumeInline: {
     borderTopWidth: 1,
     borderTopColor: '#27272a',
-    paddingTop: 14,
+    paddingTop: 8,
     marginTop: 2,
+  },
+  inCallVolumeRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 5,
+  },
+  inCallVolumeIdentity: {
+    width: 110,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inCallVolumeIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#2f2f35',
+  },
+  inCallVolumeLabel: {
+    flexShrink: 1,
+    color: '#e4e4e7',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  inCallVolumeTrackTouch: {
+    flex: 1,
+    height: 40,
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  inCallVolumeRail: {
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#27272a',
+    overflow: 'hidden',
+  },
+  inCallVolumeFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: '#e11d2e',
+  },
+  inCallVolumeThumb: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    marginLeft: -9,
+    borderRadius: 9,
+    backgroundColor: '#f4f4f5',
+    borderWidth: 2,
+    borderColor: '#e11d2e',
+  },
+  inCallVolumeValue: {
+    width: 38,
+    textAlign: 'right',
+    color: '#a1a1aa',
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  inCallVolumeDivider: {
+    height: 1,
+    marginLeft: 34,
+    backgroundColor: '#27272a',
   },
   inCallAudioRouteRow: {
     flexDirection: 'row',
@@ -4560,40 +4692,6 @@ const rawStyles = StyleSheet.create({
     height: 16,
     borderRadius: 8,
     top: 6,
-  },
-  volSliderContainerDense: {
-    paddingVertical: 7,
-    paddingHorizontal: 0,
-    marginTop: 0,
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    borderRadius: 0,
-  },
-  volSliderLabelDense: {
-    fontSize: 12,
-    color: '#a1a1aa',
-    fontWeight: '500',
-  },
-  volSliderValueBadgeDense: {
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-  },
-  volSliderValueTextDense: {
-    fontSize: 12,
-    color: '#a1a1aa',
-  },
-  volSliderControlsRowDense: {
-    marginTop: 5,
-  },
-  volTrackTouchAreaDense: {
-    height: 38,
-  },
-  unifiedAudioDenseDivider: {
-    height: 1,
-    backgroundColor: '#27272a',
-    marginVertical: 1,
   },
   volPresetRowCompact: {
     justifyContent: 'flex-start',
