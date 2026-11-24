@@ -90,7 +90,6 @@ import {
   RedialIcon,
   UserPlusIcon,
   ChevronDownIcon,
-  SlidersIcon,
 } from './Icons';
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
 import type { IncomingRingtone } from '../calls/ringtonePref';
@@ -794,7 +793,6 @@ function StandardPhoneScreenInner({
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
   const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 50);
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
-  const [showInCallVolumeModal, setShowInCallVolumeModal] = useState(false);
   const [inCallSpeakerStep, setInCallSpeakerStep] = useState<{ current: number; max: number }>({ current: 12, max: 15 });
   // Coalesce native volume writes while the speaker slider is dragged.
   const speakerNativeTimerRef = useRef<number | null>(null);
@@ -809,14 +807,14 @@ function StandardPhoneScreenInner({
   }, []);
 
   useEffect(() => {
-    if (activeCall || showInCallVolumeModal || showSettingsModal) {
+    if (activeCall || showSettingsModal) {
       void getNativeSpeakerVolume().then((res) => {
         if (res) {
           setInCallSpeakerStep({ current: res.currentStep, max: res.maxStep });
         }
       });
     }
-  }, [activeCall, showInCallVolumeModal, showSettingsModal]);
+  }, [activeCall, showSettingsModal]);
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({});
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({});
@@ -1349,57 +1347,6 @@ function StandardPhoneScreenInner({
     onLogout();
     setShowSettingsModal(false);
   };
-  const renderVolumeModal = () => (
-    <Modal
-      visible={showInCallVolumeModal}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setShowInCallVolumeModal(false)}
-    >
-      <TouchableWithoutFeedback onPress={() => setShowInCallVolumeModal(false)}>
-        <View style={styles.modalBackdrop}>
-          <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-            <View style={styles.volumeDialogCard}>
-              <View style={styles.transferHeaderRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.dialogTitle}>{t('Audio & Volume Controls')}</Text>
-                  <Text style={styles.transferSubTitle}>
-                    {activeCall
-                      ? 'Adjust speaker loudness and microphone sensitivity mid-call:'
-                      : 'Adjust default in-call speaker loudness and microphone sensitivity:'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => setShowInCallVolumeModal(false)}
-                  style={styles.transferDismissBtn}
-                >
-                  <CloseIcon size={18} color={colors.textDim} />
-                </TouchableOpacity>
-              </View>
-              <UnifiedAudioControls
-                speakerVolume={editSpeakerVol}
-                micVolume={editMicVol}
-                speakerStep={inCallSpeakerStep}
-                isSpeakerOn={isSpeakerOn}
-                onChangeSpeaker={handleSpeakerChange}
-                onChangeMic={handleMicChange}
-                onToggleSpeaker={onToggleSpeaker}
-                audioDeviceState={audioDeviceState}
-                onChooseAudioRoute={onChooseAudioRoute}
-              />
-              <TouchableOpacity
-                style={styles.volumeDoneBtn}
-                onPress={() => setShowInCallVolumeModal(false)}
-              >
-                <Text style={styles.volumeDoneBtnText}>{t('Done')}</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableWithoutFeedback>
-        </View>
-      </TouchableWithoutFeedback>
-    </Modal>
-  );
-
   const renderAudioRouteModal = () => (
     <Modal
       visible={showAudioRouteModal}
@@ -1699,22 +1646,19 @@ function StandardPhoneScreenInner({
                 <Text style={styles.inCallBtnLabel}>{t('Transfer')}</Text>
               </View>
 
-              {/* Volume Adjustment Button */}
-              <View style={styles.inCallBtnCol}>
-                <TouchableOpacity
-                  style={[styles.inCallBtn, showInCallVolumeModal && styles.inCallBtnActive]}
-                  onPress={() => setShowInCallVolumeModal(true)}
-                  delayPressIn={0}
-                  activeOpacity={0.7}
-                  accessibilityRole="button"
-                  accessibilityLabel="In-call volume"
-                >
-                  <SlidersIcon size={26} color={showInCallVolumeModal ? colors.brand : colors.text} />
-                </TouchableOpacity>
-                <Text style={[styles.inCallBtnLabel, showInCallVolumeModal && { color: colors.brand }]}>
-                  {t('Volume')}
-                </Text>
-              </View>
+            </View>
+            <View style={styles.inCallVolumeInline}>
+              <UnifiedAudioControls
+                speakerVolume={editSpeakerVol}
+                micVolume={editMicVol}
+                speakerStep={inCallSpeakerStep}
+                isSpeakerOn={isSpeakerOn}
+                onChangeSpeaker={handleSpeakerChange}
+                onChangeMic={handleMicChange}
+                onToggleSpeaker={onToggleSpeaker}
+                showRouteControls={false}
+                compact
+              />
             </View>
           </View>
         )}
@@ -2009,8 +1953,6 @@ function StandardPhoneScreenInner({
         </Modal>
         )}
 
-        {/* In-Call Audio & Volume Adjustment Sheet */}
-        {showInCallVolumeModal && renderVolumeModal()}
         {showAudioRouteModal && renderAudioRouteModal()}
       </SafeAreaView>
     );
@@ -2961,7 +2903,6 @@ function StandardPhoneScreenInner({
         onDeleteRecord={onDeleteCallRecord}
         onSaveWhatsAppCountryCode={handleSaveWhatsAppCountryCode}
       />
-      {showInCallVolumeModal && renderVolumeModal()}
     </SafeAreaView>
   );
 }
@@ -4492,6 +4433,12 @@ const rawStyles = StyleSheet.create({
     padding: 20,
     borderColor: '#27272a',
     borderWidth: 1,
+  },
+  inCallVolumeInline: {
+    borderTopWidth: 1,
+    borderTopColor: '#27272a',
+    paddingTop: 14,
+    marginTop: 2,
   },
   inCallAudioRouteRow: {
     flexDirection: 'row',
