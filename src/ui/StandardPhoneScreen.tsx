@@ -92,10 +92,12 @@ import {
   ChevronDownIcon,
 } from './Icons';
 import { AudioDeviceState, AudioRouteType } from '../calls/incall';
+import { MIC_AGC_CENTER_DB } from '../calls/micAgc';
 import type { IncomingRingtone } from '../calls/ringtonePref';
 import { canUseFullScreenIntent, fetchDeviceContacts, getNativeSpeakerVolume, openFullScreenIntentSettings, SpeakerVolumeState } from '../calls/nativeCallNotification';
 import {
   MIC_MAX_PERCENT,
+  micDbToPercent,
   micPercentToDb,
   speakerGainToDb,
   speakerPercentToGain,
@@ -793,6 +795,7 @@ function StandardPhoneScreenInner({
   const [editAuto, setEditAuto] = useState(account?.autoAnswer || false);
   const [editMicVol, setEditMicVol] = useState(account?.micVolume ?? 50);
   const [editSpeakerVol, setEditSpeakerVol] = useState(account?.speakerVolume ?? 85);
+  const [agcUiCallId, setAgcUiCallId] = useState<string | null>(null);
   const [inCallSpeakerStep, setInCallSpeakerStep] = useState<{ current: number; max: number }>({ current: 12, max: 15 });
   // Coalesce native volume writes while the speaker slider is dragged.
   const speakerNativeTimerRef = useRef<number | null>(null);
@@ -815,6 +818,18 @@ function StandardPhoneScreenInner({
       });
     }
   }, [activeCall, showSettingsModal]);
+  useEffect(() => {
+    if (!activeCall) {
+      setAgcUiCallId(null);
+      return;
+    }
+    if (agcUiCallId === activeCall.id) return;
+    setAgcUiCallId(activeCall.id);
+    // The service re-centers AGC at -6 dB as the call becomes active; show
+    // that real target instead of the saved manual setting until the user
+    // moves the inline slider.
+    setEditMicVol(micDbToPercent(MIC_AGC_CENTER_DB));
+  }, [activeCall, agcUiCallId]);
   // Speed Dial Configuration (Keys 1 to 9)
   const [speedDial, setSpeedDial] = useState<SpeedDialMap>({});
   const [editSpeedDial, setEditSpeedDial] = useState<SpeedDialMap>({});
